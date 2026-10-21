@@ -370,13 +370,13 @@ flowchart TD
 
 구현 담당(Claude)은 아래 단계를 순서대로 진행하며, **각 단계가 완료될 때마다 작은 단위로 커밋**한다.
 
-- [ ] **Step 1: 프로젝트 기초 환경 및 PetClinic 소스 코드 구성 (`app/`)**
+- [x] **Step 1: 프로젝트 기초 환경 및 PetClinic 소스 코드 구성 (`app/`)**
   - `.gitignore` 및 `.env.example` 파일 작성 (섹션 4.3의 환경변수 목록 전체 포함, 실제 값은 비워두거나 안전한 플레이스홀더로 표기).
   - `https://github.com/spring-petclinic/spring-framework-petclinic` 소스를 `app/` 디렉터리에 가져오거나 구성.
   - `app/src/main/resources/spring/data-access.properties` (및 관련 Spring 설정)가 환경변수 또는 JVM 시스템 프로퍼티(`JDBC_URL`, `JDBC_USERNAME`, `JDBC_PASSWORD`, `JDBC_DRIVER_CLASS_NAME`)를 통해 외부 RDS MySQL을 바라볼 수 있도록 수정 (하드코딩된 패스워드 제거).
   - 커밋: `feat: setup spring-framework-petclinic source and env template`
 
-- [ ] **Step 2: `web`(Nginx) 및 `was`(Tomcat 11) 컨테이너화 (`docker/`)**
+- [x] **Step 2: `web`(Nginx) 및 `was`(Tomcat 11) 컨테이너화 (`docker/`)**
   - `docker/web/nginx.conf` 및 `docker/web/Dockerfile` 작성:
     - 고정 버전 `nginx:1.27.2-alpine` 기반, 비루트 실행(`8080` 또는 unprivileged 구성), PetClinic 정적 리소스 서빙 및 동적 요청 `was:8080` 리버스 프록시, `/healthz` 엔드포인트 구성.
   - `docker/was/jmx-exporter-config.yaml`, `docker/was/setenv.sh`, `docker/was/Dockerfile` 작성:
@@ -384,7 +384,7 @@ flowchart TD
     - Stage 2: `tomcat:11.0.2-jre21-temurin-noble` 기반, 기본 `webapps/*` 샘플 제거 후 `ROOT.war` 배치, `jmx_prometheus_javaagent-1.0.1.jar` 탑재(`:9404`), 비루트 유저(`10001`) 전환.
   - 커밋: `feat: add Dockerfiles for web (Nginx) and was (Tomcat 11 with JMX Exporter)`
 
-- [ ] **Step 3: AWS 인프라, EKS 클러스터(`eksctl`), Karpenter 매니페스트 작성 (`infra/`)**
+- [x] **Step 3: AWS 인프라, EKS 클러스터(`eksctl`), Karpenter 매니페스트 작성 (`infra/`)**
   - `infra/eksctl/cluster.yaml` 작성:
     - 리전 `ap-northeast-2`, 가용영역 `ap-northeast-2a`, `ap-northeast-2c` 퍼블릭/프라이빗 서브넷 매핑.
     - 관리형 노드 그룹 `ng-critical` (Taint: `node-role=critical:NoSchedule`, Label: `workload-tier=critical`) 및 `ng-platform` (Taint: `node-role=platform:NoSchedule`, Label: `workload-tier=platform`) 정의.
@@ -394,20 +394,20 @@ flowchart TD
   - `infra/aws/` 하위에 최소 권한 IAM Policy JSON 파일들 및 RDS MySQL(Multi-AZ Primary/Standby), AWS WAF, ACM, ECR, Secrets Manager 프로비저닝 스크립트 작성.
   - 커밋: `feat: add eksctl cluster config, Karpenter np-app NodePool, and AWS infra configs`
 
-- [ ] **Step 4: 기본 네임스페이스, EBS `gp3` StorageClass, ESO 시크릿 및 DB Job/CronJob 작성 (`k8s/base/`, `k8s/secrets/`, `k8s/jobs/`)**
+- [x] **Step 4: 기본 네임스페이스, EBS `gp3` StorageClass, ESO 시크릿 및 DB Job/CronJob 작성 (`k8s/base/`, `k8s/secrets/`, `k8s/jobs/`)**
   - `k8s/base/namespace.yaml` 및 `k8s/base/storageclass-gp3.yaml` (`ebs.csi.aws.com`, `gp3`, `encrypted: "true"`, `WaitForFirstConsumer`) 작성.
   - `k8s/secrets/secretstore.yaml` 및 `k8s/secrets/externalsecret-rds.yaml` 작성 (AWS Secrets Manager에서 RDS 계정을 읽어 `petclinic-rds-secret` 생성).
   - `k8s/jobs/job-db-init.yaml` (MySQL 스키마/초기 데이터 적재) 및 `k8s/jobs/cronjob-db-backup.yaml` (`mysqldump` 정기 백업) 작성 — 두 워크로드 모두 `ng-critical`의 Taint Toleration 및 `nodeSelector` (`workload-tier: critical`), 비루트 `securityContext` 필수 적용.
   - 커밋: `feat: add gp3 storageclass, ESO external secrets, and DB init/backup jobs`
 
-- [ ] **Step 5: `web` 및 `was` 워크로드, HPA, KEDA, NGF Gateway/HTTPRoute, ALB 매니페스트 작성 (`k8s/web/`, `k8s/was/`, `k8s/gateway/`)**
+- [x] **Step 5: `web` 및 `was` 워크로드, HPA, KEDA, NGF Gateway/HTTPRoute, ALB 매니페스트 작성 (`k8s/web/`, `k8s/was/`, `k8s/gateway/`)**
   - `k8s/web/`: `deployment.yaml` (`np-app` 배치, Non-root `securityContext`, Liveness/Readiness 프로브, 리소스 requests/limits), `service.yaml`, `hpa.yaml` (CPU 기반 수평 확장) 작성.
   - `k8s/was/`: `deployment-stable.yaml`, `deployment-canary.yaml` (`np-app` 배치, Tomcat 11 `:8080` 및 JMX `:9404`, `petclinic-rds-secret` 주입, Non-root `securityContext`), `service.yaml` / `service-stable.yaml` / `service-canary.yaml`, `keda-scaledobject.yaml` (Prometheus 요청량 기반 `was` 수평 확장) 작성.
   - `k8s/gateway/`: `gateway.yaml` (NGF Gateway, `np-app` 배치), `httproute-canary.yaml` (`HTTPRoute` 카나리 트래픽 분할 규칙), `alb-ingress.yaml` (LBC ALB: HTTPS 443, ACM 인증서 ARN, WAFv2 ACL ARN, `target-type: ip` 설정) 작성.
   - 계층 간 접근 통제를 위한 `NetworkPolicy` 매니페스트 추가.
   - 커밋: `feat: add web/was deployments, HPA, KEDA ScaledObject, and NGF Gateway/ALB manifests`
 
-- [ ] **Step 6: 모니터링(Prometheus/Grafana/Alertmanager) 및 로깅(Fluent Bit) 구성 (`k8s/monitoring/`, `k8s/logging/`)**
+- [x] **Step 6: 모니터링(Prometheus/Grafana/Alertmanager) 및 로깅(Fluent Bit) 구성 (`k8s/monitoring/`, `k8s/logging/`)**
   - `k8s/monitoring/kube-prometheus-values.yaml` 작성:
     - Prometheus, Grafana, Alertmanager 모두 `ng-platform` (`nodeSelector: { workload-tier: platform }`, Toleration: `node-role=platform:NoSchedule`)에 배치하고, EBS `gp3` StorageClass PVC를 마운트하도록 설정.
   - `k8s/monitoring/servicemonitor-petclinic.yaml` 작성: `was` JMX Exporter(`:9404/metrics`) 및 `web` 지표를 스크래핑하도록 설정.
@@ -415,7 +415,7 @@ flowchart TD
     - 모든 노드(`np-app`, `ng-critical`, `ng-platform`)에서 실행되도록 Toleration(`operator: Exists`) 설정 후 CloudWatch Logs로 컨테이너 로그 전송.
   - 커밋: `feat: add Prometheus/Grafana/Alertmanager on ng-platform and Fluent Bit logging`
 
-- [ ] **Step 7: 배포 스크립트 및 전체 매니페스트/보안 검증 테스트 작성 (`scripts/`)**
+- [x] **Step 7: 배포 스크립트 및 전체 매니페스트/보안 검증 테스트 작성 (`scripts/`)**
   - `scripts/build-and-push.sh`, `scripts/deploy-all.sh` 작성 (`set -euo pipefail` 적용, 환경변수 검증 포함).
   - `scripts/validate-manifests.sh` (또는 자동화 검증 테스트) 작성하여 다음 항목을 실행 및 통과 확인:
     1. 모든 YAML 파일 문법 유효성 검사
