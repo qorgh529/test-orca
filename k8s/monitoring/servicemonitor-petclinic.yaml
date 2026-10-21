@@ -1,0 +1,31 @@
+# Services are selected by their `metrics` label (k8s/was/service-*.yaml, k8s/web/service.yaml).
+# Prometheus adds namespace/service labels used by the KEDA query.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: petclinic-was
+  namespace: monitoring
+spec:
+  namespaceSelector:
+    matchNames: [petclinic]
+  selector:
+    matchLabels: { metrics: jmx }
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: petclinic-web
+  namespace: monitoring
+spec:
+  namespaceSelector:
+    matchNames: [petclinic]
+  selector:
+    matchLabels: { metrics: nginx }
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s

@@ -3,7 +3,7 @@
 #
 #   ./infra/aws/provision-aws-resources.sh pre-cluster   # IAM, ECR, log group, backup bucket, WAF, ACM
 #   ./infra/aws/provision-aws-resources.sh cluster       # eksctl create cluster + Karpenter discovery tags
-#   ./infra/aws/provision-aws-resources.sh post-cluster  # RDS MySQL Multi-AZ + Secrets Manager secret
+#   ./infra/aws/provision-aws-resources.sh post-cluster  # RDS MySQL Multi-AZ + Secrets Manager secrets
 #
 # Not idempotent: each phase is meant to run once. Re-runs fail on "already exists".
 set -euo pipefail
@@ -108,11 +108,14 @@ cluster() {
 }
 
 post_cluster() {
-  require AWS_REGION EKS_CLUSTER_NAME VPC_ID DB_PRIVATE_SUBNET_A_ID DB_PRIVATE_SUBNET_C_ID RDS_SECRET_NAME RDS_DB_NAME RDS_PORT
-  case "$RDS_SECRET_NAME" in
-    petclinic/*) ;;
-    *) echo "RDS_SECRET_NAME must start with petclinic/ (ESO IAM scope)" >&2; exit 1 ;;
-  esac
+  require AWS_REGION EKS_CLUSTER_NAME VPC_ID DB_PRIVATE_SUBNET_A_ID DB_PRIVATE_SUBNET_C_ID RDS_SECRET_NAME RDS_DB_NAME RDS_PORT GRAFANA_ADMIN_SECRET_NAME
+  local s
+  for s in "$RDS_SECRET_NAME" "$GRAFANA_ADMIN_SECRET_NAME"; do
+    case "$s" in
+      petclinic/*) ;;
+      *) echo "secret names must start with petclinic/ (ESO IAM scope): $s" >&2; exit 1 ;;
+    esac
+  done
   local db_id="${EKS_CLUSTER_NAME}-mysql" cluster_sg rds_sg password host
 
   echo "== RDS security group: 3306 from the EKS cluster security group only"
@@ -151,6 +154,12 @@ post_cluster() {
   aws secretsmanager create-secret --name "$RDS_SECRET_NAME" --secret-string file:///dev/stdin \
     <<<"{\"username\":\"petclinic_admin\",\"password\":\"$password\",\"host\":\"$host\",\"port\":\"$RDS_PORT\",\"dbname\":\"$RDS_DB_NAME\"}" >/dev/null
   echo "RDS endpoint: $host"
+
+  echo "== Secrets Manager: $GRAFANA_ADMIN_SECRET_NAME"
+  password=$(aws secretsmanager get-random-password --password-length 32 --exclude-punctuation \
+    --query RandomPassword --output text)
+  aws secretsmanager create-secret --name "$GRAFANA_ADMIN_SECRET_NAME" --secret-string file:///dev/stdin \
+    <<<"{\"username\":\"admin\",\"password\":\"$password\"}" >/dev/null
 }
 
 case "${1:-}" in
