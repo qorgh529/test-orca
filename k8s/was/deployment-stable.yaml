@@ -1,0 +1,63 @@
+# Replicas are managed by KEDA (keda-scaledobject.yaml).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: was-stable
+  namespace: petclinic
+  labels: { app: was, track: stable }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: was, track: stable }
+  template:
+    metadata:
+      labels: { app: was, track: stable }
+    spec:
+      automountServiceAccountToken: false
+      nodeSelector:
+        workload-tier: app
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: { app: was, track: stable }
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: tomcat
+          image: ${ECR_WAS_REPOSITORY_URI}:${IMAGE_TAG}
+          ports:
+            - { name: http, containerPort: 8080 }
+            - { name: metrics, containerPort: 9404 }
+          env:
+            - { name: SPRING_PROFILES_ACTIVE, value: jpa }
+            - { name: JAVA_OPTS, value: "-XX:MaxRAMPercentage=75.0" }
+            - name: JDBC_URL
+              valueFrom: { secretKeyRef: { name: petclinic-rds-secret, key: JDBC_URL } }
+            - name: JDBC_USERNAME
+              valueFrom: { secretKeyRef: { name: petclinic-rds-secret, key: JDBC_USERNAME } }
+            - name: JDBC_PASSWORD
+              valueFrom: { secretKeyRef: { name: petclinic-rds-secret, key: JDBC_PASSWORD } }
+          startupProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 10
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: { port: http }
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 500m, memory: 1Gi }
+            limits: { cpu: "2", memory: 1536Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]

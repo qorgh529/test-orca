@@ -429,3 +429,12 @@ flowchart TD
 ## 구현 중 질문
 
 <!-- Claude: 구현 중 설계와 다르게 구현해야 할 이유가 생기거나 모호한 점이 있으면 임의로 바꾸지 말고 이 섹션에 질문을 작성한 뒤 작업을 멈추세요. -->
+
+### Q1. 카나리 분할 지점 (Step 5) — 해석 확인 요청
+- 모호한 점: §3.2④는 HTTPRoute(NGF → web)에서 가중치를 나누는데, 카나리 Deployment는 `was` 계층에만 있다.
+- 구현한 해석 (§3.2⑤ "카나리 구성에 따라 對應하는 WAS Service"): `web`(stable) → `was-stable`, `web-canary` → `was-canary`. HTTPRoute가 `web` 90 / `web-canary` 10으로 나누고, `X-Canary: always` 헤더는 canary로 고정한다. `web-canary`는 새 파일 없이 `k8s/web/deployment.yaml`, `service.yaml`에 두 번째 문서로 넣었다.
+- `was` 통합 Service는 web 이미지 기본값(`WAS_UPSTREAM_HOST=was`)과 맞추려고 남겼지만, 지금은 프록시 대상이 아니다. 삭제할지 결정이 필요하다.
+- 다른 방식(예: web 하나에서 nginx `split_clients`로 분할)을 원하면 알려 달라.
+
+### Q2. KEDA `TriggerAuthentication` (Step 5) — 생략함
+- 클러스터 내부 Prometheus(kube-prometheus-stack)에는 인증이 없어서 `TriggerAuthentication`이 참조할 자격 증명이 없다. 빈 리소스를 만들지 않고 생략했다. Prometheus 앞에 인증을 둘 계획이라면 알려 달라.

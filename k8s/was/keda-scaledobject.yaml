@@ -1,0 +1,20 @@
+# Scales was-stable on Tomcat request rate scraped from JMX Exporter (k8s/monitoring/servicemonitor-petclinic.yaml).
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: was-stable
+  namespace: petclinic
+spec:
+  scaleTargetRef:
+    name: was-stable
+  minReplicaCount: 2
+  maxReplicaCount: 10
+  pollingInterval: 15
+  cooldownPeriod: 300
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: ${PROMETHEUS_SERVER_URL}
+        query: sum(rate(tomcat_requestcount_total{namespace="petclinic",service="was-stable",port="8080"}[1m]))
+        # Target requests/second per replica.
+        threshold: "50"

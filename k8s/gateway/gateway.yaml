@@ -1,0 +1,19 @@
+# GatewayClass `nginx` is installed by the NGF Helm chart; its pods are pinned to np-app
+# via Helm values in scripts/deploy-all.sh.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: petclinic-gateway
+  namespace: nginx-gateway
+spec:
+  gatewayClassName: nginx
+  listeners:
+    - name: http
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              kubernetes.io/metadata.name: petclinic
