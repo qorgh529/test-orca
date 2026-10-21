@@ -83,11 +83,10 @@ for f, ds in docs.items():
     for d in ds:
         if isinstance(d, dict) and d.get("kind") == "Secret" and (d.get("data") or d.get("stringData")):
             err(f"{f.relative_to(root)}: Secret with inline data (use ExternalSecret)")
-# The MySQL (RDS) build profile must not carry credentials.
+# No Maven profile may carry a DB password.
 pom = (root / "app/pom.xml").read_text(encoding="utf-8")
-mysql = re.search(r"<id>MySQL</id>.*?</profile>", pom, re.S)
-if not mysql or re.search(r"<jdbc\.(username|password)>[^<]+</jdbc", mysql.group(0)):
-    err("app/pom.xml: MySQL profile has hard-coded jdbc credentials")
+for m in re.finditer(r"<jdbc\.password>[^<]+</jdbc\.password>", pom):
+    err(f"app/pom.xml:{pom[:m.start()].count(chr(10)) + 1}: hard-coded jdbc.password")
 
 # 4. Placement + securityContext
 TIERS = {"app": None, "critical": "critical", "platform": "platform"}

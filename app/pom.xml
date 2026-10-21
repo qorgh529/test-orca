@@ -598,8 +598,9 @@
                 <jpa.database>POSTGRESQL</jpa.database>
                 <jdbc.driverClassName>org.postgresql.Driver</jdbc.driverClassName>
                 <jdbc.url>jdbc:postgresql://localhost:5432/petclinic</jdbc.url>
-                <jdbc.username>postgres</jdbc.username>
-                <jdbc.password>petclinic</jdbc.password>
+                <!-- Credentials are injected at runtime via JDBC_USERNAME / JDBC_PASSWORD env vars -->
+                <jdbc.username/>
+                <jdbc.password/>
             </properties>
             <dependencies>
                 <dependency>
