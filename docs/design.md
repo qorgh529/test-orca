@@ -435,6 +435,7 @@ flowchart TD
 - 구현한 해석 (§3.2⑤ "카나리 구성에 따라 對應하는 WAS Service"): `web`(stable) → `was-stable`, `web-canary` → `was-canary`. HTTPRoute가 `web` 90 / `web-canary` 10으로 나누고, `X-Canary: always` 헤더는 canary로 고정한다. `web-canary`는 새 파일 없이 `k8s/web/deployment.yaml`, `service.yaml`에 두 번째 문서로 넣었다.
 - `was` 통합 Service는 web 이미지 기본값(`WAS_UPSTREAM_HOST=was`)과 맞추려고 남겼지만, 지금은 프록시 대상이 아니다. 삭제할지 결정이 필요하다.
 - 다른 방식(예: web 하나에서 nginx `split_clients`로 분할)을 원하면 알려 달라.
+- **답변 (사용자):** 90 / 10 분할 확정. `was` 통합 Service를 둘지는 아직 미정.
 
 ### Q2. KEDA `TriggerAuthentication` (Step 5) — 생략함
 - 클러스터 내부 Prometheus(kube-prometheus-stack)에는 인증이 없어서 `TriggerAuthentication`이 참조할 자격 증명이 없다. 빈 리소스를 만들지 않고 생략했다. Prometheus 앞에 인증을 둘 계획이라면 알려 달라.
