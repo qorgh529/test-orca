@@ -342,9 +342,21 @@
         <defaultGoal>install</defaultGoal>
         <finalName>petclinic</finalName>
         <resources>
+            <!-- Only data-access.properties gets Maven profile values. The Spring XML keeps its
+                 ${...} placeholders so env vars (JDBC_URL, ...) can override them at runtime. -->
             <resource>
                 <directory>${basedir}/src/main/resources</directory>
                 <filtering>true</filtering>
+                <includes>
+                    <include>spring/data-access.properties</include>
+                </includes>
+            </resource>
+            <resource>
+                <directory>${basedir}/src/main/resources</directory>
+                <filtering>false</filtering>
+                <excludes>
+                    <exclude>spring/data-access.properties</exclude>
+                </excludes>
             </resource>
         </resources>
         <testResources>
