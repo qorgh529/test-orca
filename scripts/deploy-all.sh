@@ -112,6 +112,8 @@ done
 alb_zone=$(aws elbv2 describe-load-balancers --region "$AWS_REGION" \
   --query "LoadBalancers[?DNSName=='$alb'].CanonicalHostedZoneId" --output text)
 aws route53 change-resource-record-sets --hosted-zone-id "$ROUTE53_HOSTED_ZONE_ID" --change-batch \
-  "{\"Changes\":[{\"Action\":\"UPSERT\",\"ResourceRecordSet\":{\"Name\":\"$DOMAIN_NAME\",\"Type\":\"A\",\"AliasTarget\":{\"HostedZoneId\":\"$alb_zone\",\"DNSName\":\"$alb\",\"EvaluateTargetHealth\":true}}}]}" >/dev/null
+  "$(jq -n --arg name "$DOMAIN_NAME" --arg zone "$alb_zone" --arg alb "$alb" '{Changes: [{Action: "UPSERT",
+      ResourceRecordSet: {Name: $name, Type: "A",
+        AliasTarget: {HostedZoneId: $zone, DNSName: $alb, EvaluateTargetHealth: true}}}]}')" >/dev/null
 
 echo "Done: https://$DOMAIN_NAME"

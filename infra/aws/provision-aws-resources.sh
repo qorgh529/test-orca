@@ -62,15 +62,12 @@ pre_cluster() {
   aws s3api put-bucket-versioning --bucket "$BACKUP_S3_BUCKET_NAME" --versioning-configuration Status=Enabled
 
   echo "== WAFv2 WebACL (regional, AWS managed rules)"
-  local rules='[' prio=0 rule
-  for rule in AWSManagedRulesCommonRuleSet AWSManagedRulesSQLiRuleSet AWSManagedRulesKnownBadInputsRuleSet; do
-    [ "$prio" -gt 0 ] && rules+=','
-    rules+="{\"Name\":\"$rule\",\"Priority\":$prio,\"OverrideAction\":{\"None\":{}},
-      \"Statement\":{\"ManagedRuleGroupStatement\":{\"VendorName\":\"AWS\",\"Name\":\"$rule\"}},
-      \"VisibilityConfig\":{\"SampledRequestsEnabled\":true,\"CloudWatchMetricsEnabled\":true,\"MetricName\":\"$rule\"}}"
-    prio=$((prio + 1))
-  done
-  rules+=']'
+  local rules
+  rules=$(jq -n '[$ARGS.positional | to_entries[] | {
+      Name: .value, Priority: .key, OverrideAction: {None: {}},
+      Statement: {ManagedRuleGroupStatement: {VendorName: "AWS", Name: .value}},
+      VisibilityConfig: {SampledRequestsEnabled: true, CloudWatchMetricsEnabled: true, MetricName: .value}}]' \
+    --args AWSManagedRulesCommonRuleSet AWSManagedRulesSQLiRuleSet AWSManagedRulesKnownBadInputsRuleSet)
   aws wafv2 create-web-acl --scope REGIONAL --name "${EKS_CLUSTER_NAME}-web-acl" \
     --default-action Allow={} \
     --visibility-config "SampledRequestsEnabled=true,CloudWatchMetricsEnabled=true,MetricName=${EKS_CLUSTER_NAME}-web-acl" \
@@ -89,7 +86,8 @@ pre_cluster() {
   done
   [ "$rr" != "null" ] || { echo "ACM validation record not available yet" >&2; exit 1; }
   aws route53 change-resource-record-sets --hosted-zone-id "$ROUTE53_HOSTED_ZONE_ID" --change-batch \
-    "{\"Changes\":[{\"Action\":\"UPSERT\",\"ResourceRecordSet\":{\"Name\":$(echo "$rr" | jq .Name),\"Type\":$(echo "$rr" | jq .Type),\"TTL\":300,\"ResourceRecords\":[{\"Value\":$(echo "$rr" | jq .Value)}]}}]}" >/dev/null
+    "$(jq -n --argjson rr "$rr" '{Changes: [{Action: "UPSERT", ResourceRecordSet:
+        {Name: $rr.Name, Type: $rr.Type, TTL: 300, ResourceRecords: [{Value: $rr.Value}]}}]}')" >/dev/null
   aws acm wait certificate-validated --certificate-arn "$cert_arn"
   echo "$cert_arn"
 
@@ -130,11 +128,17 @@ post_cluster() {
     --db-subnet-group-description "PetClinic DB private subnets" \
     --subnet-ids "$DB_PRIVATE_SUBNET_A_ID" "$DB_PRIVATE_SUBNET_C_ID" >/dev/null
 
+  echo "== RDS parameter group: TLS required"
+  aws rds create-db-parameter-group --db-parameter-group-name "${db_id}-params" \
+    --db-parameter-group-family mysql8.0 --description "PetClinic MySQL - require TLS" >/dev/null
+  aws rds modify-db-parameter-group --db-parameter-group-name "${db_id}-params" \
+    --parameters "ParameterName=require_secure_transport,ParameterValue=ON,ApplyMethod=immediate" >/dev/null
+
   echo "== RDS MySQL 8.0 Multi-AZ (encrypted, private)"
   password=$(aws secretsmanager get-random-password --password-length 32 --exclude-punctuation \
     --query RandomPassword --output text)
-  # Password goes through stdin so it never appears in the process list.
-  aws rds create-db-instance --cli-input-json file:///dev/stdin \
+  # Password goes through env -> jq -> stdin so it never appears in any process's argv.
+  PW="$password" jq -n '{MasterUserPassword: env.PW}' | aws rds create-db-instance --cli-input-json file:///dev/stdin \
     --db-instance-identifier "$db_id" \
     --engine mysql --engine-version 8.0.39 \
     --db-instance-class db.t3.medium \
@@ -144,22 +148,24 @@ post_cluster() {
     --master-username petclinic_admin \
     --vpc-security-group-ids "$rds_sg" \
     --db-subnet-group-name "${db_id}-subnets" \
-    --backup-retention-period 7 --copy-tags-to-snapshot --deletion-protection \
-    <<<"{\"MasterUserPassword\":\"$password\"}" >/dev/null
+    --db-parameter-group-name "${db_id}-params" \
+    --enable-cloudwatch-logs-exports '["error","slowquery"]' \
+    --backup-retention-period 7 --copy-tags-to-snapshot --deletion-protection >/dev/null
   aws rds wait db-instance-available --db-instance-identifier "$db_id"
   host=$(aws rds describe-db-instances --db-instance-identifier "$db_id" \
     --query 'DBInstances[0].Endpoint.Address' --output text)
 
   echo "== Secrets Manager: $RDS_SECRET_NAME"
-  aws secretsmanager create-secret --name "$RDS_SECRET_NAME" --secret-string file:///dev/stdin \
-    <<<"{\"username\":\"petclinic_admin\",\"password\":\"$password\",\"host\":\"$host\",\"port\":\"$RDS_PORT\",\"dbname\":\"$RDS_DB_NAME\"}" >/dev/null
+  PW="$password" jq -n --arg host "$host" --arg port "$RDS_PORT" --arg db "$RDS_DB_NAME" \
+    '{username: "petclinic_admin", password: env.PW, host: $host, port: $port, dbname: $db}' \
+    | aws secretsmanager create-secret --name "$RDS_SECRET_NAME" --secret-string file:///dev/stdin >/dev/null
   echo "RDS endpoint: $host"
 
   echo "== Secrets Manager: $GRAFANA_ADMIN_SECRET_NAME"
   password=$(aws secretsmanager get-random-password --password-length 32 --exclude-punctuation \
     --query RandomPassword --output text)
-  aws secretsmanager create-secret --name "$GRAFANA_ADMIN_SECRET_NAME" --secret-string file:///dev/stdin \
-    <<<"{\"username\":\"admin\",\"password\":\"$password\"}" >/dev/null
+  PW="$password" jq -n '{username: "admin", password: env.PW}' \
+    | aws secretsmanager create-secret --name "$GRAFANA_ADMIN_SECRET_NAME" --secret-string file:///dev/stdin >/dev/null
 }
 
 case "${1:-}" in
