@@ -1,0 +1,12 @@
+# The NGF chart (1.5.1) has no PDB; keep one gateway pod up during node drains/consolidation.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: nginx-gateway
+  namespace: nginx-gateway
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nginx-gateway-fabric
+      app.kubernetes.io/instance: nginx-gateway

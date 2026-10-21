@@ -30,6 +30,7 @@ kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/downloa
 
 echo "== Helm repos"
 helm repo add eks https://aws.github.io/eks-charts
+helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server
 helm repo add kedacore https://kedacore.github.io/charts
 helm repo add external-secrets https://charts.external-secrets.io
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
@@ -40,6 +41,10 @@ helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-contro
   --version 1.9.2 -n kube-system -f "$CRITICAL" \
   --set clusterName="$EKS_CLUSTER_NAME" --set region="$AWS_REGION" --set vpcId="$VPC_ID" \
   --set serviceAccount.create=false --set serviceAccount.name=aws-load-balancer-controller
+
+# Resource Metrics API (metrics.k8s.io) for the web CPU HPA; EKS does not ship it.
+helm upgrade --install metrics-server metrics-server/metrics-server \
+  --version 3.12.2 -n kube-system -f "$CRITICAL"
 
 helm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter \
   --version 1.0.6 -n kube-system -f "$CRITICAL" \
@@ -59,11 +64,13 @@ helm upgrade --install external-secrets external-secrets/external-secrets \
 echo "== Karpenter np-app NodePool"
 render_all "$ROOT/infra/karpenter" | kubectl apply -f -
 
-echo "== NGF gateway on np-app (ClusterIP; the ALB targets pod IPs)"
+echo "== NGF gateway on np-app (ClusterIP; the ALB targets pod IPs), 2 replicas across AZs"
 helm upgrade --install nginx-gateway oci://ghcr.io/nginx/charts/nginx-gateway-fabric \
   --version 1.5.1 -n nginx-gateway \
   --set fullnameOverride=nginx-gateway --set service.type=ClusterIP \
-  --set-json 'nodeSelector={"workload-tier":"app"}'
+  --set nginxGateway.replicaCount=2 \
+  --set-json 'nodeSelector={"workload-tier":"app"}' \
+  --set-json 'topologySpreadConstraints=[{"maxSkew":1,"topologyKey":"topology.kubernetes.io/zone","whenUnsatisfiable":"DoNotSchedule","labelSelector":{"matchLabels":{"app.kubernetes.io/name":"nginx-gateway-fabric","app.kubernetes.io/instance":"nginx-gateway"}}}]'
 
 echo "== Secrets (ESO)"
 render_all "$K/secrets" "$K/monitoring/externalsecret-grafana.yaml" | kubectl apply -f -
