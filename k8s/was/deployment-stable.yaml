@@ -61,3 +61,17 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
+            readOnlyRootFilesystem: true
+          # Tomcat's only writable paths; the app itself ships pre-unpacked in webapps/ROOT.
+          volumeMounts:
+            - { name: work, mountPath: /usr/local/tomcat/work }
+            - { name: temp, mountPath: /usr/local/tomcat/temp }
+            - { name: logs, mountPath: /usr/local/tomcat/logs }
+            - { name: catalina-conf, mountPath: /usr/local/tomcat/conf/Catalina }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: work, emptyDir: {} }
+        - { name: temp, emptyDir: {} }
+        - { name: logs, emptyDir: {} }
+        - { name: catalina-conf, emptyDir: {} }
+        - { name: tmp, emptyDir: {} }
