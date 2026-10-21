@@ -50,6 +50,7 @@ helm upgrade --install metrics-server metrics-server/metrics-server \
 helm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter \
   --version 1.0.6 -n kube-system -f "$CRITICAL" \
   --set settings.clusterName="$EKS_CLUSTER_NAME" \
+  --set-json "controller.env=[{\"name\":\"AWS_REGION\",\"value\":\"$AWS_REGION\"}]" \
   --set serviceAccount.create=false --set serviceAccount.name=karpenter
 
 helm upgrade --install keda kedacore/keda --version 2.15.2 -n keda -f "$CRITICAL"

@@ -71,6 +71,9 @@ managedNodeGroups:
     availabilityZones: [ap-northeast-2a, ap-northeast-2c]
     volumeType: gp3
     volumeEncrypted: true
+    # IMDSv2 only, and non-hostNetwork pods cannot reach the node role credentials.
+    disableIMDSv1: true
+    disablePodIMDS: true
     labels: { workload-tier: critical }
     taints:
       - { key: node-role, value: critical, effect: NoSchedule }
@@ -84,6 +87,9 @@ managedNodeGroups:
     availabilityZones: [ap-northeast-2a, ap-northeast-2c]
     volumeType: gp3
     volumeEncrypted: true
+    # IMDSv2 only, and non-hostNetwork pods cannot reach the node role credentials.
+    disableIMDSv1: true
+    disablePodIMDS: true
     labels: { workload-tier: platform }
     taints:
       - { key: node-role, value: platform, effect: NoSchedule }

@@ -65,7 +65,7 @@ secret_patterns = [
     (r"AKIA[0-9A-Z]{16}", "AWS access key id"),
     (r"(?i)aws_secret_access_key\s*[:=]", "AWS secret key"),
     (r"-----BEGIN [A-Z ]*PRIVATE KEY-----", "private key"),
-    (r"(?i)\b(password|passwd|secret|token)\b(?::\s+|\s*=\s*)['\"]?(?![\s'\"]*$)(?!\$|\{\{|<|file:)[^\s'\"]{4,}", "hard-coded credential"),
+    (r"(?i)\b(password|passwd|secret|token)\b(?::\s+|\s*=\s*)['\"]?(?![\s'\"]*$)(?!\$|\{\{|<|file:|env\.)[^\s'\"]{4,}", "hard-coded credential"),
     (r"\b\d{12}\b", "possible AWS account id"),
 ]
 for f in files:
