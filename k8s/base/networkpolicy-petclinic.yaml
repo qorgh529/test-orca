@@ -1,0 +1,73 @@
+# Default deny for every pod in petclinic, then allow only the flows the design needs.
+# Ingress allows live next to each workload (k8s/web|was/networkpolicy.yaml).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: petclinic
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: petclinic
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+          podSelector:
+            matchLabels: { k8s-app: kube-dns }
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: web-egress-to-was
+  namespace: petclinic
+spec:
+  podSelector:
+    matchLabels: { app: web }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: { app: was }
+      ports:
+        - { protocol: TCP, port: 8080 }
+---
+# RDS lives outside the cluster; its security group only admits the EKS cluster SG on 3306.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mysql-egress
+  namespace: petclinic
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: app, operator: In, values: [was, db-init, db-backup] }
+  policyTypes: [Egress]
+  egress:
+    - ports:
+        - { protocol: TCP, port: 3306 }
+---
+# Backup upload: S3 and STS (IRSA) over HTTPS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: db-backup-https-egress
+  namespace: petclinic
+spec:
+  podSelector:
+    matchLabels: { app: db-backup }
+  policyTypes: [Egress]
+  egress:
+    - ports:
+        - { protocol: TCP, port: 443 }

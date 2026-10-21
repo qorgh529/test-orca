@@ -48,7 +48,7 @@ addons:
   - name: vpc-cni
     # Required for k8s NetworkPolicy enforcement (k8s/web|was/networkpolicy.yaml).
     configurationValues: |-
-      {"enableNetworkPolicy":"true"}
+      {"enableNetworkPolicy":"true","nodeAgent":{"enablePolicyEventLogs":"true"}}
   - name: kube-proxy
   - name: coredns
     configurationValues: |-

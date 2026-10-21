@@ -25,6 +25,7 @@ tolerations:
 EOF
 
 echo "== Namespaces, StorageClass, Gateway API CRDs"
+kubectl apply -f "$K/base/namespace.yaml"
 kubectl apply -f "$K/base"
 kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.0/standard-install.yaml
 
