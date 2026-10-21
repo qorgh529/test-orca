@@ -5,6 +5,12 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
+# .env is created by copying .env.example and is sourced by every script: it must source cleanly.
+if ! (set -eu; set -a; . "$ROOT/.env.example") >/dev/null 2>&1; then
+  echo "FAIL .env.example does not source cleanly (quote values containing spaces)"
+  exit 1
+fi
+
 "${PYTHON:-python3}" - "$ROOT" <<'PY'
 import pathlib, re, subprocess, sys
 import yaml
