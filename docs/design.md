@@ -439,3 +439,4 @@ flowchart TD
 
 ### Q2. KEDA `TriggerAuthentication` (Step 5) — 생략함
 - 클러스터 내부 Prometheus(kube-prometheus-stack)에는 인증이 없어서 `TriggerAuthentication`이 참조할 자격 증명이 없다. 빈 리소스를 만들지 않고 생략했다. Prometheus 앞에 인증을 둘 계획이라면 알려 달라.
+- **답변 (사용자):** 생략을 유지한다. 대신 `k8s/monitoring/networkpolicy-prometheus.yaml`을 추가해 Prometheus `:9090` 접근을 KEDA와 Grafana로 제한했다.

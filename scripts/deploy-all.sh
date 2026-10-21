@@ -73,7 +73,7 @@ kubectl -n monitoring wait --for=condition=Ready externalsecret/grafana-admin --
 echo "== Monitoring (ng-platform) and logging (all nodes)"
 helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
   --version 65.8.1 -n monitoring -f <(render "$K/monitoring/kube-prometheus-values.yaml") --wait
-kubectl apply -f "$K/monitoring/servicemonitor-petclinic.yaml"
+kubectl apply -f "$K/monitoring/servicemonitor-petclinic.yaml" -f "$K/monitoring/networkpolicy-prometheus.yaml"
 helm upgrade --install aws-for-fluent-bit eks/aws-for-fluent-bit \
   --version 0.1.34 -n amazon-cloudwatch -f <(render "$K/logging/fluent-bit-values.yaml")
 
