@@ -1,0 +1,24 @@
+# JMX Exporter (javaagent 1.0.1) rules. JVM metrics (jvm_*) are exported by default.
+lowercaseOutputName: true
+lowercaseOutputLabelNames: true
+rules:
+  # Request counters per connector, e.g. tomcat_requestcount_total{protocol="http-nio",port="8080"}
+  # KEDA scales `was` on rate(tomcat_requestcount_total[1m]).
+  - pattern: 'Catalina<type=GlobalRequestProcessor, name="(\w+-\w+)-(\d+)"><>(requestCount|errorCount|bytesReceived|bytesSent|processingTime):'
+    name: tomcat_$3_total
+    labels:
+      protocol: "$1"
+      port: "$2"
+    type: COUNTER
+  - pattern: 'Catalina<type=ThreadPool, name="(\w+-\w+)-(\d+)"><>(currentThreadCount|currentThreadsBusy|maxThreads|connectionCount):'
+    name: tomcat_threadpool_$3
+    labels:
+      protocol: "$1"
+      port: "$2"
+    type: GAUGE
+  - pattern: 'Catalina<type=Manager, host=([-\w\.]+), context=([-\w/]*)><>(activeSessions):'
+    name: tomcat_session_$3
+    labels:
+      host: "$1"
+      context: "$2"
+    type: GAUGE
