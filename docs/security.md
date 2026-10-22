@@ -25,3 +25,21 @@
 - [x] `app/src/main/resources/spring/data-access.properties:11` — `jpa.showSql=true`가 기본 활성화되어 있어 운영 환경에서 모든 SQL 쿼리가 컨테이너 표준 출력(Fluent Bit → CloudWatch Logs)에 기록되며, 민감한 개인정보(Owner 이름, 주소, 전화번호 등)가 로그에 과다 노출될 수 있다. / 해결책: `jpa.showSql=${jpa.showSql:false}` 또는 `MySQL` 운영 프로필에서 `false`가 되도록 변경할 것. → 0b98cd5
 
 배포 가능 여부: No
+
+## Security Round 2 — 2026-10-22 (대상 커밋: b6d77ac)
+
+점검 범위: `git diff master...HEAD` 전체, Security Round 1 조치 내역 재검증 및 `docs/design.md` 보안 요구사항(§5.1~§5.4) 준수 여부.
+
+### Critical
+지적 사항 없음. (Round 1의 `k8s/base/networkpolicy-petclinic.yaml` Default Deny Ingress/Egress 정책 및 `infra/eksctl/cluster.yaml:51` VPC CNI 정책 이벤트 로깅 반영 확인 완료)
+
+### High
+지적 사항 없음. (Round 1의 `jq -n` 기반 안전한 JSON 생성, RDS `require_secure_transport=ON` 및 CloudWatch 로그 내보내기, `ng-critical`/`ng-platform`의 `disableIMDSv1: true`·`disablePodIMDS: true` 설정, `app/pom.xml` 전 프로필 평문 패스워드 제거 및 검증 스크립트 강화, `MySQL` 프로필 기동 시 자동 DB 초기화 비활성화 모두 반영 확인 완료)
+
+### Medium
+지적 사항 없음. (Round 1의 전 네임스페이스 PSS 레이블 적용, `was` 컨테이너 `readOnlyRootFilesystem: true` 및 `emptyDir` 마운트, `docker/web/nginx.conf` 보안 응답 헤더 추가, `k8s/gateway/alb-ingress.yaml`의 `drop_invalid_header_fields.enabled=true` 설정 모두 반영 확인 완료)
+
+### Low
+지적 사항 없음. (Round 1의 `app/src/main/resources/spring/data-access.properties:13` `jpa.showSql=false` 기본값 반영 확인 완료)
+
+배포 가능 여부: Yes
