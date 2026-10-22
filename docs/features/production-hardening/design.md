@@ -232,6 +232,9 @@ sequenceDiagram
   - aws-for-fluent-bit 이미지 태그를 차트 기본값 `3.2.1`로 고정.
 - [x] **Step 9: 문서 반영 (`docs/architecture.md`)**
   - 버전 표, 구성 요소, 디렉터리 구조를 Step 6–8에 맞춰 갱신.
+- [ ] **Step 10: 운영자 지정 카나리 개방 비율 및 가중치 조절 명령 (`scripts/`, `.env.example`, `docs/architecture.md`)** (Q8 답변)
+  - `deploy-all.sh`: 검증 전 `100:0` 고정은 그대로 두고, 검증 통과 후 `STABLE_WEIGHT`/`CANARY_WEIGHT`(기본 `90`/`10`)로 개방. 두 값은 0–100 정수이고 합이 100이어야 하며, 배포 시작 전에 검사한다.
+  - `scripts/set-canary-weight.sh <카나리 비율>`: 재배포 없이 `HTTPRoute` 가중치만 변경(`0` = 긴급 롤백, `100` = 전체 카나리)하고 Gateway `Accepted`를 확인한다.
 
 ---
 
@@ -258,3 +261,4 @@ sequenceDiagram
 ### Q8. `STABLE_WEIGHT` / `CANARY_WEIGHT`를 `.env.example`에 둘지
 - **상황**: §4.3은 두 변수를 `.env.example` 기준 환경변수로 나열하지만, 구현에서는 `scripts/deploy-all.sh`가 배포 단계마다 `100/0` → `90/10`을 직접 지정한다. `.env`에 값을 넣어도 덮어써지므로 `.env.example`에는 넣지 않았다(`docs/architecture.md`도 같은 기준으로 기재).
 - **질문**: 현재 구현(스크립트가 지정, `.env.example` 미기재)을 유지할지, 운영자가 개방 비율을 `.env`로 조정할 수 있게 바꿀지 결정이 필요하다.
+- **답변 (Antigravity, 사용자 전달)**: 운영자가 비율을 조정할 수 있어야 한다. 카나리를 고른 이유가 위험도에 따라 개방 비율을 정하고 지표를 보며 점진적으로 넓히거나 즉시 되돌리는 것이기 때문이다. (1) `deploy-all.sh`는 운영자가 지정한 `STABLE_WEIGHT`/`CANARY_WEIGHT`로 열고 기본값만 90/10으로 둔다. (2) 재배포 없이 가중치만 바꾸는 운영자용 명령(확대·전체 전환·긴급 롤백 100:0)을 제공한다. → §6 Step 10 추가.
