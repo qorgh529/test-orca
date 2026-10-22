@@ -230,7 +230,7 @@ sequenceDiagram
 - [x] **Step 8: `kube-prometheus-stack` `92.11.0`, `metrics-server` `3.14.0`, `aws-for-fluent-bit` `0.2.0` 상향 (`scripts/deploy-all.sh`, `k8s/monitoring/`, `k8s/logging/`)**
   - kube-prometheus-stack 92.x(Prometheus `v3.15.0`, Grafana 차트 14)에서 기존 values 키가 유지되는지 확인하고, PrometheusRule 단위 테스트를 promtool `3.15.0`으로 재검증.
   - aws-for-fluent-bit 이미지 태그를 차트 기본값 `3.2.1`로 고정.
-- [ ] **Step 9: 문서 반영 (`docs/architecture.md`)**
+- [x] **Step 9: 문서 반영 (`docs/architecture.md`)**
   - 버전 표, 구성 요소, 디렉터리 구조를 Step 6–8에 맞춰 갱신.
 
 ---
