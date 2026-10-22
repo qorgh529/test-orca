@@ -195,9 +195,10 @@ if 'p:maxActive="${jdbc.pool.maxActive}"' not in (root / "app/src/main/resources
     err("datasource-config.xml: dataSource must use ${jdbc.pool.maxActive}")
 
 # KEDA keeps a safe replica count when Prometheus is down.
-so = find("ScaledObject", "was-stable")
-if not so or not (so["spec"].get("fallback") or {}).get("replicas"):
-    err("ScaledObject/was-stable: fallback.replicas must be set")
+for name in ("was-stable", "was-canary"):
+    so = find("ScaledObject", name)
+    if not so or not (so["spec"].get("fallback") or {}).get("replicas"):
+        err(f"ScaledObject/{name}: fallback.replicas must be set")
 
 # Prometheus survives one AZ.
 if int(kps.get("prometheus", {}).get("prometheusSpec", {}).get("replicas", 1)) < 2:

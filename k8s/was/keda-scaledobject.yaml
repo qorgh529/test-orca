@@ -33,6 +33,9 @@ spec:
     name: was-canary
   minReplicaCount: 1
   maxReplicaCount: 3
+  fallback:
+    failureThreshold: 3
+    replicas: 2
   pollingInterval: 15
   cooldownPeriod: 300
   triggers:
