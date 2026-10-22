@@ -220,6 +220,19 @@ sequenceDiagram
   - `provision-aws-resources.sh` 전 단계 리소스 존재 여부 확인 및 재사용·갱신 로직 적용.
   - `validate-manifests.sh`에 이미지 태그 분리, 역할별 DB 시크릿 참조, JDBC Pool `maxActive <= 10`, KEDA `fallback`, Prometheus `replicas >= 2`, PDB, Alertmanager `url_file`, EKS 애드온 버전 고정 검사 추가.
 
+> Step 6–8은 Q7 사용자 결정(애드온 전체 상향, 서비스 오픈 전 진행, 1.36 신규 클러스터 기준)에 따라 추가한다. 이 단계들은 §1.3 세 번째 항목과 Q6의 "후속 작업 분리"를 대체한다.
+
+- [ ] **Step 6: Gateway API CRD `v1.6.3` 및 NGINX Gateway Fabric `2.8.0` 상향 (`scripts/deploy-all.sh`, `k8s/gateway/`)**
+  - Gateway API standard CRD를 `v1.2.0` → `v1.6.3`(NGF 2.8.0 지원 버전)으로 올리고 `--server-side`로 적용.
+  - NGF 2.x는 Gateway마다 데이터 플레인 Deployment/Service(`petclinic-gateway-nginx`)를 따로 만든다. Helm 값을 `nginx.*`(데이터 플레인: 2 Replicas, `ClusterIP`, `np-app`, AZ `DoNotSchedule`, 차트 PDB `minAvailable: 1`)과 `nginxGateway.*`(컨트롤 플레인: 2 Replicas, `np-app`)로 나누고, ALB Ingress 백엔드를 `petclinic-gateway-nginx:80`으로 변경. 차트가 PDB를 만들므로 `k8s/gateway/pdb-nginx-gateway.yaml`은 삭제.
+- [ ] **Step 7: AWS Load Balancer Controller `v3.6.1`(차트 `3.6.1`) 상향 (`scripts/deploy-all.sh`, `infra/aws/iam-policies/`)**
+  - v3부터 차트 버전이 앱 버전과 같다. `lbc-policy.json`을 업스트림 v3.6.1 `iam_policy.json`으로 교체(기존 파일은 v2.9.2 업스트림 원본과 동일).
+- [ ] **Step 8: `kube-prometheus-stack` `92.11.0`, `metrics-server` `3.14.0`, `aws-for-fluent-bit` `0.2.0` 상향 (`scripts/deploy-all.sh`, `k8s/monitoring/`, `k8s/logging/`)**
+  - kube-prometheus-stack 92.x(Prometheus `v3.15.0`, Grafana 차트 14)에서 기존 values 키가 유지되는지 확인하고, PrometheusRule 단위 테스트를 promtool `3.15.0`으로 재검증.
+  - aws-for-fluent-bit 이미지 태그를 차트 기본값 `3.2.1`로 고정.
+- [ ] **Step 9: 문서 반영 (`docs/architecture.md`)**
+  - 버전 표, 구성 요소, 디렉터리 구조를 Step 6–8에 맞춰 갱신.
+
 ---
 
 ## 구현 중 질문
@@ -240,6 +253,7 @@ sequenceDiagram
 ### Q7. 애드온 메이저 상향 범위 — 사용자 결정과 §1.3·Q6이 다름
 - **상황**: 2026-10-22 사용자가 NGF `2.x`, LBC `3.x`, `kube-prometheus-stack` `92.x`, metrics-server, aws-for-fluent-bit를 **전체** 상향하고, 서비스 오픈 전에 진행해 다운타임 문제를 없애며, 설계서를 먼저 작성(b 방법)하기로 결정했다. 그런데 본 설계서 §1.3과 Q6은 이 상향을 범위에서 제외하고 후속 기능으로 분리한다.
 - **질문**: 이 상향을 (a) 본 기능 설계에 Step으로 추가할지, (b) 별도 기능(`docs/features/<기능명>/design.md`)으로 설계할지 결정이 필요하다. 설계가 나오기 전까지 구현하지 않는다.
+- **답변 (사용자)**: (a) 본 설계서에 단계를 추가해 진행한다 → §6 Step 6–9 추가.
 
 ### Q8. `STABLE_WEIGHT` / `CANARY_WEIGHT`를 `.env.example`에 둘지
 - **상황**: §4.3은 두 변수를 `.env.example` 기준 환경변수로 나열하지만, 구현에서는 `scripts/deploy-all.sh`가 배포 단계마다 `100/0` → `90/10`을 직접 지정한다. `.env`에 값을 넣어도 덮어써지므로 `.env.example`에는 넣지 않았다(`docs/architecture.md`도 같은 기준으로 기재).
