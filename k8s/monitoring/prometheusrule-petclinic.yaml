@@ -15,8 +15,10 @@ spec:
           annotations:
             summary: "petclinic db-backup has not succeeded for over 26h"
         # Scaling queries to Prometheus are failing; was runs on the ScaledObject fallback (4 replicas).
+        # Scraped from the keda namespace without honorLabels, so the metric's own namespace label
+        # arrives as exported_namespace.
         - alert: PetClinicKedaMetricsError
-          expr: sum by (scaledObject) (increase(keda_scaled_object_errors_total{namespace="petclinic"}[5m])) > 0
+          expr: sum by (scaledObject) (increase(keda_scaled_object_errors_total{exported_namespace="petclinic"}[5m])) > 0
           for: 5m
           labels: { severity: warning }
           annotations:
