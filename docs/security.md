@@ -43,3 +43,27 @@
 지적 사항 없음. (Round 1의 `app/src/main/resources/spring/data-access.properties:13` `jpa.showSql=false` 기본값 반영 확인 완료)
 
 배포 가능 여부: Yes
+
+## Security Round 3 — 2026-10-22 (대상 커밋: 9f7953e)
+
+점검 범위: `git diff master...HEAD` 전체, `docs/design.md` 보완 요구사항(Step 8~12) 및 운영·보안·고가용성 심층 점검.
+
+### Critical
+지적 사항 없음.
+
+### High
+- [ ] `infra/aws/provision-aws-resources.sh:148`, `infra/aws/provision-aws-resources.sh:159`, `k8s/was/deployment-stable.yaml:41`, `k8s/jobs/cronjob-db-backup.yaml:55` — RDS 마스터 계정(`petclinic_admin`) 하나만 생성하여 `was-stable`/`was-canary`(애플리케이션), `db-init`(초기화), `db-backup`(백업)이 모두 동일한 마스터 권한 자격증명을 공유한다. 애플리케이션 침해 시 테이블 삭제(`DROP`)/권한 변경(`GRANT`) 등 과도한 DB 권한이 노출되어 최소 권한 원칙(§5.3.2)을 위반하며, ESO가 시크릿을 갱신해도 실행 중인 Pod 환경변수가 자동 갱신되지 않는다. / 해결책: `RDS_SECRET_NAME`(`petclinic_admin`: `db-init` 전용), `RDS_APP_SECRET_NAME`(`petclinic_app`: `SELECT, INSERT, UPDATE, DELETE`만 허용, `was` 전용), `RDS_BACKUP_SECRET_NAME`(`petclinic_backup`: `SELECT, SHOW VIEW, TRIGGER, LOCK TABLES, PROCESS`만 허용, `db-backup` 전용)으로 시크릿과 DB 계정을 분리하고, 시크릿 회전 시 롤링 재시작 절차를 반영할 것.
+- [ ] `app/src/main/resources/spring/datasource-config.xml:30`, `k8s/was/keda-scaledobject.yaml:11` — Tomcat JDBC Connection Pool에 `maxActive`, `maxIdle`, `maxWait` 상한이 설정되어 있지 않아 기본값(`maxActive=100`)이 적용된다. `was-stable`(최대 10개) + `was-canary` + 롤링 업데이트 시 최대 1,100개 이상의 연결을 요청하여 RDS `db.t3.medium`의 `max_connections` 한도를 고갈시킬 수 있다(가용성 침해/DoS 위험). / 해결책: `datasource-config.xml`(및 `data-access.properties`)에 `maxActive=10`, `maxIdle=5`, `minIdle=2`, `initialSize=2`, `maxWait=5000`, `testOnBorrow=true`, `validationQuery="SELECT 1"`을 명시하여 최대 확장 시에도 RDS 연결 예산 내로 제한할 것.
+- [ ] `k8s/was/deployment-stable.yaml:34`, `k8s/was/deployment-canary.yaml:34`, `k8s/web/deployment.yaml:35`, `k8s/web/deployment.yaml:105`, `scripts/deploy-all.sh:99` — Stable과 Canary Deployment가 모두 동일한 `${IMAGE_TAG}`를 참조하여 새 버전 배포 시 Stable과 Canary가 동시에 덮어써지며, `deploy-all.sh`에서 `httproute-canary.yaml`(10% 카나리)을 먼저 적용한 뒤 Canary rollout 및 검증을 수행하여 실패 시에도 사용자 트래픽 10%가 장애 버전으로 유입된다. / 해결책: `STABLE_IMAGE_TAG`와 `CANARY_IMAGE_TAG`(및 `STABLE_WEIGHT`/`CANARY_WEIGHT`)를 분리하고, `deploy-all.sh`에서 카나리 가중치 `0%`(`100/0`) 상태로 Canary를 먼저 롤아웃 및 `X-Canary: always` 동적 경로 검증 후 통과 시에만 `90/10`으로 개방(실패 시 `100/0` 유지·롤백)하도록 수정할 것.
+- [ ] `k8s/monitoring/kube-prometheus-values.yaml:13`, `k8s/was/keda-scaledobject.yaml:14`, `k8s/web/deployment.yaml:22`, `k8s/was/deployment-stable.yaml:22` — Prometheus가 단일 레플리카(기본값 1) 및 단일 AZ 귀속 EBS `gp3` PVC로 동작하며, KEDA `ScaledObject`에 `fallback` 설정이 없어 해당 AZ 장애 시 모니터링과 `was` 오토스케일링이 동시에 마비된다. 또한 `web`과 `was`에 `PodDisruptionBudget`(PDB)이 없고 `whenUnsatisfiable: ScheduleAnyway`로 되어 있어 노드 교체/장애 시 가용성이 저하될 수 있다. / 해결책: `kube-prometheus-values.yaml`에 Prometheus `replicas: 2` 및 AZ 분산 설정을 추가하고, `keda-scaledobject.yaml`에 `fallback: { failureThreshold: 3, replicas: 4 }`를 설정하며, `web`/`was`용 PDB(`k8s/web/pdb.yaml`, `k8s/was/pdb.yaml`)와 `DoNotSchedule` AZ 분산을 구성할 것.
+- [ ] `infra/eksctl/cluster.yaml:9`, `infra/eksctl/cluster.yaml:58`, `infra/karpenter/ec2nodeclass.yaml:10` — 2026-10 기준 확장 지원 종료가 임박한 EKS `1.31`과 구버전 AMI(`al2023@v20241024`)가 고정되어 있어 보안 패치 수명주기 및 신규 구축 기준에 부합하지 않는다. / 해결책: 표준 지원 버전인 EKS `1.33`과 호환되는 AL2023 AMI 고정 릴리스(`al2023@v20260923` 등) 및 `aws-ebs-csi-driver`(`v1.37.0-eksbuild.1` 이상) 호환 버전 세트로 상향할 것.
+
+### Medium
+- [ ] `k8s/was/deployment-canary.yaml:9`, `k8s/web/deployment.yaml:80` — Canary Deployment(`was-canary`, `web-canary`)가 `replicas: 1`로 고정되어 있고 오토스케일러가 없어 전체 트래픽이 증가할 때 10%를 받는 Canary가 먼저 포화(병목/5xx 유발)될 수 있다. / 해결책: `k8s/web/hpa.yaml`에 `web-canary` HPA(`minReplicas: 1`, `maxReplicas: 4`)를 추가하고, `k8s/was/keda-scaledobject.yaml`에 `was-canary`용 `ScaledObject`(`minReplicaCount: 1`, `maxReplicaCount: 3`)를 추가할 것.
+- [ ] `k8s/monitoring/kube-prometheus-values.yaml:28` — Alertmanager가 기본 `null` receiver 상태로 배포되며 핵심 장애(DB 백업 실패, KEDA 지표 조회 실패, HTTP 5xx 급증)에 대한 `PrometheusRule`이 정의되어 있지 않아 보안·운영 사고 발생 시 알림이 전달되지 않는다. / 해결책: `kube-prometheus-values.yaml`에 `${ALERTMANAGER_WEBHOOK_URL}` 수신처를 구성하고, `k8s/monitoring/prometheusrule-petclinic.yaml`에 백업 실패·KEDA 오류·5xx 급증 알림 규칙을 추가할 것.
+- [ ] `infra/aws/provision-aws-resources.sh:8`, `scripts/validate-manifests.sh:109`, `docs/review.md:65` — `provision-aws-resources.sh`가 재실행 불가(non-idempotent) 구조여서 일부 리소스 생성 후 중단 시 복구가 어렵고, `validate-manifests.sh`가 신규 운영·보안 요구사항(DB 계정 분리, 커넥션 풀 상한, KEDA fallback, PDB, Prometheus HA)을 검사하지 않으며, `docs/review.md`의 마지막 총평이 이전 미해결 상태(`No`)로 남아 있다. / 해결책: `provision-aws-resources.sh`의 각 생성 단계에 존재 여부 확인(멱등성) 로직을 추가하고, `validate-manifests.sh` 검증 규칙을 확장하며, 리뷰 문서 상태를 최신화할 것.
+
+### Low
+지적 사항 없음.
+
+배포 가능 여부: No
