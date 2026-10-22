@@ -1,0 +1,33 @@
+# aws-for-fluent-bit (eks-charts) — DaemonSet on every node, container logs -> CloudWatch Logs.
+# SA `fluent-bit` (IRSA, write-only to one log group) is created by eksctl.
+# Rendered with envsubst by scripts/deploy-all.sh.
+image:
+  repository: public.ecr.aws/aws-observability/aws-for-fluent-bit
+  tag: 2.32.2
+
+serviceAccount:
+  create: false
+  name: fluent-bit
+
+cloudWatchLogs:
+  enabled: true
+  region: ${AWS_REGION}
+  logGroupName: ${CW_LOG_GROUP_NAME}
+  logStreamPrefix: "fluentbit-"
+  # Group is pre-created by infra/aws/provision-aws-resources.sh; IAM does not allow CreateLogGroup.
+  autoCreateGroup: false
+
+cloudWatch:
+  enabled: false
+firehose:
+  enabled: false
+kinesis:
+  enabled: false
+elasticsearch:
+  enabled: false
+opensearch:
+  enabled: false
+
+# np-app (no taint), ng-critical and ng-platform (tainted): tolerate everything.
+tolerations:
+  - operator: Exists

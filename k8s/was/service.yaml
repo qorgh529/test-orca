@@ -1,0 +1,12 @@
+# Combined service over stable + canary pods. It matches the web image's default
+# WAS_UPSTREAM_HOST (`was`); the web Deployments override it per track.
+apiVersion: v1
+kind: Service
+metadata:
+  name: was
+  namespace: petclinic
+  labels: { app: was }
+spec:
+  selector: { app: was }
+  ports:
+    - { name: http, port: 8080, targetPort: http }

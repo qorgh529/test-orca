@@ -1,0 +1,66 @@
+# Loads app/src/main/resources/db/mysql/{schema,data}.sql (ConfigMap petclinic-db-scripts,
+# created by scripts/deploy-all.sh). Both scripts are idempotent (IF NOT EXISTS / INSERT IGNORE).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-init
+  namespace: petclinic
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: db-init
+    spec:
+      restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      nodeSelector:
+        workload-tier: critical
+      tolerations:
+        - key: node-role
+          operator: Equal
+          value: critical
+          effect: NoSchedule
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mysql
+          image: mysql:8.0.39
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              for f in schema.sql data.sql; do
+                mysql --ssl-mode=REQUIRED -h "$RDS_HOST" -P "$RDS_PORT" -u "$JDBC_USERNAME" "$RDS_DB_NAME" < "/scripts/$f"
+              done
+          env:
+            - name: RDS_HOST
+              valueFrom: { secretKeyRef: { name: petclinic-rds-secret, key: RDS_HOST } }
+            - name: RDS_PORT
+              valueFrom: { secretKeyRef: { name: petclinic-rds-secret, key: RDS_PORT } }
+            - name: RDS_DB_NAME
+              valueFrom: { secretKeyRef: { name: petclinic-rds-secret, key: RDS_DB_NAME } }
+            - name: JDBC_USERNAME
+              valueFrom: { secretKeyRef: { name: petclinic-rds-secret, key: JDBC_USERNAME } }
+            - name: MYSQL_PWD
+              valueFrom: { secretKeyRef: { name: petclinic-rds-secret, key: JDBC_PASSWORD } }
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: scripts
+          configMap:
+            name: petclinic-db-scripts

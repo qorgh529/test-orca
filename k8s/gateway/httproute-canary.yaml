@@ -1,0 +1,24 @@
+# Canary split: change the weights to shift traffic; `X-Canary: always` pins a request to canary.
+# No hostname match: ALB health checks arrive with the target IP as Host.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: petclinic
+  namespace: petclinic
+spec:
+  parentRefs:
+    - name: petclinic-gateway
+      namespace: nginx-gateway
+      sectionName: http
+  rules:
+    - matches:
+        - path: { type: PathPrefix, value: / }
+          headers:
+            - { name: X-Canary, value: always }
+      backendRefs:
+        - { name: web-canary, port: 80 }
+    - matches:
+        - path: { type: PathPrefix, value: / }
+      backendRefs:
+        - { name: web, port: 80, weight: 90 }
+        - { name: web-canary, port: 80, weight: 10 }

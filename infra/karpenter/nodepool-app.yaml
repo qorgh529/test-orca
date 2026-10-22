@@ -1,0 +1,83 @@
+# np-app = On-Demand base (design §4.2). np-app-spot takes only what overflows np-app's limits.
+# Both share the workload-tier=app label and EC2NodeClass np-app, so workloads need no changes.
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: np-app
+spec:
+  # Higher weight: Karpenter fills this pool first, up to its limits.
+  weight: 100
+  template:
+    metadata:
+      labels:
+        workload-tier: app
+    spec:
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: np-app
+      requirements:
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["on-demand"]
+        - key: karpenter.k8s.aws/instance-family
+          operator: In
+          values: ["c6i", "m6i", "t3"]
+        - key: karpenter.k8s.aws/instance-size
+          operator: In
+          values: ["large", "xlarge", "2xlarge"]
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+        - key: topology.kubernetes.io/zone
+          operator: In
+          values: ["ap-northeast-2a", "ap-northeast-2c"]
+      expireAfter: 720h
+  limits:
+    cpu: "16"
+    memory: 64Gi
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 1m
+    budgets:
+      - nodes: "20%"
+---
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: np-app-spot
+spec:
+  template:
+    metadata:
+      labels:
+        workload-tier: app
+    spec:
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: np-app
+      requirements:
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["spot"]
+        - key: karpenter.k8s.aws/instance-family
+          operator: In
+          values: ["c6i", "m6i", "t3"]
+        - key: karpenter.k8s.aws/instance-size
+          operator: In
+          values: ["large", "xlarge", "2xlarge"]
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+        - key: topology.kubernetes.io/zone
+          operator: In
+          values: ["ap-northeast-2a", "ap-northeast-2c"]
+      expireAfter: 720h
+  limits:
+    cpu: "48"
+    memory: 192Gi
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 1m
+    budgets:
+      - nodes: "20%"

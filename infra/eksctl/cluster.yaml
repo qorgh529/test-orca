@@ -1,0 +1,95 @@
+# Rendered with envsubst by infra/aws/provision-aws-resources.sh (cluster phase).
+# IAM policies referenced below are created in the `pre-cluster` phase.
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: ${EKS_CLUSTER_NAME}
+  region: ${AWS_REGION}
+  version: "1.31"
+  tags:
+    karpenter.sh/discovery: ${EKS_CLUSTER_NAME}
+
+vpc:
+  id: ${VPC_ID}
+  subnets:
+    public:
+      ap-northeast-2a:
+        id: "${PUBLIC_SUBNET_A_ID}"
+      ap-northeast-2c:
+        id: "${PUBLIC_SUBNET_C_ID}"
+    private:
+      ap-northeast-2a:
+        id: "${APP_PRIVATE_SUBNET_A_ID}"
+      ap-northeast-2c:
+        id: "${APP_PRIVATE_SUBNET_C_ID}"
+
+iam:
+  withOIDC: true
+  serviceAccounts:
+    - metadata: { name: aws-load-balancer-controller, namespace: kube-system }
+      attachPolicyARNs: ["arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${EKS_CLUSTER_NAME}-lbc"]
+    - metadata: { name: karpenter, namespace: kube-system }
+      attachPolicyARNs: ["arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${EKS_CLUSTER_NAME}-karpenter-controller"]
+    - metadata: { name: external-secrets, namespace: external-secrets }
+      attachPolicyARNs: ["arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${EKS_CLUSTER_NAME}-eso"]
+    - metadata: { name: fluent-bit, namespace: amazon-cloudwatch }
+      attachPolicyARNs: ["arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${EKS_CLUSTER_NAME}-fluent-bit"]
+    - metadata: { name: db-backup, namespace: petclinic }
+      attachPolicyARNs: ["arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${EKS_CLUSTER_NAME}-db-backup"]
+
+# Nodes launched by Karpenter (np-app) join with this role.
+iamIdentityMappings:
+  - arn: "arn:aws:iam::${AWS_ACCOUNT_ID}:role/KarpenterNodeRole-${EKS_CLUSTER_NAME}"
+    username: "system:node:{{EC2PrivateDNSName}}"
+    groups: ["system:bootstrappers", "system:nodes"]
+
+addons:
+  - name: vpc-cni
+    # Required for k8s NetworkPolicy enforcement (k8s/web|was/networkpolicy.yaml).
+    configurationValues: |-
+      {"enableNetworkPolicy":"true","nodeAgent":{"enablePolicyEventLogs":"true"}}
+  - name: kube-proxy
+  - name: coredns
+    configurationValues: |-
+      {"nodeSelector":{"workload-tier":"critical"},
+       "tolerations":[{"key":"node-role","operator":"Equal","value":"critical","effect":"NoSchedule"}]}
+  - name: aws-ebs-csi-driver
+    version: v1.36.0-eksbuild.1
+    attachPolicyARNs: ["arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"]
+    configurationValues: |-
+      {"controller":{"nodeSelector":{"workload-tier":"critical"},
+       "tolerations":[{"key":"node-role","operator":"Equal","value":"critical","effect":"NoSchedule"}]}}
+
+managedNodeGroups:
+  - name: ng-critical
+    instanceType: m6i.large
+    minSize: 2
+    maxSize: 4
+    desiredCapacity: 2
+    privateNetworking: true
+    availabilityZones: [ap-northeast-2a, ap-northeast-2c]
+    volumeType: gp3
+    volumeEncrypted: true
+    # IMDSv2 only, and non-hostNetwork pods cannot reach the node role credentials.
+    disableIMDSv1: true
+    disablePodIMDS: true
+    labels: { workload-tier: critical }
+    taints:
+      - { key: node-role, value: critical, effect: NoSchedule }
+
+  - name: ng-platform
+    instanceType: m6i.large
+    minSize: 2
+    maxSize: 4
+    desiredCapacity: 2
+    privateNetworking: true
+    availabilityZones: [ap-northeast-2a, ap-northeast-2c]
+    volumeType: gp3
+    volumeEncrypted: true
+    # IMDSv2 only, and non-hostNetwork pods cannot reach the node role credentials.
+    disableIMDSv1: true
+    disablePodIMDS: true
+    labels: { workload-tier: platform }
+    taints:
+      - { key: node-role, value: platform, effect: NoSchedule }

@@ -1,0 +1,63 @@
+# kube-prometheus-stack 65.x — everything pinned to ng-platform, state on encrypted gp3 PVCs.
+# Rendered with envsubst by scripts/deploy-all.sh.
+x-platform: &platform
+  nodeSelector:
+    workload-tier: platform
+  tolerations:
+    - key: node-role
+      operator: Equal
+      value: platform
+      effect: NoSchedule
+
+prometheus:
+  prometheusSpec:
+    <<: *platform
+    retention: 15d
+    # Pick up ServiceMonitors without the Helm release label (servicemonitor-petclinic.yaml).
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: gp3
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 50Gi
+
+alertmanager:
+  alertmanagerSpec:
+    <<: *platform
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: gp3
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 10Gi
+
+grafana:
+  <<: *platform
+  admin:
+    # Synced from Secrets Manager (${GRAFANA_ADMIN_SECRET_NAME}) by externalsecret-grafana.yaml.
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
+  persistence:
+    enabled: true
+    storageClassName: gp3
+    size: 10Gi
+
+prometheusOperator:
+  <<: *platform
+  admissionWebhooks:
+    patch:
+      <<: *platform
+
+kube-state-metrics:
+  <<: *platform
+
+prometheus-node-exporter:
+  tolerations:
+    - operator: Exists

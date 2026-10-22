@@ -1,0 +1,102 @@
+# Daily mysqldump -> s3://${BACKUP_S3_BUCKET_NAME}/petclinic/ (SSE-KMS).
+# Dump runs in an init container; upload uses the db-backup SA (IRSA: s3:PutObject on that prefix only).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: db-backup
+  namespace: petclinic
+spec:
+  schedule: "0 3 * * *"
+  timeZone: Asia/Seoul
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app: db-backup
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: db-backup
+          nodeSelector:
+            workload-tier: critical
+          tolerations:
+            - key: node-role
+              operator: Equal
+              value: critical
+              effect: NoSchedule
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            fsGroup: 10001
+            seccompProfile:
+              type: RuntimeDefault
+          initContainers:
+            - name: dump
+              image: mysql:8.0.39
+              command: ["/bin/bash", "-ec"]
+              args:
+                - |
+                  set -o pipefail
+                  mysqldump --ssl-mode=REQUIRED -h "$RDS_HOST" -P "$RDS_PORT" -u "$JDBC_USERNAME" \
+                    --single-transaction --no-tablespaces --set-gtid-purged=OFF "$RDS_DB_NAME" \
+                    | gzip > /backup/petclinic.sql.gz
+              env:
+                - name: RDS_HOST
+                  valueFrom: { secretKeyRef: { name: petclinic-rds-secret, key: RDS_HOST } }
+                - name: RDS_PORT
+                  valueFrom: { secretKeyRef: { name: petclinic-rds-secret, key: RDS_PORT } }
+                - name: RDS_DB_NAME
+                  valueFrom: { secretKeyRef: { name: petclinic-rds-secret, key: RDS_DB_NAME } }
+                - name: JDBC_USERNAME
+                  valueFrom: { secretKeyRef: { name: petclinic-rds-secret, key: JDBC_USERNAME } }
+                - name: MYSQL_PWD
+                  valueFrom: { secretKeyRef: { name: petclinic-rds-secret, key: JDBC_PASSWORD } }
+              resources:
+                requests: { cpu: 100m, memory: 128Mi }
+                limits: { cpu: 500m, memory: 512Mi }
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+          containers:
+            - name: upload
+              image: amazon/aws-cli:2.18.0
+              command: ["/bin/sh", "-ec"]
+              args:
+                - |
+                  aws s3 cp /backup/petclinic.sql.gz \
+                    "s3://${BACKUP_S3_BUCKET_NAME}/petclinic/petclinic-$(date -u +%Y%m%dT%H%M%SZ).sql.gz" \
+                    --sse aws:kms
+              env:
+                - name: HOME
+                  value: /tmp
+                - name: AWS_REGION
+                  value: ${AWS_REGION}
+              resources:
+                requests: { cpu: 50m, memory: 128Mi }
+                limits: { cpu: 500m, memory: 256Mi }
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: backup
+              emptyDir: {}
+            - name: tmp
+              emptyDir: {}
