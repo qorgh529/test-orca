@@ -6,7 +6,7 @@ set -euo pipefail
 
 require AWS_REGION AWS_ACCOUNT_ID EKS_CLUSTER_NAME VPC_ID PUBLIC_SUBNET_A_ID PUBLIC_SUBNET_C_ID \
   DOMAIN_NAME ROUTE53_HOSTED_ZONE_ID ACM_CERTIFICATE_ARN WAF_WEB_ACL_ARN \
-  ECR_WEB_REPOSITORY_URI ECR_WAS_REPOSITORY_URI IMAGE_TAG \
+  ECR_WEB_REPOSITORY_URI ECR_WAS_REPOSITORY_URI STABLE_IMAGE_TAG CANARY_IMAGE_TAG \
   RDS_SECRET_NAME RDS_APP_SECRET_NAME RDS_BACKUP_SECRET_NAME GRAFANA_ADMIN_SECRET_NAME PROMETHEUS_SERVER_URL CW_LOG_GROUP_NAME BACKUP_S3_BUCKET_NAME
 
 "$ROOT/scripts/validate-manifests.sh"
@@ -95,13 +95,12 @@ kubectl -n petclinic delete job db-init --ignore-not-found
 render_all "$K/jobs" | kubectl apply -f -
 kubectl -n petclinic wait --for=condition=Complete job/db-init --timeout=300s
 
-echo "== Workloads and routing"
+echo "== Workloads and routing (canary held at 0% until it passes the check below)"
 render_all "$K/was" | kubectl apply -f -
 render_all "$K/web" | kubectl apply -f -
-render_all "$K/gateway" | kubectl apply -f -
+STABLE_WEIGHT=100 CANARY_WEIGHT=0 render_all "$K/gateway" | kubectl apply -f -
 kubectl -n petclinic rollout status deploy/was-stable --timeout=600s
 kubectl -n petclinic rollout status deploy/web --timeout=300s
-# The HTTPRoute already sends 10% to canary, so a broken canary must fail the deploy too.
 kubectl -n petclinic rollout status deploy/was-canary --timeout=600s
 kubectl -n petclinic rollout status deploy/web-canary --timeout=300s
 
@@ -125,9 +124,13 @@ aws route53 change-resource-record-sets --hosted-zone-id "$ROUTE53_HOSTED_ZONE_I
 echo "== Canary path check (X-Canary: always)"
 ok=""
 for _ in $(seq 1 30); do
-  if curl -fsS -o /dev/null --max-time 10 --connect-to "$DOMAIN_NAME:443:$alb:443"       -H "X-Canary: always" "https://$DOMAIN_NAME/owners?lastName="; then ok=1; break; fi
+  if curl -fsS -o /dev/null --max-time 10 --connect-to "$DOMAIN_NAME:443:$alb:443" \
+      -H "X-Canary: always" "https://$DOMAIN_NAME/owners?lastName="; then ok=1; break; fi
   sleep 10
 done
-[ -n "$ok" ] || { echo "canary path check failed: https://$DOMAIN_NAME/owners via X-Canary: always" >&2; exit 1; }
+[ -n "$ok" ] || { echo "canary path check failed: https://$DOMAIN_NAME/owners via X-Canary: always; canary stays at 0%" >&2; exit 1; }
+
+echo "== Open canary: 90/10"
+STABLE_WEIGHT=90 CANARY_WEIGHT=10 render "$K/gateway/httproute-canary.yaml" | kubectl apply -f -
 
 echo "Done: https://$DOMAIN_NAME"

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Offline checks (no cluster needed). Requires python3 + PyYAML.
-#   1. YAML syntax           2. no :latest / untagged images
+#   1. YAML syntax           2. no :latest / untagged images (templated: STABLE/CANARY_IMAGE_TAG)
 #   3. no plaintext secrets  4. node-tier placement + non-root securityContext
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -34,8 +34,8 @@ for f in yamls:
 # 2. Images pinned
 def check_image(where, image):
     if "${" in image:
-        if not image.endswith(":${IMAGE_TAG}"):
-            err(f"{where}: templated image must use :${{IMAGE_TAG}}: {image}")
+        if not image.endswith((":${STABLE_IMAGE_TAG}", ":${CANARY_IMAGE_TAG}")):
+            err(f"{where}: templated image must use :${{STABLE_IMAGE_TAG}} or :${{CANARY_IMAGE_TAG}}: {image}")
         return
     name = image.split("@")[0].rsplit("/", 1)[-1]
     if ":" not in name and "@" not in image:
