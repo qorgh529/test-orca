@@ -443,7 +443,7 @@ flowchart TD
     4. `np-app`, `ng-critical`, `ng-platform` 노드 분리(`nodeSelector`/`tolerations`) 및 Non-root `securityContext` 적용 여부 확인
   - 커밋: `feat: add deployment automation and manifest validation scripts`
 
-- [ ] **Step 8: 지원 버전 상향 (EKS 1.33 및 호환 애드온·AMI 세트) (`infra/eksctl/`, `infra/karpenter/`)**
+- [x] **Step 8: 지원 버전 상향 (EKS 1.33 및 호환 애드온·AMI 세트) (`infra/eksctl/`, `infra/karpenter/`)**
   - 2026년 10월 기준 확장 지원 종료가 임박한 EKS `1.31` 대신 표준 지원 버전인 **EKS `1.33`**으로 `infra/eksctl/cluster.yaml`의 `version`을 상향하고, `aws-ebs-csi-driver` 애드온 버전(`v1.37.0-eksbuild.1` 등 1.33 호환 버전) 및 `infra/karpenter/ec2nodeclass.yaml`의 AL2023 AMI alias(`al2023@v20260923` 등 최신 고정 릴리스)를 호환 세트로 업데이트.
   - 커밋: `fix: upgrade EKS to 1.33 and bump compatible AL2023 AMI and EBS CSI versions`
 
@@ -507,3 +507,13 @@ flowchart TD
 ### Q5. Step 12의 `docs/review.md` 정합성 정리 — CLAUDE.md와 충돌
 - Step 12는 `docs/review.md`의 이전 라운드 미해결 표기를 정리하라고 하지만, CLAUDE.md는 리뷰어가 쓴 내용을 구현 담당이 수정하지 못하게 한다(체크 표시만 허용). 지적된 총평(`No`)은 리뷰어가 쓴 문장이라 고치지 않았다. 리뷰어(Codex)가 다음 라운드에서 갱신하는 것으로 처리할지 정해 달라.
 - **답변 (사용자):** 다음 라운드에서 리뷰어가 갱신한다.
+
+### Q6. Step 8 후속 — 1.36에서 버전을 올리지 않은 애드온 (사용자 결정: 필수만 먼저)
+- Step 8은 1.36을 공식 지원하지 않는 것만 올렸다: EKS 1.36, AMI `al2023@v20260930`, Karpenter 1.15.0, KEDA 2.21.0, ESO 2.13.0(API `v1`). 커밋 0b1988a.
+- 그대로 둔 것과 올릴 때 필요한 작업:
+  - NGF 1.5.1 → 2.x: 제자리 업그레이드가 안 되어 재설치가 필요하고 짧은 다운타임이 생긴다. 데이터 플레인이 Gateway별 Deployment로 바뀌어 ALB가 가리키는 Service도 바뀐다. Gateway API CRD도 1.2 → 1.6으로 올라간다.
+  - LBC 차트 1.9.2(2.9) → 3.x: 메이저 버전 변경이다.
+  - kube-prometheus-stack 65.8.1 → 92.x: CRD를 수동으로 업그레이드해야 한다.
+  - metrics-server 3.12.2 → 3.14.0, aws-for-fluent-bit 0.1.34 → 0.2.x.
+- 확인하지 못한 것: AWS 자격 증명이 없어 1.36용 `aws-ebs-csi-driver` eksbuild 버전을 조회하지 못했다. 그래서 고정을 풀고(EKS 기본 빌드 설치) `infra/eksctl/cluster.yaml`에 고정 방법을 주석으로 남겼다.
+- 범위 밖: 기존 1.31 클러스터를 제자리에서 1.36으로 올리는 절차(마이너 버전 단계별 상향, ESO 0.16 경유)는 다루지 않았다. 지금 구성은 새 클러스터 생성 기준이다.
