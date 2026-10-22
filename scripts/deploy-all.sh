@@ -101,6 +101,9 @@ render_all "$K/web" | kubectl apply -f -
 render_all "$K/gateway" | kubectl apply -f -
 kubectl -n petclinic rollout status deploy/was-stable --timeout=600s
 kubectl -n petclinic rollout status deploy/web --timeout=300s
+# The HTTPRoute already sends 10% to canary, so a broken canary must fail the deploy too.
+kubectl -n petclinic rollout status deploy/was-canary --timeout=600s
+kubectl -n petclinic rollout status deploy/web-canary --timeout=300s
 
 echo "== Route 53 alias -> ALB"
 alb=""
@@ -116,5 +119,15 @@ aws route53 change-resource-record-sets --hosted-zone-id "$ROUTE53_HOSTED_ZONE_I
   "$(jq -n --arg name "$DOMAIN_NAME" --arg zone "$alb_zone" --arg alb "$alb" '{Changes: [{Action: "UPSERT",
       ResourceRecordSet: {Name: $name, Type: "A",
         AliasTarget: {HostedZoneId: $zone, DNSName: $alb, EvaluateTargetHealth: true}}}]}')" >/dev/null
+
+# End-to-end canary check: web-canary /healthz does not touch WAS, so hit a page served by was-canary.
+# --connect-to goes straight to the ALB (no wait on DNS) while TLS still validates against DOMAIN_NAME.
+echo "== Canary path check (X-Canary: always)"
+ok=""
+for _ in $(seq 1 30); do
+  if curl -fsS -o /dev/null --max-time 10 --connect-to "$DOMAIN_NAME:443:$alb:443"       -H "X-Canary: always" "https://$DOMAIN_NAME/owners?lastName="; then ok=1; break; fi
+  sleep 10
+done
+[ -n "$ok" ] || { echo "canary path check failed: https://$DOMAIN_NAME/owners via X-Canary: always" >&2; exit 1; }
 
 echo "Done: https://$DOMAIN_NAME"
