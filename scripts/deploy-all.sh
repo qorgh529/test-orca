@@ -7,7 +7,8 @@ set -euo pipefail
 require AWS_REGION AWS_ACCOUNT_ID EKS_CLUSTER_NAME VPC_ID PUBLIC_SUBNET_A_ID PUBLIC_SUBNET_C_ID \
   DOMAIN_NAME ROUTE53_HOSTED_ZONE_ID ACM_CERTIFICATE_ARN WAF_WEB_ACL_ARN \
   ECR_WEB_REPOSITORY_URI ECR_WAS_REPOSITORY_URI STABLE_IMAGE_TAG CANARY_IMAGE_TAG \
-  RDS_SECRET_NAME RDS_APP_SECRET_NAME RDS_BACKUP_SECRET_NAME GRAFANA_ADMIN_SECRET_NAME PROMETHEUS_SERVER_URL CW_LOG_GROUP_NAME BACKUP_S3_BUCKET_NAME
+  RDS_SECRET_NAME RDS_APP_SECRET_NAME RDS_BACKUP_SECRET_NAME GRAFANA_ADMIN_SECRET_NAME PROMETHEUS_SERVER_URL CW_LOG_GROUP_NAME BACKUP_S3_BUCKET_NAME \
+  ALERTMANAGER_WEBHOOK_URL
 
 "$ROOT/scripts/validate-manifests.sh"
 
@@ -53,8 +54,6 @@ helm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter \
   --set-json "controller.env=[{\"name\":\"AWS_REGION\",\"value\":\"$AWS_REGION\"}]" \
   --set serviceAccount.create=false --set serviceAccount.name=karpenter
 
-helm upgrade --install keda kedacore/keda --version 2.15.2 -n keda -f "$CRITICAL"
-
 helm upgrade --install external-secrets external-secrets/external-secrets \
   --version 0.10.4 -n external-secrets -f "$CRITICAL" \
   --set-json 'webhook.nodeSelector={"workload-tier":"critical"}' \
@@ -82,7 +81,11 @@ kubectl -n monitoring wait --for=condition=Ready externalsecret/grafana-admin --
 echo "== Monitoring (ng-platform) and logging (all nodes)"
 helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
   --version 65.8.1 -n monitoring -f <(render "$K/monitoring/kube-prometheus-values.yaml") --wait
-kubectl apply -f "$K/monitoring/servicemonitor-petclinic.yaml" -f "$K/monitoring/networkpolicy-prometheus.yaml"
+kubectl apply -f "$K/monitoring/servicemonitor-petclinic.yaml" -f "$K/monitoring/networkpolicy-prometheus.yaml" \
+  -f "$K/monitoring/prometheusrule-petclinic.yaml"
+# After the monitoring stack: the operator-metrics ServiceMonitor needs its CRD (PetClinicKedaMetricsError).
+helm upgrade --install keda kedacore/keda --version 2.15.2 -n keda -f "$CRITICAL" \
+  --set prometheus.operator.enabled=true --set prometheus.operator.serviceMonitor.enabled=true
 helm upgrade --install aws-for-fluent-bit eks/aws-for-fluent-bit \
   --version 0.1.34 -n amazon-cloudwatch -f <(render "$K/logging/fluent-bit-values.yaml")
 

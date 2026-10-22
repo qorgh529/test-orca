@@ -9,6 +9,10 @@ spec:
     name: was-stable
   minReplicaCount: 2
   maxReplicaCount: 10
+  # Prometheus unreachable for 3 polls: hold 4 replicas instead of freezing at the last value.
+  fallback:
+    failureThreshold: 3
+    replicas: 4
   pollingInterval: 15
   cooldownPeriod: 300
   triggers:
