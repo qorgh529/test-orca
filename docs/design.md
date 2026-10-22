@@ -445,3 +445,4 @@ flowchart TD
 - 문제: 업스트림 버그다. flatpickr가 `2026-10-21` 형식을 보내는데 `Pet.birthDate`와 `Visit.date`는 `@DateTimeFormat(pattern = "yyyy/MM/dd")`만 받는다. 그래서 달력으로 날짜를 고르면 펫/방문 등록이 거절된다.
 - 충돌: §1.3은 화면 UI와 도메인 모델 수정을 금지한다.
 - 제안: 두 JSP의 `flatpickr("#birthDate", {})`, `flatpickr("#date", {})`에 `{dateFormat: "Y/m/d"}`만 넣는다. 모델과 저장 형식은 그대로 두고 UI 설정 한 줄만 바꾸는 것이다. 이 수정을 §1.3의 예외로 허용할지 결정해 달라.
+- **답변 (사용자):** 허용한다. 두 JSP에 `dateFormat: "Y/m/d"`를 적용한다.
