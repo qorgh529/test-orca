@@ -106,9 +106,9 @@ cluster() {
 }
 
 post_cluster() {
-  require AWS_REGION EKS_CLUSTER_NAME VPC_ID DB_PRIVATE_SUBNET_A_ID DB_PRIVATE_SUBNET_C_ID RDS_SECRET_NAME RDS_DB_NAME RDS_PORT GRAFANA_ADMIN_SECRET_NAME
+  require AWS_REGION EKS_CLUSTER_NAME VPC_ID DB_PRIVATE_SUBNET_A_ID DB_PRIVATE_SUBNET_C_ID RDS_SECRET_NAME RDS_APP_SECRET_NAME RDS_BACKUP_SECRET_NAME RDS_DB_NAME RDS_PORT GRAFANA_ADMIN_SECRET_NAME
   local s
-  for s in "$RDS_SECRET_NAME" "$GRAFANA_ADMIN_SECRET_NAME"; do
+  for s in "$RDS_SECRET_NAME" "$RDS_APP_SECRET_NAME" "$RDS_BACKUP_SECRET_NAME" "$GRAFANA_ADMIN_SECRET_NAME"; do
     case "$s" in
       petclinic/*) ;;
       *) echo "secret names must start with petclinic/ (ESO IAM scope): $s" >&2; exit 1 ;;
@@ -160,6 +160,18 @@ post_cluster() {
     '{username: "petclinic_admin", password: env.PW, host: $host, port: $port, dbname: $db}' \
     | aws secretsmanager create-secret --name "$RDS_SECRET_NAME" --secret-string file:///dev/stdin >/dev/null
   echo "RDS endpoint: $host"
+
+  # App/backup users are created in MySQL by the db-init Job from these secrets.
+  local user secret
+  for user in petclinic_app petclinic_backup; do
+    secret=$RDS_APP_SECRET_NAME; [ "$user" = petclinic_backup ] && secret=$RDS_BACKUP_SECRET_NAME
+    echo "== Secrets Manager: $secret ($user)"
+    password=$(aws secretsmanager get-random-password --password-length 32 --exclude-punctuation \
+      --query RandomPassword --output text)
+    PW="$password" jq -n --arg user "$user" --arg host "$host" --arg port "$RDS_PORT" --arg db "$RDS_DB_NAME" \
+      '{username: $user, password: env.PW, host: $host, port: $port, dbname: $db}' \
+      | aws secretsmanager create-secret --name "$secret" --secret-string file:///dev/stdin >/dev/null
+  done
 
   echo "== Secrets Manager: $GRAFANA_ADMIN_SECRET_NAME"
   password=$(aws secretsmanager get-random-password --password-length 32 --exclude-punctuation \

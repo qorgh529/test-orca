@@ -7,7 +7,7 @@ set -euo pipefail
 require AWS_REGION AWS_ACCOUNT_ID EKS_CLUSTER_NAME VPC_ID PUBLIC_SUBNET_A_ID PUBLIC_SUBNET_C_ID \
   DOMAIN_NAME ROUTE53_HOSTED_ZONE_ID ACM_CERTIFICATE_ARN WAF_WEB_ACL_ARN \
   ECR_WEB_REPOSITORY_URI ECR_WAS_REPOSITORY_URI IMAGE_TAG \
-  RDS_SECRET_NAME GRAFANA_ADMIN_SECRET_NAME PROMETHEUS_SERVER_URL CW_LOG_GROUP_NAME BACKUP_S3_BUCKET_NAME
+  RDS_SECRET_NAME RDS_APP_SECRET_NAME RDS_BACKUP_SECRET_NAME GRAFANA_ADMIN_SECRET_NAME PROMETHEUS_SERVER_URL CW_LOG_GROUP_NAME BACKUP_S3_BUCKET_NAME
 
 "$ROOT/scripts/validate-manifests.sh"
 
@@ -76,7 +76,7 @@ helm upgrade --install nginx-gateway oci://ghcr.io/nginx/charts/nginx-gateway-fa
 
 echo "== Secrets (ESO)"
 render_all "$K/secrets" "$K/monitoring/externalsecret-grafana.yaml" | kubectl apply -f -
-kubectl -n petclinic wait --for=condition=Ready externalsecret/petclinic-rds --timeout=120s
+kubectl -n petclinic wait --for=condition=Ready externalsecret/petclinic-rds-admin externalsecret/petclinic-rds externalsecret/petclinic-rds-backup --timeout=120s
 kubectl -n monitoring wait --for=condition=Ready externalsecret/grafana-admin --timeout=120s
 
 echo "== Monitoring (ng-platform) and logging (all nodes)"

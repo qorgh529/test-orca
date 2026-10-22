@@ -1,5 +1,7 @@
 # Loads app/src/main/resources/db/mysql/{schema,data}.sql (ConfigMap petclinic-db-scripts,
 # created by scripts/deploy-all.sh). Both scripts are idempotent (IF NOT EXISTS / INSERT IGNORE).
+# Then creates/updates the least-privilege app and backup users from their secrets; re-running it
+# after a password rotation applies the new passwords (scripts/rotate-db-secrets.sh).
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -37,17 +39,38 @@ spec:
               for f in schema.sql data.sql; do
                 mysql --ssl-mode=REQUIRED -h "$RDS_HOST" -P "$RDS_PORT" -u "$JDBC_USERNAME" "$RDS_DB_NAME" < "/scripts/$f"
               done
+              # Values are spliced into SQL: allow only [A-Za-z0-9_] (provisioning generates alphanumeric passwords).
+              for v in "$APP_USER" "$APP_PASSWORD" "$BACKUP_USER" "$BACKUP_PASSWORD" "$RDS_DB_NAME"; do
+                case "$v" in ""|*[!A-Za-z0-9_]*) echo "unsafe or empty DB user/password/db name" >&2; exit 1 ;; esac
+              done
+              mysql --ssl-mode=REQUIRED -h "$RDS_HOST" -P "$RDS_PORT" -u "$JDBC_USERNAME" <<SQL
+              CREATE USER IF NOT EXISTS '$APP_USER'@'%' IDENTIFIED BY '$APP_PASSWORD' REQUIRE SSL;
+              ALTER USER '$APP_USER'@'%' IDENTIFIED BY '$APP_PASSWORD' REQUIRE SSL;
+              GRANT SELECT, INSERT, UPDATE, DELETE ON \`$RDS_DB_NAME\`.* TO '$APP_USER'@'%';
+              CREATE USER IF NOT EXISTS '$BACKUP_USER'@'%' IDENTIFIED BY '$BACKUP_PASSWORD' REQUIRE SSL;
+              ALTER USER '$BACKUP_USER'@'%' IDENTIFIED BY '$BACKUP_PASSWORD' REQUIRE SSL;
+              GRANT SELECT, SHOW VIEW, TRIGGER, LOCK TABLES ON \`$RDS_DB_NAME\`.* TO '$BACKUP_USER'@'%';
+              GRANT PROCESS ON *.* TO '$BACKUP_USER'@'%';
+              SQL
           env:
             - name: RDS_HOST
-              valueFrom: { secretKeyRef: { name: petclinic-rds-secret, key: RDS_HOST } }
+              valueFrom: { secretKeyRef: { name: petclinic-rds-admin-secret, key: RDS_HOST } }
             - name: RDS_PORT
-              valueFrom: { secretKeyRef: { name: petclinic-rds-secret, key: RDS_PORT } }
+              valueFrom: { secretKeyRef: { name: petclinic-rds-admin-secret, key: RDS_PORT } }
             - name: RDS_DB_NAME
-              valueFrom: { secretKeyRef: { name: petclinic-rds-secret, key: RDS_DB_NAME } }
+              valueFrom: { secretKeyRef: { name: petclinic-rds-admin-secret, key: RDS_DB_NAME } }
             - name: JDBC_USERNAME
-              valueFrom: { secretKeyRef: { name: petclinic-rds-secret, key: JDBC_USERNAME } }
+              valueFrom: { secretKeyRef: { name: petclinic-rds-admin-secret, key: JDBC_USERNAME } }
             - name: MYSQL_PWD
+              valueFrom: { secretKeyRef: { name: petclinic-rds-admin-secret, key: JDBC_PASSWORD } }
+            - name: APP_USER
+              valueFrom: { secretKeyRef: { name: petclinic-rds-secret, key: JDBC_USERNAME } }
+            - name: APP_PASSWORD
               valueFrom: { secretKeyRef: { name: petclinic-rds-secret, key: JDBC_PASSWORD } }
+            - name: BACKUP_USER
+              valueFrom: { secretKeyRef: { name: petclinic-rds-backup-secret, key: JDBC_USERNAME } }
+            - name: BACKUP_PASSWORD
+              valueFrom: { secretKeyRef: { name: petclinic-rds-backup-secret, key: JDBC_PASSWORD } }
           resources:
             requests: { cpu: 100m, memory: 128Mi }
             limits: { cpu: 500m, memory: 256Mi }
