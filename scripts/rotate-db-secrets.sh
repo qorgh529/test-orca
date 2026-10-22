@@ -15,12 +15,15 @@ for es in petclinic-rds-admin petclinic-rds petclinic-rds-backup; do
   kubectl -n petclinic annotate externalsecret "$es" force-sync="$now" --overwrite
 done
 # Ready alone may be stale from before the force-sync; wait until the refresh time moves past $now.
+# Stop before db-init if any secret was not refreshed: ALTER USER with old passwords would "succeed".
 for es in petclinic-rds-admin petclinic-rds petclinic-rds-backup; do
+  synced=""
   for _ in $(seq 1 30); do
     t=$(kubectl -n petclinic get externalsecret "$es" -o jsonpath='{.status.refreshTime}')
-    [ -n "$t" ] && [ "$(date -d "$t" +%s)" -ge "$now" ] && break
+    [ -n "$t" ] && [ "$(date -d "$t" +%s)" -ge "$now" ] && { synced=1; break; }
     sleep 2
   done
+  [ -n "$synced" ] || { echo "ExternalSecret $es not refreshed within 60s; rotation aborted before db-init" >&2; exit 1; }
 done
 kubectl -n petclinic wait --for=condition=Ready externalsecret/petclinic-rds-admin externalsecret/petclinic-rds externalsecret/petclinic-rds-backup --timeout=120s
 
