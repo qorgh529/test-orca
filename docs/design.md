@@ -502,6 +502,8 @@ flowchart TD
 - 호환성 문제: 지금 고정된 Karpenter 1.0.6은 Kubernetes 1.33을 지원하지 않는다. 1.33에는 Karpenter 1.5 이상이 필요하다. 근거: [Karpenter 호환성 표](https://karpenter.sh/docs/upgrading/compatibility/). KEDA 2.15, LBC 차트 1.9.2, NGF 1.5.1, ESO 0.10, kube-prometheus-stack 65, metrics-server도 대상 버전에 맞춰 다시 확인해야 한다. 이 PC에는 AWS 자격 증명이 없어 `aws eks describe-addon-versions`로 EBS CSI 호환 버전을 확인하지 못했다.
 - 확인된 것: AMI 릴리스 `al2023@v20260923`은 존재하고 Kubernetes 1.33–1.37 AMI를 포함한다.
 - 결정 필요: (a) 설계대로 1.33으로 올리고 Karpenter를 1.5 이상으로 함께 올린다(확장 지원 비용 발생). (b) 표준 지원 버전(예: 1.35 또는 1.36)을 목표로 하고, 애드온 버전 세트를 그 버전에 맞춰 함께 올린다. 어느 쪽으로 할지 정해 주면 해당 버전 세트로 구현하겠다.
+- **답변 (사용자):** (b) 표준 지원 버전으로 올리고 애드온도 그 버전에 맞춘다. 버전은 지정하지 않아, 구현 담당이 표준 지원 기간이 더 긴 1.36(표준 지원 종료 2027-08-02)으로 정했다.
 
 ### Q5. Step 12의 `docs/review.md` 정합성 정리 — CLAUDE.md와 충돌
 - Step 12는 `docs/review.md`의 이전 라운드 미해결 표기를 정리하라고 하지만, CLAUDE.md는 리뷰어가 쓴 내용을 구현 담당이 수정하지 못하게 한다(체크 표시만 허용). 지적된 총평(`No`)은 리뷰어가 쓴 문장이라 고치지 않았다. 리뷰어(Codex)가 다음 라운드에서 갱신하는 것으로 처리할지 정해 달라.
+- **답변 (사용자):** 다음 라운드에서 리뷰어가 갱신한다.
