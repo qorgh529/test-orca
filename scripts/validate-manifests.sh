@@ -195,9 +195,10 @@ if 'p:maxActive="${jdbc.pool.maxActive}"' not in (root / "app/src/main/resources
     err("datasource-config.xml: dataSource must use ${jdbc.pool.maxActive}")
 
 # KEDA keeps a safe replica count when Prometheus is down.
-so = find("ScaledObject", "was-stable")
-if not so or not (so["spec"].get("fallback") or {}).get("replicas"):
-    err("ScaledObject/was-stable: fallback.replicas must be set")
+for name in ("was-stable", "was-canary"):
+    so = find("ScaledObject", name)
+    if not so or not (so["spec"].get("fallback") or {}).get("replicas"):
+        err(f"ScaledObject/{name}: fallback.replicas must be set")
 
 # Prometheus survives one AZ.
 if int(kps.get("prometheus", {}).get("prometheusSpec", {}).get("replicas", 1)) < 2:
@@ -209,6 +210,18 @@ for app in ("web", "was"):
     if not any(d.get("kind") == "PodDisruptionBudget" and (d["spec"].get("selector") or {}).get("matchLabels") == sel
                for _, d in k8s_docs):
         err(f"missing PodDisruptionBudget for {sel}")
+
+# EBS CSI add-on version is pinned (design §4.1).
+eks = docs.get(root / "infra/eksctl/cluster.yaml", [{}])[0]
+for a in eks.get("addons") or []:
+    if a["name"] == "aws-ebs-csi-driver" and not a.get("version"):
+        err("infra/eksctl/cluster.yaml: addon aws-ebs-csi-driver must set version")
+
+# Webhook URLs carry tokens: read from the ESO-synced Secret file, never inlined in Helm values.
+for r in kps.get("alertmanager", {}).get("config", {}).get("receivers") or []:
+    for w in r.get("webhook_configs") or []:
+        if "url" in w or not w.get("url_file"):
+            err(f"kube-prometheus-values: receiver {r.get('name')} must use url_file, not url")
 
 if errors:
     print("\n".join("FAIL " + e for e in errors))

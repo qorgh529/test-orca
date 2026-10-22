@@ -55,9 +55,9 @@ addons:
       {"nodeSelector":{"workload-tier":"critical"},
        "tolerations":[{"key":"node-role","operator":"Equal","value":"critical","effect":"NoSchedule"}]}
   - name: aws-ebs-csi-driver
-    # ponytail: unpinned, so EKS installs its default build for 1.36. Pin it to the output of
-    # `aws eks describe-addon-versions --addon-name aws-ebs-csi-driver --kubernetes-version 1.36`
-    # (not checkable here without AWS credentials) to make rebuilds reproducible.
+    # Pinned per environment (.env EBS_CSI_ADDON_VERSION) from
+    # `aws eks describe-addon-versions --addon-name aws-ebs-csi-driver --kubernetes-version 1.36`.
+    version: "${EBS_CSI_ADDON_VERSION}"
     attachPolicyARNs: ["arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"]
     configurationValues: |-
       {"controller":{"nodeSelector":{"workload-tier":"critical"},

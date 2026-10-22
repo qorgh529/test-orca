@@ -1,4 +1,4 @@
-# Alerts routed to ALERTMANAGER_WEBHOOK_URL (kube-prometheus-values.yaml).
+# Alerts routed to the webhook in ALERTMANAGER_WEBHOOK_SECRET_NAME (kube-prometheus-values.yaml).
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
@@ -9,8 +9,14 @@ spec:
     - name: petclinic
       rules:
         # Daily CronJob: no success for 26h covers both failed and missed runs, and clears itself on the next success.
+        # kube-state-metrics omits last_successful_time until the first success, so a CronJob that never
+        # succeeded is measured from its creation instead. Tested by scripts/test-prometheus-rules.sh.
         - alert: PetClinicDBBackupFailed
-          expr: time() - kube_cronjob_status_last_successful_time{namespace="petclinic", cronjob="db-backup"} > 26 * 3600
+          expr: |
+            (time() - kube_cronjob_status_last_successful_time{namespace="petclinic", cronjob="db-backup"} > 26 * 3600)
+            or
+            (time() - kube_cronjob_created{namespace="petclinic", cronjob="db-backup"} > 26 * 3600
+              unless on (namespace, cronjob) kube_cronjob_status_last_successful_time{namespace="petclinic", cronjob="db-backup"})
           labels: { severity: critical }
           annotations:
             summary: "petclinic db-backup has not succeeded for over 26h"

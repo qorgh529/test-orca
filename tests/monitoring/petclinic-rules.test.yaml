@@ -1,0 +1,33 @@
+# promtool unit tests for k8s/monitoring/prometheusrule-petclinic.yaml. Run: scripts/test-prometheus-rules.sh
+# Series start at t=0 (epoch); kube_cronjob_created=0 means the CronJob was created at t=0.
+rule_files: [rules.yaml]
+evaluation_interval: 1m
+tests:
+  # Never succeeded: silent for 26h after creation, then fires.
+  - interval: 1h
+    input_series:
+      - series: 'kube_cronjob_created{namespace="petclinic", cronjob="db-backup"}'
+        values: '0x30'
+    alert_rule_test:
+      - { eval_time: 25h, alertname: PetClinicDBBackupFailed, exp_alerts: [] }
+      - eval_time: 27h
+        alertname: PetClinicDBBackupFailed
+        exp_alerts:
+          - exp_labels: { severity: critical, namespace: petclinic, cronjob: db-backup }
+            exp_annotations: { summary: "petclinic db-backup has not succeeded for over 26h" }
+
+  # Last success at t=0: fires once it is over 26h old, clears after the next success (t=28h, value 100800).
+  - interval: 1h
+    input_series:
+      - series: 'kube_cronjob_created{namespace="petclinic", cronjob="db-backup"}'
+        values: '0x30'
+      - series: 'kube_cronjob_status_last_successful_time{namespace="petclinic", cronjob="db-backup"}'
+        values: '0x27 100800x3'
+    alert_rule_test:
+      - { eval_time: 26h, alertname: PetClinicDBBackupFailed, exp_alerts: [] }
+      - eval_time: 27h
+        alertname: PetClinicDBBackupFailed
+        exp_alerts:
+          - exp_labels: { severity: critical, namespace: petclinic, cronjob: db-backup }
+            exp_annotations: { summary: "petclinic db-backup has not succeeded for over 26h" }
+      - { eval_time: 28h, alertname: PetClinicDBBackupFailed, exp_alerts: [] }

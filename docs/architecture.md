@@ -2,17 +2,18 @@
 
 ## 1. 개요 — 시스템 목적과 범위
 
-`spring-framework-petclinic`(전통적인 Spring Framework 7.x / Jakarta EE 11 WAR 패키징 기반 동물병원 관리 웹 애플리케이션)을 AWS 서울 리전(`ap-northeast-2`)의 **Amazon EKS (`1.31`)** 환경 위에 고가용성(Multi-AZ: `2a`, `2c`), 정교한 자동 확장(HPA / KEDA / Karpenter), 계층별 네트워크·권한 격리, 통합 관측성(Prometheus / Grafana / Alertmanager / CloudWatch Logs)을 갖춘 클라우드 네이티브 아키텍처로 운영한다.
+`spring-framework-petclinic`(전통적인 Spring Framework 7.x / Jakarta EE 11 WAR 패키징 기반 동물병원 관리 웹 애플리케이션)을 AWS 서울 리전(`ap-northeast-2`)의 **Amazon EKS (`1.36`)** 환경 위에 고가용성(Multi-AZ: `2a`, `2c`), 정교한 자동 확장(HPA / KEDA / Karpenter), 계층별 네트워크·권한 격리, 통합 관측성(Prometheus / Grafana / Alertmanager / CloudWatch Logs)을 갖춘 클라우드 네이티브 아키텍처로 운영한다.
 
 - **포함 범위 (In-Scope)**:
   - Route 53, ACM, AWS WAFv2, LBC 기반 internet-facing ALB(`target-type: ip`)를 통한 엣지 보안 및 TLS 종단
-  - NGINX Gateway Fabric(NGF) `Gateway` 및 `HTTPRoute`를 이용한 L7 라우팅과 90:10 가중치·헤더(`X-Canary: always`) 기반 카나리(Canary) 트래픽 분할
+  - NGINX Gateway Fabric(NGF) `Gateway` 및 `HTTPRoute`를 이용한 L7 라우팅과 헤더(`X-Canary: always`) 검증 통과 후 100:0 → 90:10으로 여는 가중치 기반 카나리(Canary) 트래픽 분할
   - `web`(Nginx 1.27 정적 서빙 + 리버스 프록시)과 `was`(Tomcat 11 언패킹 WAR + JMX Exporter) 2-Tier 분리 및 각각 CPU 기반 HPA / Prometheus 요청률 기반 KEDA 오토스케일링
   - 3-Tier 노드 분리: `np-app`(Karpenter On-Demand 기본 풀 + `np-app-spot` Spot 확장 풀), `ng-critical`(클러스터 컨트롤러 및 DB 초기화/백업 Job 전용 관리형 노드 그룹), `ng-platform`(모니터링 스택 및 `gp3` PVC 전용 관리형 노드 그룹)
-  - 프라이빗 DB 서브넷의 RDS MySQL 8.0 Multi-AZ(Primary/Standby 동기 복제), S3 암호화 백업(`CronJob`), AWS Secrets Manager + External Secrets Operator(ESO) 기반 시크릿 동기화
+  - 프라이빗 DB 서브넷의 RDS MySQL 8.0 Multi-AZ(Primary/Standby 동기 복제), S3 암호화 백업(`CronJob`), 역할별 DB 계정(admin/app/backup) 분리, AWS Secrets Manager + External Secrets Operator(ESO) 기반 시크릿 동기화
 - **제외 범위 (Out-of-Scope)**:
   - Spring Boot 내장 톰캣 JAR로의 전환 (외부 Tomcat 11 컨테이너 배포 구조 유지)
   - 멀티 리전 액티브-액티브 구성 (`ap-northeast-2` 단일 리전 Multi-AZ에 집중)
+  - 기존 EKS 1.31 클러스터의 제자리 업그레이드 절차 (현재 구성은 1.36 새 클러스터 생성 기준, `docs/design.md` Q6)
   - 비즈니스 도메인 모델 변경 (단, 외부 RDS 환경변수 바인딩 및 flatpickr `yyyy/MM/dd` 날짜 형식 호환 패치는 반영)
 
 ---
@@ -23,13 +24,13 @@
 |---|---|---|---|
 | **Edge / DNS** | Route 53, ACM, AWS WAFv2 | 도메인 A(Alias) 라우팅, 공인 TLS 인증서 발급·갱신, OWASP/SQLi/KnownBadInputs 관리형 규칙 필터링 | AWS 관리형 (`ap-northeast-2`) |
 | **Ingress LB** | AWS ALB (AWS Load Balancer Controller) | HTTP(`80`)→HTTPS(`443`) 리다이렉트, TLS 1.3/1.2 종단, 비정상 헤더 드롭, `target-type: ip`로 NGF Pod에 직접 라우팅 | 퍼블릭 서브넷 (`2a`, `2c`) |
-| **L7 Gateway** | NGINX Gateway Fabric (`nginx-gateway`) | Gateway API(`v1.2.0`) 데이터 플레인(2 Replicas, AZ 분산, PDB 적용). `HTTPRoute`로 `web`(90%) / `web-canary`(10% 및 `X-Canary: always`) 트래픽 분할 | `nginx-gateway` / `np-app` (`workload-tier=app`) |
-| **Web Tier** | `web`, `web-canary` (Nginx + Exporter) | `/resources/*`, `/webjars/*` 정적 에셋 직접 서빙 및 보안 헤더 부여, 동적 요청을 각각 `was-stable:8080`, `was-canary:8080`으로 프록시. 사이드카 `nginx-prometheus-exporter`(`:9113`) 내장. `web`은 CPU 60% 기준 HPA(2~10) 스케일링 | `petclinic` / `np-app` (`workload-tier=app`) |
-| **WAS Tier** | `was-stable`, `was-canary` (Tomcat 11 + JMX Exporter) | 사전 언패킹된 `webapps/ROOT` 구동(`jpa` 프로필, 읽기 전용 루트 파일시스템), JMX Exporter(`:9404/metrics`)로 `Catalina_GlobalRequestProcessor_requestCount` 노출. `was-stable`은 Prometheus 요청률 기반 KEDA `ScaledObject`(2~10) 스케일링 | `petclinic` / `np-app` (`workload-tier=app`) |
+| **L7 Gateway** | NGINX Gateway Fabric (`nginx-gateway`) | Gateway API(`v1.2.0`) 데이터 플레인(2 Replicas, AZ 분산, PDB 적용). `HTTPRoute`로 `web` / `web-canary` 트래픽 분할(배포 중 100:0, 카나리 검증 후 90:10, `X-Canary: always`는 항상 `web-canary`) | `nginx-gateway` / `np-app` (`workload-tier=app`) |
+| **Web Tier** | `web`, `web-canary` (Nginx + Exporter) | `/resources/*`, `/webjars/*` 정적 에셋 직접 서빙 및 보안 헤더 부여, 동적 요청을 각각 `was-stable:8080`, `was-canary:8080`으로 프록시. 사이드카 `nginx-prometheus-exporter`(`:9113`) 내장. CPU 60% 기준 HPA(`web` 2~10, `web-canary` 1~4), stable PDB(`minAvailable: 1`) | `petclinic` / `np-app` (`workload-tier=app`) |
+| **WAS Tier** | `was-stable`, `was-canary` (Tomcat 11 + JMX Exporter) | 사전 언패킹된 `webapps/ROOT` 구동(`jpa` 프로필, 읽기 전용 루트 파일시스템), JMX Exporter(`:9404/metrics`)로 `Catalina_GlobalRequestProcessor_requestCount` 노출. Prometheus 요청률 기반 KEDA `ScaledObject`(`was-stable` 2~10·fallback 4, `was-canary` 1~3·fallback 2), stable PDB(`minAvailable: 1`), Tomcat JDBC 풀 최대 10 | `petclinic` / `np-app` (`workload-tier=app`) |
 | **Cluster Controllers** | CoreDNS, LBC, Metrics Server, Karpenter, KEDA, ESO, EBS CSI | 클러스터 핵심 제어부 및 오토스케일러·시크릿·스토리지 드라이버 | `kube-system`, `keda`, `external-secrets` / `ng-critical` (Taint: `node-role=critical:NoSchedule`) |
-| **DB Jobs** | `db-init` (Job), `db-backup` (CronJob) | 배포 시 멱등 스키마/초기 데이터 적재(`schema.sql`, `data.sql`), 매일 03:00 KST `mysqldump` 압축본을 S3(`SSE-KMS`)에 업로드 | `petclinic` / `ng-critical` (Taint: `node-role=critical:NoSchedule`) |
-| **Observability** | Prometheus, Grafana, Alertmanager, Fluent Bit | `ServiceMonitor` 기반 `web`(`:9113`)·`was`(`:9404`) 메트릭 수집, KEDA 스케일링 쿼리 제공, `gp3` 암호화 볼륨 영속화. Fluent Bit DaemonSet은 전 노드 컨테이너 로그를 CloudWatch Logs로 전송 | `monitoring` (`ng-platform`, Taint: `node-role=platform:NoSchedule`) / `amazon-cloudwatch` (Fluent Bit 전 노드 Toleration) |
-| **Data / Storage / Registry** | RDS MySQL 8.0, Secrets Manager, S3, ECR | Multi-AZ Primary/Standby RDB(`require_secure_transport=ON`), RDS/Grafana 시크릿 보관, DB 백업 버킷, 불변 태그(`IMMUTABLE`) 및 KMS 암호화 컨테이너 레지스트리 | 프라이빗 DB 서브넷 (`2a`, `2c`) 및 AWS 관리형 서비스 |
+| **DB Jobs** | `db-init` (Job), `db-backup` (CronJob) | 배포 시 admin 계정으로 멱등 스키마/초기 데이터 적재(`schema.sql`, `data.sql`) 및 app/backup 계정 생성·권한 부여, 매일 03:00 KST `mysqldump` 압축본을 S3(`SSE-KMS`)에 업로드 | `petclinic` / `ng-critical` (Taint: `node-role=critical:NoSchedule`) |
+| **Observability** | Prometheus, Grafana, Alertmanager, Fluent Bit | `ServiceMonitor` 기반 `web`(`:9113`)·`was`(`:9404`) 메트릭 수집, KEDA 스케일링 쿼리 제공, `gp3` 암호화 볼륨 영속화, Prometheus 2 Replicas AZ 분산, `PrometheusRule`(백업 실패·KEDA 오류·오류율) → Alertmanager Webhook. Fluent Bit DaemonSet은 전 노드 컨테이너 로그를 CloudWatch Logs로 전송 | `monitoring` (`ng-platform`, Taint: `node-role=platform:NoSchedule`) / `amazon-cloudwatch` (Fluent Bit 전 노드 Toleration) |
+| **Data / Storage / Registry** | RDS MySQL 8.0, Secrets Manager, S3, ECR | Multi-AZ Primary/Standby RDB(`require_secure_transport=ON`), RDS(admin/app/backup)·Grafana·Alertmanager Webhook 시크릿 보관, DB 백업 버킷, 불변 태그(`IMMUTABLE`) 및 KMS 암호화 컨테이너 레지스트리 | 프라이빗 DB 서브넷 (`2a`, `2c`) 및 AWS 관리형 서비스 |
 
 ---
 
@@ -47,7 +48,8 @@
 │   ├── architecture.md                   # 시스템 전체 아키텍처 현황 (본 문서)
 │   ├── design.md                         # 초기 구축 설계서
 │   ├── review.md                         # 코드 리뷰 기록
-│   └── security.md                       # 보안·인프라 점검 기록
+│   ├── security.md                       # 보안·인프라 점검 기록
+│   └── features/<기능명>/{review,security}.md  # 기능 브랜치별 리뷰·보안 점검 기록
 ├── app/                                  # spring-framework-petclinic 소스 코드
 │   ├── pom.xml                           # Maven WAR 빌드, MySQL/PostgreSQL/H2/HSQLDB 프로필
 │   └── src/
@@ -68,12 +70,12 @@
 │       └── setenv.sh                     # JMX Exporter -javaagent:9404 및 JDBC 드라이버 프로퍼티 설정
 ├── infra/
 │   ├── aws/
-│   │   ├── provision-aws-resources.sh    # pre-cluster(IAM/ECR/Logs/S3/WAF/ACM), cluster(eksctl), post-cluster(RDS/Secrets) 프로비저닝
+│   │   ├── provision-aws-resources.sh    # pre-cluster(IAM/ECR/Logs/S3/WAF/ACM), cluster(eksctl), post-cluster(RDS/Secrets) 멱등 프로비저닝 (재실행 시 기존 비밀번호 유지)
 │   │   └── iam-policies/                 # lbc, karpenter-controller, karpenter-node-trust, eso, fluent-bit, db-backup 최소 권한 JSON
 │   ├── eksctl/
-│   │   └── cluster.yaml                  # EKS 1.31 ClusterConfig (VPC 서브넷, IRSA, vpc-cni NetworkPolicy, ng-critical, ng-platform)
+│   │   └── cluster.yaml                  # EKS 1.36 ClusterConfig (VPC 서브넷, IRSA, vpc-cni NetworkPolicy, EBS CSI 버전 고정, ng-critical, ng-platform)
 │   └── karpenter/
-│       ├── ec2nodeclass.yaml             # AL2023 고정 AMI, IMDSv2(hop limit 1), gp3 30Gi 암호화 루트 볼륨
+│       ├── ec2nodeclass.yaml             # AL2023 고정 AMI(al2023@v20260930), IMDSv2(hop limit 1), gp3 30Gi 암호화 루트 볼륨
 │       └── nodepool-app.yaml             # np-app(On-Demand, weight 100) 및 np-app-spot(Spot 오버플로 확장) NodePool
 ├── k8s/
 │   ├── base/
@@ -82,14 +84,15 @@
 │   │   └── storageclass-gp3.yaml         # EBS CSI gp3 암호화 StorageClass (WaitForFirstConsumer)
 │   ├── secrets/
 │   │   ├── secretstore.yaml              # ESO SecretStore (AWS Secrets Manager 연동)
-│   │   └── externalsecret-rds.yaml       # Secrets Manager → petclinic-rds-secret 동기화 (sslMode=REQUIRED 포함)
+│   │   └── externalsecret-rds.yaml       # Secrets Manager → admin/app/backup 역할별 3개 시크릿 동기화 (sslMode=REQUIRED 포함)
 │   ├── jobs/
-│   │   ├── job-db-init.yaml              # schema.sql / data.sql 적재 Job (ng-critical, --ssl-mode=REQUIRED)
-│   │   └── cronjob-db-backup.yaml        # 일일 mysqldump → S3(SSE-KMS) 업로드 CronJob (ng-critical, IRSA db-backup)
+│   │   ├── job-db-init.yaml              # admin 계정으로 schema/data 적재 + app/backup 계정 생성·최소 권한 부여 Job (ng-critical, REQUIRE SSL)
+│   │   └── cronjob-db-backup.yaml        # 일일 mysqldump(backup 계정) → S3(SSE-KMS) 업로드 CronJob (ng-critical, IRSA db-backup)
 │   ├── web/
 │   │   ├── deployment.yaml               # web(→was-stable) 및 web-canary(→was-canary) Deployment + nginx-exporter 사이드카
 │   │   ├── service.yaml                  # web, web-canary Service (:80→:8080, :9113)
-│   │   ├── hpa.yaml                      # web CPU 60% HPA (min 2, max 10)
+│   │   ├── hpa.yaml                      # web(2~10), web-canary(1~4) CPU 60% HPA
+│   │   ├── pdb.yaml                      # web stable PodDisruptionBudget (minAvailable: 1)
 │   │   └── networkpolicy.yaml            # web Ingress 허용 (nginx-gateway → 8080, Prometheus → 9113)
 │   ├── was/
 │   │   ├── deployment-stable.yaml        # was-stable Deployment (readOnlyRootFilesystem, emptyDir 마운트)
@@ -97,25 +100,33 @@
 │   │   ├── service-stable.yaml           # was-stable Service (:8080, :9404)
 │   │   ├── service-canary.yaml           # was-canary Service (:8080, :9404)
 │   │   ├── service.yaml                  # was 통합 Service (:8080, :9404)
-│   │   ├── keda-scaledobject.yaml        # was-stable KEDA ScaledObject (Prometheus 요청률 > 50 req/s 시 확장)
+│   │   ├── keda-scaledobject.yaml        # was-stable(2~10, fallback 4) / was-canary(1~3, fallback 2) KEDA ScaledObject
+│   │   ├── pdb.yaml                      # was stable PodDisruptionBudget (minAvailable: 1)
 │   │   └── networkpolicy.yaml            # was Ingress 허용 (web → 8080, Prometheus → 9404)
 │   ├── gateway/
 │   │   ├── alb-ingress.yaml              # LBC internet-facing ALB Ingress (HTTPS 443, ACM, WAFv2, drop_invalid_header_fields)
 │   │   ├── gateway.yaml                  # NGF Gateway (:80 HTTP)
-│   │   ├── httproute-canary.yaml         # HTTPRoute (X-Canary: always → web-canary 100%, 기본 web 90 : web-canary 10)
+│   │   ├── httproute-canary.yaml         # HTTPRoute (X-Canary: always → web-canary, 기본 가중치 ${STABLE_WEIGHT}:${CANARY_WEIGHT})
 │   │   └── pdb-nginx-gateway.yaml        # NGF 데이터 플레인 PodDisruptionBudget (minAvailable: 1)
 │   ├── monitoring/
+│   │   ├── externalsecret-alertmanager.yaml # Alertmanager Webhook URL ExternalSecret (url_file로 마운트)
 │   │   ├── externalsecret-grafana.yaml   # Grafana 관리자 자격증명 ExternalSecret
-│   │   ├── kube-prometheus-values.yaml   # Prometheus, Grafana, Alertmanager ng-platform 배치 및 gp3 PVC 설정
+│   │   ├── kube-prometheus-values.yaml   # Prometheus(2 Replicas AZ 분산), Grafana, Alertmanager ng-platform 배치 및 gp3 PVC 설정
+│   │   ├── networkpolicy-alertmanager.yaml # Alertmanager Egress 제한 (DNS, HTTPS 443만, IMDS 제외)
 │   │   ├── networkpolicy-prometheus.yaml # Prometheus :9090 Ingress 제한 (KEDA, Grafana, 자기 자신만 허용)
+│   │   ├── prometheusrule-petclinic.yaml # 백업 실패(첫 성공 없음 포함), KEDA 지표 오류, WAS 오류율 알림 규칙
 │   │   └── servicemonitor-petclinic.yaml # web(:9113), was(:9404) 스크래핑 ServiceMonitor
 │   └── logging/
 │       └── fluent-bit-values.yaml        # aws-for-fluent-bit DaemonSet 설정 (전 노드 Toleration → CloudWatch Logs)
+├── tests/
+│   └── monitoring/petclinic-rules.test.yaml  # PrometheusRule promtool 단위 테스트
 └── scripts/
     ├── lib.sh                            # 공통 환경변수 로드(.env), 필수 변수 검증, envsubst 렌더링 함수
     ├── build-and-push.sh                 # ECR 로그인 및 web / was 이미지 빌드·푸시
-    ├── deploy-all.sh                     # 애드온/매니페스트 배포, stable/canary 롤아웃 대기, Route 53 연결, 카나리 E2E 검증
-    └── validate-manifests.sh             # YAML 문법, 고정 이미지 태그, 평문 시크릿 부재, 노드 티어/비루트 보안 설정 정적 검증기
+    ├── deploy-all.sh                     # 애드온/매니페스트 배포, 카나리 100:0 고정 후 롤아웃, Route 53 연결, 카나리 E2E 검증 후 90:10 개방
+    ├── rotate-db-secrets.sh              # Secrets Manager DB 비밀번호 변경 반영 (ESO 강제 동기화 확인 → db-init → was 재시작)
+    ├── test-prometheus-rules.sh          # promtool로 PrometheusRule 단위 테스트 실행
+    └── validate-manifests.sh             # YAML 문법, 고정 이미지/애드온 버전, 평문 시크릿 부재, 노드 티어/비루트, 역할별 DB 시크릿·PDB·KEDA fallback 등 정적 검증기
 ```
 
 ---
@@ -131,15 +142,15 @@
 2. **② HTTPS 접속 및 WAF 필터링**: 브라우저는 `443` 포트로 접속하며, **AWS WAFv2**(Common / SQLi / KnownBadInputs 관리형 규칙)를 통과한 요청만 **Application Load Balancer(ALB)** 에서 **AWS ACM** 공인 인증서로 TLS 종단 처리된다.
 3. **③ ALB → NGF Gateway (`target-type: ip`)**: AWS Load Balancer Controller(LBC)가 구성한 ALB가 NodePort 없이 `np-app` 노드풀의 **NGF Gateway Pod** 프라이빗 IP(`:80`)로 직접 라우팅한다.
 4. **④ NGF Gateway → `web` / `web-canary` (`HTTPRoute` 카나리 분할)**:
-   - 기본 트래픽은 `web`(90%)과 `web-canary`(10%)로 가중치 분배되며, `X-Canary: always` 헤더가 포함된 요청은 100% `web-canary`로 전달된다.
-   - `web` Deployment는 Metrics Server(`metrics.k8s.io`)의 CPU 사용률(60%)을 기준으로 **HPA**가 2~10개 Pod로 자동 수평 확장한다.
+   - 배포 중에는 `web` 100%로 고정되고, 카나리 동적 경로 검증을 통과하면 `web`(90%)과 `web-canary`(10%)로 가중치 분배되며, `X-Canary: always` 헤더가 포함된 요청은 100% `web-canary`로 전달된다.
+   - `web`/`web-canary` Deployment는 Metrics Server(`metrics.k8s.io`)의 CPU 사용률(60%)을 기준으로 **HPA**가 각각 2~10개 / 1~4개 Pod로 자동 수평 확장한다.
 5. **⑤ `web` → `was` 리버스 프록시 (`:8080`)**:
    - 정적 리소스(`/resources/*`, `/webjars/*`)는 Nginx 컨테이너에서 보안 헤더·캐시 만료 헤더와 함께 직접 응답한다.
    - 동적 서블릿 요청은 `web` → `was-stable:8080`, `web-canary` → `was-canary:8080`으로 각각 프록시된다.
-   - `ng-platform`의 **Prometheus**가 `was` JMX Exporter(`:9404/metrics`) 지표를 수집하고, `ng-critical`의 **KEDA**가 PromQL 요청률(`> 50 req/s`)을 조회하여 `was-stable`을 2~10개 Pod로 수평 확장한다.
+   - `ng-platform`의 **Prometheus**가 `was` JMX Exporter(`:9404/metrics`) 지표를 수집하고, `ng-critical`의 **KEDA**가 PromQL 요청률(`> 50 req/s`)을 조회하여 `was-stable`을 2~10개, `was-canary`를 1~3개 Pod로 수평 확장한다. Prometheus 조회가 3회 연속 실패하면 fallback 레플리카(4 / 2)를 유지한다.
 6. **⑥ `was` 및 DB 관리 워크로드 → RDS MySQL 8.0 (`:3306` TLS)**:
-   - **ESO**가 **AWS Secrets Manager**에서 동기화한 `petclinic-rds-secret`을 주입받아 프라이빗 DB 서브넷의 **RDS MySQL Primary**에 TLS(`require_secure_transport=ON`, `sslMode=REQUIRED`)로 연결한다.
-   - `ng-critical`의 `db-init` Job(스키마·초기 데이터 적재)과 `db-backup` CronJob(일일 `mysqldump` 후 **Amazon S3** `SSE-KMS` 업로드) 역시 동일한 시크릿과 TLS 설정으로 동작한다.
+   - `was`는 **ESO**가 **AWS Secrets Manager**에서 동기화한 app 계정 시크릿 `petclinic-rds-secret`(SELECT/INSERT/UPDATE/DELETE 권한)을 주입받아 프라이빗 DB 서브넷의 **RDS MySQL Primary**에 TLS(`require_secure_transport=ON`, `sslMode=REQUIRED`)로 연결한다.
+   - `ng-critical`의 `db-init` Job은 admin 계정 시크릿(`petclinic-rds-admin-secret`)으로 스키마·초기 데이터를 적재하고 app/backup 계정을 생성하며, `db-backup` CronJob은 읽기 전용 backup 계정 시크릿(`petclinic-rds-backup-secret`)으로 일일 `mysqldump` 후 **Amazon S3** `SSE-KMS`에 업로드한다. 모두 TLS로만 연결한다.
    - 모든 노드의 컨테이너 로그와 RDS 에러/슬로우쿼리 로그는 **Fluent Bit DaemonSet** 및 RDS 로그 내보내기를 통해 **Amazon CloudWatch Logs**로 수집된다.
 
 ---
@@ -155,10 +166,10 @@
 | **Web Container** | Nginx + Exporter Sidecar | `nginx:1.27.2-alpine`, `nginx/nginx-prometheus-exporter:1.3.0` |
 | **WAS Container** | Apache Tomcat 11 + JMX Exporter | `tomcat:11.0.2-jre21-temurin-noble`, `jmx_prometheus_javaagent:1.0.1` |
 | **DB Jobs** | MySQL Client / AWS CLI | `mysql:8.0.39`, `amazon/aws-cli:2.18.0` |
-| **Kubernetes** | Amazon EKS | `1.31` (AL2023 AMI `al2023@v20241024`) |
+| **Kubernetes** | Amazon EKS | `1.36` (AL2023 AMI `al2023@v20260930`, 새 클러스터 생성 기준) |
 | **Gateway API** | Gateway API CRDs / NGF | CRDs `v1.2.0`, `nginx-gateway-fabric` Helm `1.5.1` |
-| **Autoscaling** | Karpenter / KEDA / Metrics Server | Karpenter `1.0.6`, KEDA `2.15.2`, Metrics Server `3.12.2` |
-| **Ingress / Storage / Secrets** | LBC / EBS CSI / ESO | `aws-load-balancer-controller` `1.9.2`, `aws-ebs-csi-driver` `v1.36.0-eksbuild.1`, `external-secrets` `0.10.4` |
+| **Autoscaling** | Karpenter / KEDA / Metrics Server | Karpenter `1.15.0` (+ `karpenter-crd`), KEDA `2.21.0`, Metrics Server `3.12.2` |
+| **Ingress / Storage / Secrets** | LBC / EBS CSI / ESO | `aws-load-balancer-controller` `1.9.2`, `aws-ebs-csi-driver` `${EBS_CSI_ADDON_VERSION}`(환경별 고정), `external-secrets` `2.13.0` (API `v1`) |
 | **Observability** | kube-prometheus-stack / Fluent Bit | `kube-prometheus-stack` `65.8.1`, `aws-for-fluent-bit` Helm `0.1.34` (이미지 `2.32.2`) |
 | **Database** | Amazon RDS for MySQL | `8.0.39` (`db.t3.medium`, Multi-AZ, `gp3` 20GB 암호화) |
 
@@ -175,13 +186,13 @@
 
 | 카테고리 | 변수명 | 용도 |
 |---|---|---|
-| **AWS / 클러스터** | `AWS_REGION`, `AWS_ACCOUNT_ID`, `EKS_CLUSTER_NAME` | 리전, 계정 ID, EKS 클러스터 식별자 |
+| **AWS / 클러스터** | `AWS_REGION`, `AWS_ACCOUNT_ID`, `EKS_CLUSTER_NAME`, `EBS_CSI_ADDON_VERSION` | 리전, 계정 ID, EKS 클러스터 식별자, EBS CSI 애드온 고정 버전 |
 | **VPC 서브넷** | `VPC_ID`, `PUBLIC_SUBNET_A_ID`, `PUBLIC_SUBNET_C_ID`, `APP_PRIVATE_SUBNET_A_ID`, `APP_PRIVATE_SUBNET_C_ID`, `DB_PRIVATE_SUBNET_A_ID`, `DB_PRIVATE_SUBNET_C_ID` | `2a`/`2c` 퍼블릭(ALB), 앱 프라이빗(EKS 노드), DB 프라이빗(RDS) 서브넷 ID |
 | **엣지 / 도메인** | `DOMAIN_NAME`, `ROUTE53_HOSTED_ZONE_ID`, `ACM_CERTIFICATE_ARN`, `WAF_WEB_ACL_ARN` | Route 53 도메인·호스팅 영역, ACM 인증서 ARN, WAFv2 WebACL ARN |
-| **컨테이너 이미지** | `ECR_WEB_REPOSITORY_URI`, `ECR_WAS_REPOSITORY_URI`, `IMAGE_TAG` | `web`/`was` ECR 리포지토리 URI 및 불변 이미지 태그 |
+| **컨테이너 이미지** | `ECR_WEB_REPOSITORY_URI`, `ECR_WAS_REPOSITORY_URI`, `IMAGE_TAG`, `STABLE_IMAGE_TAG`, `CANARY_IMAGE_TAG` | `web`/`was` ECR 리포지토리 URI, 빌드 태그 및 stable/canary 배포 태그 |
 | **애플리케이션** | `SPRING_PROFILES_ACTIVE`, `JAVA_OPTS`, `WAS_UPSTREAM_HOST`, `WAS_UPSTREAM_PORT` | Spring 런타임 프로필(`jpa`), JVM 옵션, Nginx 업스트림 호스트/포트 |
-| **DB / 시크릿** | `RDS_SECRET_NAME`, `RDS_HOST`, `RDS_PORT`, `RDS_DB_NAME`, `JDBC_URL`, `JDBC_USERNAME`, `JDBC_PASSWORD` | Secrets Manager 시크릿 경로(`petclinic/*`) 및 ESO가 생성하는 `petclinic-rds-secret` 키 |
-| **관측성 / 백업** | `CW_LOG_GROUP_NAME`, `PROMETHEUS_SERVER_URL`, `GRAFANA_ADMIN_SECRET_NAME`, `BACKUP_S3_BUCKET_NAME` | CloudWatch 로그 그룹, Prometheus 쿼리 URL, Grafana 시크릿 경로(`petclinic/*`), 백업용 S3 버킷명 |
+| **DB / 시크릿** | `RDS_SECRET_NAME`, `RDS_APP_SECRET_NAME`, `RDS_BACKUP_SECRET_NAME`, `RDS_HOST`, `RDS_PORT`, `RDS_DB_NAME`, `JDBC_URL`, `JDBC_USERNAME`, `JDBC_PASSWORD` | admin/app/backup 계정별 Secrets Manager 시크릿 경로(`petclinic/*`) 및 ESO가 생성하는 시크릿 키 |
+| **관측성 / 백업** | `CW_LOG_GROUP_NAME`, `PROMETHEUS_SERVER_URL`, `GRAFANA_ADMIN_SECRET_NAME`, `ALERTMANAGER_WEBHOOK_SECRET_NAME`, `ALERTMANAGER_WEBHOOK_URL`, `BACKUP_S3_BUCKET_NAME` | CloudWatch 로그 그룹, Prometheus 쿼리 URL, Grafana·Alertmanager Webhook 시크릿 경로(`petclinic/*`), Webhook URL(post-cluster에서 시크릿 생성 시에만 사용), 백업용 S3 버킷명 |
 
 ---
 
@@ -189,10 +200,11 @@
 
 - **AWS 관리형 서비스**:
   - **Amazon RDS for MySQL (`8.0.39`)**: 애플리케이션 영속 데이터 저장소 (`:3306`, Multi-AZ, `require_secure_transport=ON`, `error`/`slowquery` CloudWatch 로그 내보내기, 삭제 보호 활성화)
-  - **AWS Secrets Manager**: RDS 접속 정보(`$RDS_SECRET_NAME`) 및 Grafana 관리자 자격증명(`$GRAFANA_ADMIN_SECRET_NAME`) 보관
+  - **AWS Secrets Manager**: RDS 계정별 접속 정보(`$RDS_SECRET_NAME` admin, `$RDS_APP_SECRET_NAME` app, `$RDS_BACKUP_SECRET_NAME` backup), Grafana 관리자 자격증명(`$GRAFANA_ADMIN_SECRET_NAME`), Alertmanager Webhook URL(`$ALERTMANAGER_WEBHOOK_SECRET_NAME`) 보관
   - **Amazon S3**: `db-backup` CronJob의 `mysqldump` 백업 파일 저장소 (퍼블릭 액세스 완전 차단, SSE-KMS 기본 암호화, 버전 관리 활성화)
   - **Amazon ECR**: `petclinic-web`, `petclinic-was` 컨테이너 이미지 저장소 (`IMMUTABLE` 태그, 푸시 시 자동 스캔, KMS 암호화)
   - **Amazon CloudWatch Logs**: Fluent Bit가 전송하는 클러스터 컨테이너 로그 및 RDS 에러/슬로우쿼리 로그 보관 (보존 기간 30일)
+  - **알림 수신처 (Webhook)**: Alertmanager가 HTTPS(`443`)로 알림을 전송하는 Slack/PagerDuty 등 외부 Webhook
   - **Amazon Route 53 / AWS Certificate Manager (ACM) / AWS WAFv2**: DNS 관리, DNS 검증 기반 TLS 인증서, 리전 WebACL(`AWSManagedRulesCommonRuleSet`, `AWSManagedRulesSQLiRuleSet`, `AWSManagedRulesKnownBadInputsRuleSet`)
 - **외부 아티팩트 / Helm 차트 레지스트리 (빌드·배포 시점)**:
   - Maven Central (`com.mysql:mysql-connector-j:8.1.0`, `io.prometheus.jmx:jmx_prometheus_javaagent:1.0.1` SHA256 검증 포함, WebJars)
@@ -211,14 +223,15 @@
    - RDS 보안 그룹은 오직 EKS 클러스터 보안 그룹에서 오는 `TCP 3306`만 허용하며 퍼블릭 접근(`--no-publicly-accessible`)을 차단한다.
    - Amazon VPC CNI의 `enableNetworkPolicy: "true"` 및 `enablePolicyEventLogs: "true"`를 활성화한다.
    - `petclinic` 네임스페이스는 `default-deny-all`(Ingress/Egress 기본 차단) 정책을 기반으로 DNS(`53`), `nginx-gateway`→`web`(`8080`), `web`→`was`(`8080`), `Prometheus`→`web`(`9113`)/`was`(`9404`), `was`·`db-init`·`db-backup`→RDS(`3306`), `db-backup`→S3/STS(`443`) 통신만 명시적으로 허용한다.
-   - `monitoring` 네임스페이스의 Prometheus(`:9090`)는 `prometheus-ingress` NetworkPolicy를 통해 KEDA, Grafana, Prometheus 자체 Pod에서의 접근만 허용한다.
+   - `monitoring` 네임스페이스의 Prometheus(`:9090`)는 `prometheus-ingress` NetworkPolicy를 통해 KEDA, Grafana, Prometheus 자체 Pod에서의 접근만 허용하고, Alertmanager는 `alertmanager-egress` NetworkPolicy로 DNS와 HTTPS(`443`, IMDS `169.254.169.254` 제외) 송신만 허용한다.
 3. **최소 권한 IAM (IRSA) 및 IMDS 차단**:
    - 모든 관리형 노드 그룹(`ng-critical`, `ng-platform`)에 `disableIMDSv1: true`, `disablePodIMDS: true`를 설정하고, Karpenter `EC2NodeClass`(`np-app`)에 `httpTokens: required`, `httpPutResponseHopLimit: 1`을 설정하여 일반 Pod가 노드 IAM Role 자격증명을 탈취하지 못하게 차단한다.
    - 컨트롤러 및 백업 잡은 전용 IRSA ServiceAccount를 사용하며, 리소스 범위를 최소한으로 제한한다 (ESO는 `secret:petclinic/*` 읽기만, `db-backup`은 `s3:::${BACKUP_S3_BUCKET_NAME}/petclinic/*`의 `s3:PutObject`만, Fluent Bit는 지정된 로그 그룹 쓰기만 허용).
    - K8s API 접근이 불필요한 애플리케이션 Pod(`web`, `was`, `db-init`)는 `automountServiceAccountToken: false`로 토큰 마운트를 비활성화한다.
 4. **시크릿 외부화 및 로그 개인정보 보호**:
    - 소스 코드, `pom.xml`의 모든 프로필, `Dockerfile`, K8s 매니페스트 어디에도 평문 패스워드를 저장하지 않으며(`scripts/validate-manifests.sh`로 검증), AWS CLI 호출 시에도 비밀번호가 프로세스 인자(`argv`)에 노출되지 않도록 `jq` 표준 입력(`file:///dev/stdin`)으로 전달한다.
-   - ESO가 AWS Secrets Manager의 시크릿을 주기적으로 동기화하여 `petclinic-rds-secret` 및 `grafana-admin-secret`을 생성한다.
+   - ESO가 AWS Secrets Manager의 시크릿을 주기적으로 동기화하여 `petclinic-rds-admin-secret`(db-init 전용), `petclinic-rds-secret`(was), `petclinic-rds-backup-secret`(db-backup), `grafana-admin`, `alertmanager-webhook`을 생성한다. Alertmanager Webhook URL은 Helm values나 Alertmanager 설정에 들어가지 않고 Secret 파일(`url_file`)로만 읽는다.
+   - DB 계정은 역할별로 분리한다: admin(스키마 관리, db-init만 사용), app(`SELECT/INSERT/UPDATE/DELETE`), backup(`SELECT, SHOW VIEW, TRIGGER, LOCK TABLES, PROCESS`). 모든 계정은 `REQUIRE SSL`이며, 비밀번호 변경은 `scripts/rotate-db-secrets.sh`로 반영한다(ESO 동기화가 확인되지 않으면 db-init 전에 중단).
    - 운영 로그(CloudWatch Logs)에 고객 개인정보(Owner 이름·주소·전화번호)가 포함된 SQL문이 유출되지 않도록 `jpa.showSql=false`를 기본값으로 유지한다.
 5. **컨테이너 및 네임스페이스 하드닝**:
    - 모든 네임스페이스에 워크로드 특성에 맞는 Pod Security Standards(`petclinic`: `enforce: restricted`, `nginx-gateway`/`external-secrets`/`keda`: `enforce: baseline`, `monitoring`/`amazon-cloudwatch`: `enforce: privileged`) 레이블을 적용한다.
@@ -234,3 +247,6 @@
 - `petclinic-eks-implementation`: Karpenter 앱 노드풀을 `np-app`(On-Demand 전용, `weight: 100`, `16 vCPU` 한도)과 `np-app-spot`(Spot 전용, `48 vCPU` 한도) 두 개의 `NodePool`로 분리함 / 단일 NodePool에 `on-demand`와 `spot`을 함께 나열하면 Karpenter가 비용 최적화를 위해 Spot을 우선 선택하므로, 기본 용량은 On-Demand에 보장하고 초과 부하만 Spot으로 확장하려는 설계 의도를 정확히 구현하기 위함
 - `petclinic-eks-implementation`: MySQL 프로필 빌드 시 Spring 기동 단계의 `<jdbc:initialize-database>`를 비활성화(`jdbc.initEnabled=false`)하고 `ng-critical`의 `db-init` Job이 스키마·데이터 초기화를 전담하도록 분리함 / `was` Pod가 오토스케일링이나 카나리 배포로 기동될 때마다 RDS에 중복 DDL/DML을 실행하는 경합 조건을 방지하기 위함
 - `petclinic-eks-implementation`: `docker/was/Dockerfile` 빌드 단계에서 `petclinic.war`를 `webapps/ROOT`로 사전 언패킹하고 Tomcat 런타임 쓰기 디렉터리(`work`, `temp`, `logs`, `conf/Catalina`, `/tmp`)를 `emptyDir`로 마운트함 / Tomcat 11 컨테이너에서도 `readOnlyRootFilesystem: true`를 강제하여 런타임 파일시스템 변조를 차단하기 위함
+- `production-hardening`: EKS를 1.31에서 1.33이 아닌 표준 지원 `1.36`으로 올리고, 1.36을 지원하지 않는 Karpenter·KEDA·ESO·AMI만 함께 올림 / 1.33은 2026-07-29부터 확장 지원 구간이라 표준 지원이 긴 버전을 택했고(`docs/design.md` Q4), 나머지 애드온(NGF, LBC, kube-prometheus-stack 등) 상향은 Q6 후속 작업으로 남김. 기존 클러스터의 제자리 업그레이드는 다루지 않음
+- `production-hardening`: 배포 시 `HTTPRoute`를 먼저 100:0으로 적용하고 Gateway의 수용(`Accepted`, 현재 generation)을 확인한 뒤에 워크로드를 롤아웃하며, `X-Canary: always` 동적 경로 검증 후에만 90:10으로 개방함 / 이전 배포의 90:10 상태에서 재배포하더라도 검증 전 카나리 Pod가 일반 트래픽을 받지 않게 하기 위함
+- `production-hardening`: Alertmanager Webhook URL을 `.env` → envsubst 주입 대신 Secrets Manager + ESO로 전달하고 `url_file`로 읽음 / 토큰이 포함된 URL이 Helm release values와 Alertmanager 설정 Secret에 평문으로 남지 않게 하기 위함
