@@ -2,6 +2,7 @@
 # Offline checks (no cluster needed). Requires python3 + PyYAML.
 #   1. YAML syntax           2. no :latest / untagged images (templated: STABLE/CANARY_IMAGE_TAG)
 #   3. no plaintext secrets  4. node-tier placement + non-root securityContext
+#   5. stable/canary tags, DB secret per role, JDBC pool cap, KEDA fallback, Prometheus HA, PDBs
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
@@ -148,6 +149,66 @@ for f in files:
         users = re.findall(r"^\s*USER\s+(\S+)", f.read_text(encoding="utf-8"), re.M)
         if not users or users[-1] in ("0", "root"):
             err(f"{f.relative_to(root)}: final USER must be non-root")
+
+# 5. Operational guards (design Steps 9-11)
+k8s_docs = [(f.relative_to(root), d) for f, ds in docs.items() if f.relative_to(root).parts[0] == "k8s"
+            for d in ds if isinstance(d, dict)]
+def find(kind, name):
+    return next((d for _, d in k8s_docs if d.get("kind") == kind and d["metadata"]["name"] == name), None)
+
+# Stable and canary roll out different images.
+for rel, d in k8s_docs:
+    if d.get("kind") != "Deployment":
+        continue
+    track = (d["metadata"].get("labels") or {}).get("track")
+    want = {"stable": ":${STABLE_IMAGE_TAG}", "canary": ":${CANARY_IMAGE_TAG}"}.get(track)
+    for c in pod_spec(d)["containers"]:
+        if want and "${" in c["image"] and not c["image"].endswith(want):
+            err(f"{rel}:Deployment/{d['metadata']['name']}: track {track} must use {want}")
+
+# Each DB role reads only its own secret; only db-init may use the admin account.
+DB_SECRETS = {"petclinic-rds-admin-secret", "petclinic-rds-secret", "petclinic-rds-backup-secret"}
+ALLOWED = {"was-stable": {"petclinic-rds-secret"}, "was-canary": {"petclinic-rds-secret"},
+           "db-backup": {"petclinic-rds-backup-secret"}, "db-init": DB_SECRETS}
+for rel, d in k8s_docs:
+    spec = pod_spec(d)
+    if spec is None:
+        continue
+    name = d["metadata"]["name"]
+    for c in (spec.get("initContainers") or []) + spec["containers"]:
+        for e in c.get("env") or []:
+            ref = ((e.get("valueFrom") or {}).get("secretKeyRef") or {}).get("name")
+            if ref in DB_SECRETS and ref not in ALLOWED.get(name, set()):
+                err(f"{rel}:{d['kind']}/{name}: must not read {ref}")
+            if name == "db-init" and e["name"] in ("JDBC_USERNAME", "MYSQL_PWD") and ref != "petclinic-rds-admin-secret":
+                err(f"{rel}:Job/db-init: {e['name']} must come from petclinic-rds-admin-secret")
+for es in ("petclinic-rds-admin", "petclinic-rds", "petclinic-rds-backup"):
+    if find("ExternalSecret", es) is None:
+        err(f"k8s/secrets: missing ExternalSecret/{es}")
+
+# JDBC pool is capped (RDS connection budget).
+props = (root / "app/src/main/resources/spring/data-access.properties").read_text(encoding="utf-8")
+m = re.search(r"^jdbc\.pool\.maxActive=(\d+)\s*$", props, re.M)
+if not m or int(m.group(1)) > 10:
+    err("data-access.properties: jdbc.pool.maxActive must be set and <= 10")
+if 'p:maxActive="${jdbc.pool.maxActive}"' not in (root / "app/src/main/resources/spring/datasource-config.xml").read_text(encoding="utf-8"):
+    err("datasource-config.xml: dataSource must use ${jdbc.pool.maxActive}")
+
+# KEDA keeps a safe replica count when Prometheus is down.
+so = find("ScaledObject", "was-stable")
+if not so or not (so["spec"].get("fallback") or {}).get("replicas"):
+    err("ScaledObject/was-stable: fallback.replicas must be set")
+
+# Prometheus survives one AZ.
+if int(kps.get("prometheus", {}).get("prometheusSpec", {}).get("replicas", 1)) < 2:
+    err("kube-prometheus-values: prometheus.prometheusSpec.replicas must be >= 2")
+
+# Stable tracks keep a pod through voluntary disruptions.
+for app in ("web", "was"):
+    sel = {"app": app, "track": "stable"}
+    if not any(d.get("kind") == "PodDisruptionBudget" and (d["spec"].get("selector") or {}).get("matchLabels") == sel
+               for _, d in k8s_docs):
+        err(f"missing PodDisruptionBudget for {sel}")
 
 if errors:
     print("\n".join("FAIL " + e for e in errors))
