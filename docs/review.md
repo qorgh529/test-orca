@@ -39,12 +39,12 @@
 
 ### High
 
-- [ ] `app/src/main/webapp/WEB-INF/jsp/pets/createOrUpdatePetForm.jsp:12` — Round 1의 날짜 형식 불일치가 여전히 남아 있다. flatpickr 기본값은 `Y-m-d`인데 `app/src/main/java/org/springframework/samples/petclinic/model/Pet.java:49`는 `yyyy/MM/dd`를 요구한다. `app/src/main/webapp/WEB-INF/jsp/pets/createOrUpdateVisitForm.jsp:13`과 `app/src/main/java/org/springframework/samples/petclinic/model/Visit.java:41`도 동일하다. 달력에서 선택한 날짜로 Pet/Visit 등록 또는 Pet 수정을 제출하면 바인딩 오류가 발생한다. 설계 Q3의 예외 허용 여부를 결정한 뒤 날짜 형식을 맞추고, 실제 선택기가 생성하는 입력으로 회귀 검증할 것. 보류 사유는 확인했으나 기능 결함이 해결된 것은 아니다. 근거: [flatpickr 4.6.13 기본 옵션](https://raw.githubusercontent.com/flatpickr/flatpickr/v4.6.13/src/types/options.ts).
+- [ ] `app/src/main/webapp/WEB-INF/jsp/pets/createOrUpdatePetForm.jsp:12` — Round 1의 날짜 형식 불일치가 여전히 남아 있다. flatpickr 기본값은 `Y-m-d`인데 `app/src/main/java/org/springframework/samples/petclinic/model/Pet.java:49`는 `yyyy/MM/dd`를 요구한다. `app/src/main/webapp/WEB-INF/jsp/pets/createOrUpdateVisitForm.jsp:13`과 `app/src/main/java/org/springframework/samples/petclinic/model/Visit.java:41`도 동일하다. 달력에서 선택한 날짜로 Pet/Visit 등록 또는 Pet 수정을 제출하면 바인딩 오류가 발생한다. 설계 Q3의 예외 허용 여부를 결정한 뒤 날짜 형식을 맞추고, 실제 선택기가 생성하는 입력으로 회귀 검증할 것. 보류 사유는 확인했으나 기능 결함이 해결된 것은 아니다. 근거: [flatpickr 4.6.13 기본 옵션](https://raw.githubusercontent.com/flatpickr/flatpickr/v4.6.13/src/types/options.ts). → 보류: design.md Q3(§1.3 예외 허용 여부) 사용자 결정 대기
 
 ### Medium / Low
 
-- [ ] `infra/karpenter/nodepool-app.yaml:18` — Medium: `on-demand`와 `spot`을 함께 허용하는 목록은 우선순위나 기본 On-Demand 용량을 보장하지 않는다. Karpenter는 이 구성에서 Spot을 우선하므로 NGF/web/was가 모두 Spot에 배치될 수 있으며, 설계 §4.2의 “On-Demand 기본 + Spot 확장”과 다르다. 기본 용량을 On-Demand에 배치하는 노드풀 및 워크로드 제약을 명시하고 Spot 확장 정책을 분리하거나, 설계를 실제 Spot 우선 정책과 일치시키는 합의를 남길 것. 근거: [Karpenter v1.0 Capacity Type](https://karpenter.sh/v1.0/concepts/nodepools/#capacity-type).
-- [ ] `scripts/deploy-all.sh:102` — Medium: 배포 완료 검사가 `was-stable`과 `web`만 기다린다. 앞서 적용한 `k8s/gateway/httproute-canary.yaml:24`는 이미 카나리에 10%를 배분하므로, `was-canary` 또는 `web-canary`가 Pending/CrashLoop 상태여도 스크립트는 성공과 접속 URL을 출력할 수 있다. 특히 web의 `/healthz`는 WAS를 조회하지 않아 stable web 준비 상태로 카나리 장애를 검출할 수 없다. 두 카나리 Deployment의 rollout도 확인하고, `X-Canary: always`를 사용한 동적 경로 확인을 배포 검증에 포함할 것. 카나리 실패를 주입했을 때 배포 검사가 실패하는지도 검증할 것.
+- [x] `infra/karpenter/nodepool-app.yaml:18` — Medium: `on-demand`와 `spot`을 함께 허용하는 목록은 우선순위나 기본 On-Demand 용량을 보장하지 않는다. Karpenter는 이 구성에서 Spot을 우선하므로 NGF/web/was가 모두 Spot에 배치될 수 있으며, 설계 §4.2의 “On-Demand 기본 + Spot 확장”과 다르다. 기본 용량을 On-Demand에 배치하는 노드풀 및 워크로드 제약을 명시하고 Spot 확장 정책을 분리하거나, 설계를 실제 Spot 우선 정책과 일치시키는 합의를 남길 것. 근거: [Karpenter v1.0 Capacity Type](https://karpenter.sh/v1.0/concepts/nodepools/#capacity-type). → 239a6b2
+- [x] `scripts/deploy-all.sh:102` — Medium: 배포 완료 검사가 `was-stable`과 `web`만 기다린다. 앞서 적용한 `k8s/gateway/httproute-canary.yaml:24`는 이미 카나리에 10%를 배분하므로, `was-canary` 또는 `web-canary`가 Pending/CrashLoop 상태여도 스크립트는 성공과 접속 URL을 출력할 수 있다. 특히 web의 `/healthz`는 WAS를 조회하지 않아 stable web 준비 상태로 카나리 장애를 검출할 수 없다. 두 카나리 Deployment의 rollout도 확인하고, `X-Canary: always`를 사용한 동적 경로 확인을 배포 검증에 포함할 것. 카나리 실패를 주입했을 때 배포 검사가 실패하는지도 검증할 것. → aacf300 (실클러스터 장애 주입 검증은 미수행)
 
 ### 이전 라운드 완료 항목 재확인
 
