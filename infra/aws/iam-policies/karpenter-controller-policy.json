@@ -95,8 +95,10 @@
       "Effect": "Allow",
       "Action": [
         "ec2:DescribeAvailabilityZones",
+        "ec2:DescribeCapacityReservations",
         "ec2:DescribeImages",
         "ec2:DescribeInstances",
+        "ec2:DescribeInstanceStatus",
         "ec2:DescribeInstanceTypeOfferings",
         "ec2:DescribeInstanceTypes",
         "ec2:DescribeLaunchTemplates",
@@ -152,6 +154,12 @@
         },
         "StringLike": { "aws:ResourceTag/karpenter.k8s.aws/ec2nodeclass": "*" }
       }
+    },
+    {
+      "Sid": "AllowUnscopedInstanceProfileListAction",
+      "Effect": "Allow",
+      "Action": "iam:ListInstanceProfiles",
+      "Resource": "*"
     },
     {
       "Sid": "AllowInstanceProfileReadActions",

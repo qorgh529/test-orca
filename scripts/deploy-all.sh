@@ -48,14 +48,17 @@ helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-contro
 helm upgrade --install metrics-server metrics-server/metrics-server \
   --version 3.12.2 -n kube-system -f "$CRITICAL"
 
+# The karpenter chart only installs CRDs on first install; karpenter-crd keeps them current on upgrades.
+helm upgrade --install karpenter-crd oci://public.ecr.aws/karpenter/karpenter-crd \
+  --version 1.15.0 -n kube-system
 helm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter \
-  --version 1.0.6 -n kube-system -f "$CRITICAL" \
+  --version 1.15.0 -n kube-system -f "$CRITICAL" \
   --set settings.clusterName="$EKS_CLUSTER_NAME" \
   --set-json "controller.env=[{\"name\":\"AWS_REGION\",\"value\":\"$AWS_REGION\"}]" \
   --set serviceAccount.create=false --set serviceAccount.name=karpenter
 
 helm upgrade --install external-secrets external-secrets/external-secrets \
-  --version 0.10.4 -n external-secrets -f "$CRITICAL" \
+  --version 2.13.0 -n external-secrets -f "$CRITICAL" \
   --set-json 'webhook.nodeSelector={"workload-tier":"critical"}' \
   --set-json 'webhook.tolerations=[{"key":"node-role","operator":"Equal","value":"critical","effect":"NoSchedule"}]' \
   --set-json 'certController.nodeSelector={"workload-tier":"critical"}' \
@@ -84,7 +87,7 @@ helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheu
 kubectl apply -f "$K/monitoring/servicemonitor-petclinic.yaml" -f "$K/monitoring/networkpolicy-prometheus.yaml" \
   -f "$K/monitoring/prometheusrule-petclinic.yaml"
 # After the monitoring stack: the operator-metrics ServiceMonitor needs its CRD (PetClinicKedaMetricsError).
-helm upgrade --install keda kedacore/keda --version 2.15.2 -n keda -f "$CRITICAL" \
+helm upgrade --install keda kedacore/keda --version 2.21.0 -n keda -f "$CRITICAL" \
   --set prometheus.operator.enabled=true --set prometheus.operator.serviceMonitor.enabled=true
 helm upgrade --install aws-for-fluent-bit eks/aws-for-fluent-bit \
   --version 0.1.34 -n amazon-cloudwatch -f <(render "$K/logging/fluent-bit-values.yaml")

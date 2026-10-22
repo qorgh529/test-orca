@@ -6,7 +6,7 @@ spec:
   role: KarpenterNodeRole-${EKS_CLUSTER_NAME}
   # Pinned AMI release; bump deliberately.
   amiSelectorTerms:
-    - alias: al2023@v20241024
+    - alias: al2023@v20260930
   subnetSelectorTerms:
     - tags:
         karpenter.sh/discovery: ${EKS_CLUSTER_NAME}
