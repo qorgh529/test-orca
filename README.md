@@ -14,7 +14,7 @@
   - **Route 53 + ACM + AWS WAFv2**(`CommonRuleSet`, `SQLiRuleSet`, `KnownBadInputsRuleSet`)로 인터넷 경계를 보호하고, **AWS Load Balancer Controller(LBC)** 가 생성한 ALB(`target-type: ip`, HTTPS 443 강제, 비정상 헤더 드롭)가 **NGINX Gateway Fabric(NGF)** Pod로 직접 라우팅합니다.
 - **안전한 카나리 배포 게이팅 (Canary Traffic Gating)**:
   - `web`/`was-stable`(`STABLE_IMAGE_TAG`)과 `web-canary`/`was-canary`(`CANARY_IMAGE_TAG`)의 버전을 분리합니다.
-  - 배포 시 먼저 `HTTPRoute` 가중치를 **`100:0`으로 고정(Gateway `Accepted` 확인)** 한 상태에서 카나리 Pod를 롤아웃하고, `X-Canary: always` 헤더로 동적 DB 조회 경로(`/owners?lastName=`)를 E2E 검증한 뒤에만 **`90:10`** 으로 개방합니다.
+  - 배포 시 먼저 `HTTPRoute` 가중치를 **`100:0`으로 고정(Gateway `Accepted` 확인)** 한 상태에서 카나리 Pod를 롤아웃하고, `X-Canary: always` 헤더로 동적 DB 조회 경로(`/owners?lastName=`)를 E2E 검증한 뒤에만 운영자가 정한 비율(`STABLE_WEIGHT`/`CANARY_WEIGHT`, 기본 **`90:10`**)로 개방합니다. 이후 비율 확대·롤백은 재배포 없이 `scripts/set-canary-weight.sh`로 합니다.
 - **Web / WAS 2-Tier 분리 및 정교한 오토스케일링**:
   - **Web 계층 (`web`, Nginx 1.27)**: 정적 에셋(`/resources/*`, `/webjars/*`) 직접 서빙 및 보안 응답 헤더 부여, 동적 요청은 WAS(`:8080`)로 프록시. CPU 사용률(60%) 기준 **HPA**(`web` 2~10, `web-canary` 1~4)로 수평 확장.
   - **WAS 계층 (`was`, Tomcat 11 + Java 21)**: 사전 언패킹된 `webapps/ROOT` 구동 및 **JMX Exporter**(`:9404/metrics`) 내장. Prometheus가 수집한 초당 요청 수(`> 50 req/s`)를 기반으로 **KEDA `ScaledObject`**(`was-stable` 2~10 / `fallback: 4`, `was-canary` 1~3 / `fallback: 2`)가 수평 확장.
@@ -42,10 +42,10 @@
 | **Application** | Spring Framework PetClinic | `7.0.3` (Spring `7.0.9`, Hibernate `7.4.11.Final`, Java 21 런타임) |
 | **Web / WAS** | Nginx / Apache Tomcat 11 | `nginx:1.27.2-alpine`, `tomcat:11.0.2-jre21-temurin-noble`, `jmx_prometheus_javaagent:1.0.1` |
 | **Kubernetes** | Amazon EKS / Worker AMI | EKS **`1.36`**, AL2023 **`al2023@v20260930`** |
-| **Gateway / Ingress** | Gateway API / NGF / LBC | Gateway API CRDs `v1.2.0`, `nginx-gateway-fabric` `1.5.1`, `aws-load-balancer-controller` `1.9.2` |
-| **Autoscaling** | Karpenter / KEDA / Metrics Server | Karpenter **`1.15.0`**, KEDA **`2.21.0`**, Metrics Server `3.12.2` |
+| **Gateway / Ingress** | Gateway API / NGF / LBC | Gateway API CRDs **`v1.6.3`**, `nginx-gateway-fabric` **`2.8.0`**, `aws-load-balancer-controller` **`3.6.1`** |
+| **Autoscaling** | Karpenter / KEDA / Metrics Server | Karpenter **`1.15.0`**, KEDA **`2.21.0`**, Metrics Server **`3.14.0`** |
 | **Secrets / Storage** | ESO / EBS CSI Driver | `external-secrets` **`2.13.0`** (`v1` API), `aws-ebs-csi-driver` (`${EBS_CSI_ADDON_VERSION}`) |
-| **Observability** | Prometheus Stack / Fluent Bit | `kube-prometheus-stack` `65.8.1`, `aws-for-fluent-bit` `0.1.34` (`2.32.2`) |
+| **Observability** | Prometheus Stack / Fluent Bit | `kube-prometheus-stack` **`92.11.0`** (Prometheus `v3.15.0`), `aws-for-fluent-bit` **`0.2.0`** (`3.2.1`) |
 | **Database / Backup** | Amazon RDS for MySQL / S3 | MySQL **`8.0.39`** (`db.t3.medium` Multi-AZ), `mysql:8.0.39`, `amazon/aws-cli:2.18.0` |
 
 ---
@@ -96,7 +96,7 @@ IMAGE_TAG=v1.0.0 ./scripts/build-and-push.sh
 ```bash
 STABLE_IMAGE_TAG=v1.0.0 CANARY_IMAGE_TAG=v1.0.0 ./scripts/deploy-all.sh
 ```
-> `deploy-all.sh`는 매니페스트 정적 검증(`validate-manifests.sh`) → 네임스페이스/StorageClass/Gateway API CRD 설치 → 클러스터 컨트롤러(LBC, Metrics Server, Karpenter, ESO) 설치 → Karpenter `np-app` 및 NGF 배포 → ESO 시크릿 동기화 대기 → 모니터링(Prometheus/Grafana/Alertmanager) 및 KEDA/Fluent Bit 설치 → `db-init` Job 및 `db-backup` CronJob 배포 → `HTTPRoute` `100:0` 격리 후 `was`/`web` 롤아웃 → Route 53 연결 → `X-Canary: always` 동적 경로 검증 → 통과 시 `90:10` 개방까지 순서대로 수행합니다.
+> `deploy-all.sh`는 매니페스트 정적 검증(`validate-manifests.sh`) → 네임스페이스/StorageClass/Gateway API CRD 설치 → 클러스터 컨트롤러(LBC, Metrics Server, Karpenter, ESO) 설치 → Karpenter `np-app` 및 NGF 배포 → ESO 시크릿 동기화 대기 → 모니터링(Prometheus/Grafana/Alertmanager) 및 KEDA/Fluent Bit 설치 → `db-init` Job 및 `db-backup` CronJob 배포 → `HTTPRoute` `100:0` 격리 후 `was`/`web` 롤아웃 → Route 53 연결 → `X-Canary: always` 동적 경로 검증 → 통과 시 `STABLE_WEIGHT:CANARY_WEIGHT`(기본 `90:10`) 개방까지 순서대로 수행합니다.
 
 ---
 
@@ -119,12 +119,17 @@ STABLE_IMAGE_TAG=v1.0.0 CANARY_IMAGE_TAG=v1.0.0 ./scripts/deploy-all.sh
 # 새 후보 버전(v1.1.0) 빌드 및 푸시
 IMAGE_TAG=v1.1.0 ./scripts/build-and-push.sh
 
-# Stable(v1.0.0)은 유지하고 Canary(v1.1.0)를 0%에서 검증 후 10% 트래픽 개방
-STABLE_IMAGE_TAG=v1.0.0 CANARY_IMAGE_TAG=v1.1.0 ./scripts/deploy-all.sh
+# Stable(v1.0.0)은 유지하고 Canary(v1.1.0)를 0%에서 검증 후 개방 (위험한 변경이면 5%처럼 작게)
+STABLE_IMAGE_TAG=v1.0.0 CANARY_IMAGE_TAG=v1.1.0 STABLE_WEIGHT=95 CANARY_WEIGHT=5 ./scripts/deploy-all.sh
+
+# 지표를 보며 재배포 없이 확대
+./scripts/set-canary-weight.sh 25
 
 # 카나리 이상 징후 발생 시 즉시 0%로 차단(롤백)
-. ./scripts/lib.sh
-STABLE_WEIGHT=100 CANARY_WEIGHT=0 render k8s/gateway/httproute-canary.yaml | kubectl apply -f -
+./scripts/set-canary-weight.sh 0
+
+# 승격: 카나리 태그를 Stable로 재배포
+STABLE_IMAGE_TAG=v1.1.0 CANARY_IMAGE_TAG=v1.1.0 ./scripts/deploy-all.sh
 ```
 
 ### 4) DB 비밀번호 무중단 회전 (Secret Rotation)
