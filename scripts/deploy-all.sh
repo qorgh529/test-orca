@@ -41,7 +41,7 @@ helm repo update
 
 echo "== Controllers on ng-critical (SAs with IRSA are created by eksctl)"
 helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
-  --version 1.9.2 -n kube-system -f "$CRITICAL" \
+  --version 3.6.1 -n kube-system -f "$CRITICAL" \
   --set clusterName="$EKS_CLUSTER_NAME" --set region="$AWS_REGION" --set vpcId="$VPC_ID" \
   --set serviceAccount.create=false --set serviceAccount.name=aws-load-balancer-controller
 
