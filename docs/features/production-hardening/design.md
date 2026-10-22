@@ -232,7 +232,7 @@ sequenceDiagram
   - aws-for-fluent-bit 이미지 태그를 차트 기본값 `3.2.1`로 고정.
 - [x] **Step 9: 문서 반영 (`docs/architecture.md`)**
   - 버전 표, 구성 요소, 디렉터리 구조를 Step 6–8에 맞춰 갱신.
-- [ ] **Step 10: 운영자 지정 카나리 개방 비율 및 가중치 조절 명령 (`scripts/`, `.env.example`, `docs/architecture.md`)** (Q8 답변)
+- [x] **Step 10: 운영자 지정 카나리 개방 비율 및 가중치 조절 명령 (`scripts/`, `.env.example`, `docs/architecture.md`)** (Q8 답변)
   - `deploy-all.sh`: 검증 전 `100:0` 고정은 그대로 두고, 검증 통과 후 `STABLE_WEIGHT`/`CANARY_WEIGHT`(기본 `90`/`10`)로 개방. 두 값은 0–100 정수이고 합이 100이어야 하며, 배포 시작 전에 검사한다.
   - `scripts/set-canary-weight.sh <카나리 비율>`: 재배포 없이 `HTTPRoute` 가중치만 변경(`0` = 긴급 롤백, `100` = 전체 카나리)하고 Gateway `Accepted`를 확인한다.
 

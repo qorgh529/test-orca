@@ -122,7 +122,8 @@
 └── scripts/
     ├── lib.sh                            # 공통 환경변수 로드(.env), 필수 변수 검증, envsubst 렌더링 함수
     ├── build-and-push.sh                 # ECR 로그인 및 web / was 이미지 빌드·푸시
-    ├── deploy-all.sh                     # 애드온/매니페스트 배포, 카나리 100:0 고정 후 롤아웃, Route 53 연결, 카나리 E2E 검증 후 90:10 개방
+    ├── deploy-all.sh                     # 애드온/매니페스트 배포, 카나리 100:0 고정 후 롤아웃, Route 53 연결, 카나리 E2E 검증 후 STABLE_WEIGHT:CANARY_WEIGHT(기본 90:10) 개방
+    ├── set-canary-weight.sh              # 재배포 없이 카나리 비율 변경 (0 = 긴급 롤백, 100 = 전체 카나리)
     ├── rotate-db-secrets.sh              # Secrets Manager DB 비밀번호 변경 반영 (ESO 강제 동기화 확인 → db-init → was 재시작)
     ├── test-prometheus-rules.sh          # promtool로 PrometheusRule 단위 테스트 실행
     └── validate-manifests.sh             # YAML 문법, 고정 이미지/애드온 버전, 평문 시크릿 부재, 노드 티어/비루트, 역할별 DB 시크릿·PDB·KEDA fallback 등 정적 검증기
@@ -188,7 +189,7 @@
 | **AWS / 클러스터** | `AWS_REGION`, `AWS_ACCOUNT_ID`, `EKS_CLUSTER_NAME`, `EBS_CSI_ADDON_VERSION` | 리전, 계정 ID, EKS 클러스터 식별자, EBS CSI 애드온 고정 버전 |
 | **VPC 서브넷** | `VPC_ID`, `PUBLIC_SUBNET_A_ID`, `PUBLIC_SUBNET_C_ID`, `APP_PRIVATE_SUBNET_A_ID`, `APP_PRIVATE_SUBNET_C_ID`, `DB_PRIVATE_SUBNET_A_ID`, `DB_PRIVATE_SUBNET_C_ID` | `2a`/`2c` 퍼블릭(ALB), 앱 프라이빗(EKS 노드), DB 프라이빗(RDS) 서브넷 ID |
 | **엣지 / 도메인** | `DOMAIN_NAME`, `ROUTE53_HOSTED_ZONE_ID`, `ACM_CERTIFICATE_ARN`, `WAF_WEB_ACL_ARN` | Route 53 도메인·호스팅 영역, ACM 인증서 ARN, WAFv2 WebACL ARN |
-| **컨테이너 이미지 / 카나리** | `ECR_WEB_REPOSITORY_URI`, `ECR_WAS_REPOSITORY_URI`, `IMAGE_TAG`, `STABLE_IMAGE_TAG`, `CANARY_IMAGE_TAG` | `web`/`was` ECR 리포지토리 URI, 빌드 태그, stable/canary 배포 태그. `HTTPRoute` 가중치 `STABLE_WEIGHT`/`CANARY_WEIGHT`는 `.env`가 아니라 `deploy-all.sh`가 지정(100:0 → 검증 후 90:10) |
+| **컨테이너 이미지 / 카나리** | `ECR_WEB_REPOSITORY_URI`, `ECR_WAS_REPOSITORY_URI`, `IMAGE_TAG`, `STABLE_IMAGE_TAG`, `CANARY_IMAGE_TAG`, `STABLE_WEIGHT`, `CANARY_WEIGHT` | `web`/`was` ECR 리포지토리 URI, 빌드 태그, stable/canary 배포 태그, 카나리 검증 통과 후 여는 `HTTPRoute` 가중치(비우면 90:10, 합 100). 검증 전에는 항상 100:0이며, 배포 후 비율 변경은 `scripts/set-canary-weight.sh` |
 | **애플리케이션** | `SPRING_PROFILES_ACTIVE`, `JAVA_OPTS`, `WAS_UPSTREAM_HOST`, `WAS_UPSTREAM_PORT` | Spring 런타임 프로필(`jpa`), JVM 옵션, Nginx 업스트림 호스트/포트 |
 | **DB / 시크릿** | `RDS_SECRET_NAME`, `RDS_APP_SECRET_NAME`, `RDS_BACKUP_SECRET_NAME`, `RDS_HOST`, `RDS_PORT`, `RDS_DB_NAME`, `JDBC_URL`, `JDBC_USERNAME`, `JDBC_PASSWORD`, `JDBC_DRIVER_CLASS_NAME` | admin/app/backup 계정별 Secrets Manager 시크릿 경로(`petclinic/*`), ESO가 생성하는 시크릿 키 및 MySQL JDBC 드라이버 클래스명 |
 | **관측성 / 백업** | `CW_LOG_GROUP_NAME`, `PROMETHEUS_SERVER_URL`, `GRAFANA_ADMIN_SECRET_NAME`, `ALERTMANAGER_WEBHOOK_SECRET_NAME`, `ALERTMANAGER_WEBHOOK_URL`, `BACKUP_S3_BUCKET_NAME` | CloudWatch 로그 그룹, Prometheus 쿼리 URL, Grafana·Alertmanager Webhook 시크릿 경로(`petclinic/*`), Webhook URL(post-cluster에서 시크릿 생성 시에만 사용), 백업용 S3 버킷명 |
@@ -252,3 +253,4 @@
 - `production-hardening`: DB 계정을 `petclinic_admin`(`db-init` 전용), `petclinic_app`(WAS DML 전용), `petclinic_backup`(`db-backup` 읽기/덤프 전용) 3개로 분리하고 Tomcat JDBC Pool 상한(`maxActive=10`)을 설정함 / 애플리케이션 침해 시 과도한 DB 권한 노출을 막고 최대 스케일 아웃 시에도 RDS `max_connections` 한도를 초과하지 않도록 보장하기 위함
 - `production-hardening`: Prometheus를 2 Replicas(AZ 분산 + 개별 `gp3` PVC)로 다중화하고 `was-stable`/`was-canary` KEDA `ScaledObject`에 `fallback`(4 / 2 레플리카)을 추가함 / 단일 AZ 장애나 Prometheus 일시 불능 시에도 모니터링과 WAS 오토스케일링 안전 용량이 유지되도록 하기 위함
 - `production-hardening`: 서비스 오픈 전에 NGF `2.8.0`(Gateway API `v1.6.3`), LBC `v3.6.1`, kube-prometheus-stack `92.11.0`, metrics-server `3.14.0`, aws-for-fluent-bit `0.2.0`까지 1.36 기준으로 상향함 / NGF 2.x 재설치·CRD 메이저 변경은 운영 중이면 다운타임이 생기므로, 사용자 트래픽이 없을 때 신규 클러스터 기준으로 맞춰 두기 위함. NGF 2.x에서 데이터 플레인 Service가 `petclinic-gateway-nginx`로 바뀌어 ALB 백엔드를 변경하고, 차트가 PDB를 제공하므로 별도 `pdb-nginx-gateway.yaml`은 삭제함
+- `production-hardening`: 카나리 개방 비율을 운영자가 정하도록 `STABLE_WEIGHT`/`CANARY_WEIGHT`(기본 90:10)를 받고, 재배포 없이 비율만 바꾸는 `scripts/set-canary-weight.sh`를 둠 (설계 Q8) / 배포 위험도에 따라 처음 여는 비율을 고르고 지표를 보며 넓히거나 즉시 100:0으로 되돌리는 것이 카나리를 택한 목적이기 때문. 검증 전 100:0 고정은 설정으로 바꿀 수 없음

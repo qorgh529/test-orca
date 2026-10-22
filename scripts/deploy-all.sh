@@ -10,6 +10,10 @@ require AWS_REGION AWS_ACCOUNT_ID EKS_CLUSTER_NAME VPC_ID PUBLIC_SUBNET_A_ID PUB
   RDS_SECRET_NAME RDS_APP_SECRET_NAME RDS_BACKUP_SECRET_NAME GRAFANA_ADMIN_SECRET_NAME PROMETHEUS_SERVER_URL CW_LOG_GROUP_NAME BACKUP_S3_BUCKET_NAME \
   ALERTMANAGER_WEBHOOK_SECRET_NAME
 
+# Split opened after the canary check (Q8: chosen per release risk). Checked before anything changes.
+OPEN_STABLE="${STABLE_WEIGHT:-90}" OPEN_CANARY="${CANARY_WEIGHT:-10}"
+check_weights "$OPEN_STABLE" "$OPEN_CANARY"
+
 "$ROOT/scripts/validate-manifests.sh"
 
 K="$ROOT/k8s"
@@ -110,15 +114,7 @@ kubectl -n petclinic wait --for=condition=Complete job/db-init --timeout=300s
 echo "== Routing: close canary (100/0) before any workload changes"
 # A re-deploy may start from 90/10; the new canary pods must not see user traffic before the check below.
 STABLE_WEIGHT=100 CANARY_WEIGHT=0 render_all "$K/gateway" | kubectl apply -f -
-gen=$(kubectl -n petclinic get httproute petclinic -o jsonpath='{.metadata.generation}')
-accepted=""
-for _ in $(seq 1 30); do
-  st=$(kubectl -n petclinic get httproute petclinic \
-    -o jsonpath='{.status.parents[0].conditions[?(@.type=="Accepted")].status}/{.status.parents[0].conditions[?(@.type=="Accepted")].observedGeneration}')
-  [ "$st" = "True/$gen" ] && { accepted=1; break; }
-  sleep 2
-done
-[ -n "$accepted" ] || { echo "HTTPRoute petclinic 100/0 (generation $gen) not accepted; workloads left unchanged" >&2; exit 1; }
+wait_route_accepted
 
 echo "== Workloads (canary held at 0% until it passes the check below)"
 render_all "$K/was" | kubectl apply -f -
@@ -154,7 +150,7 @@ for _ in $(seq 1 30); do
 done
 [ -n "$ok" ] || { echo "canary path check failed: https://$DOMAIN_NAME/owners via X-Canary: always; canary stays at 0%" >&2; exit 1; }
 
-echo "== Open canary: 90/10"
-STABLE_WEIGHT=90 CANARY_WEIGHT=10 render "$K/gateway/httproute-canary.yaml" | kubectl apply -f -
+echo "== Open canary: $OPEN_STABLE/$OPEN_CANARY (later changes: scripts/set-canary-weight.sh)"
+apply_route_weights "$OPEN_STABLE" "$OPEN_CANARY"
 
 echo "Done: https://$DOMAIN_NAME"
