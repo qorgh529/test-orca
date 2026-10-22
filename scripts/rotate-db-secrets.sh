@@ -3,7 +3,7 @@
 # ESO refreshes K8s Secrets hourly, but running pods keep the old env vars, so:
 #   1. force-sync the ExternalSecrets  2. re-run db-init (ALTER USER with the new passwords)
 #   3. rolling-restart was-stable / was-canary (db-backup reads the secret on each run).
-# Rotating the admin (master) password: change it on RDS and in RDS_SECRET_NAME first, then run this.
+# To rotate the admin (master) password, change it on RDS and in RDS_SECRET_NAME first, then run this.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
