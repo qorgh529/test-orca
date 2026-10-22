@@ -180,7 +180,7 @@
 | **`np-app`** | Karpenter `NodePool` (`weight: 100`) | **On-Demand 전용** (`c6i`/`m6i`/`t3` `large`~`2xlarge`, 한도 `16 vCPU / 64Gi`) | 없음 | `workload-tier=app` | 앱 워크로드(`NGF`, `web`, `was`) 기본 용량 수용 |
 | **`np-app-spot`** | Karpenter `NodePool` | **Spot 전용** (`c6i`/`m6i`/`t3` `large`~`2xlarge`, 한도 `48 vCPU / 192Gi`) | 없음 | `workload-tier=app` | `np-app` 한도 초과 시 앱 워크로드 Spot 확장 수용 |
 | **`ng-critical`** | EKS Managed NodeGroup | On-Demand (`m6i.large`, Min 2 / Desired 2 / Max 4, Multi-AZ) | `node-role=critical:NoSchedule` | `workload-tier=critical` | 클러스터 컨트롤러 및 `db-init` / `db-backup` 실행 |
-| **`ng-platform`** | EKS Managed NodeGroup | On-Demand (`m6i.large`, Min 2 / Desired 2 / Max 4, Multi-AZ) | `node-role=platform:NoSchedule` | `workload-tier=platform` | Prometheus(20Gi), Grafana(5Gi), Alertmanager(5Gi) 및 `gp3` PVC |
+| **`ng-platform`** | EKS Managed NodeGroup | On-Demand (`m6i.large`, Min 2 / Desired 2 / Max 4, Multi-AZ) | `node-role=platform:NoSchedule` | `workload-tier=platform` | Prometheus(50Gi × 2), Grafana(10Gi), Alertmanager(10Gi) 및 `gp3` PVC |
 
 ### 5.3 환경변수 목록 (`.env.example` 기준 — 실제 값은 저장소에 기재하지 않음)
 
@@ -189,9 +189,9 @@
 | **AWS / 클러스터** | `AWS_REGION`, `AWS_ACCOUNT_ID`, `EKS_CLUSTER_NAME`, `EBS_CSI_ADDON_VERSION` | 리전, 계정 ID, EKS 클러스터 식별자, EBS CSI 애드온 고정 버전 |
 | **VPC 서브넷** | `VPC_ID`, `PUBLIC_SUBNET_A_ID`, `PUBLIC_SUBNET_C_ID`, `APP_PRIVATE_SUBNET_A_ID`, `APP_PRIVATE_SUBNET_C_ID`, `DB_PRIVATE_SUBNET_A_ID`, `DB_PRIVATE_SUBNET_C_ID` | `2a`/`2c` 퍼블릭(ALB), 앱 프라이빗(EKS 노드), DB 프라이빗(RDS) 서브넷 ID |
 | **엣지 / 도메인** | `DOMAIN_NAME`, `ROUTE53_HOSTED_ZONE_ID`, `ACM_CERTIFICATE_ARN`, `WAF_WEB_ACL_ARN` | Route 53 도메인·호스팅 영역, ACM 인증서 ARN, WAFv2 WebACL ARN |
-| **컨테이너 이미지** | `ECR_WEB_REPOSITORY_URI`, `ECR_WAS_REPOSITORY_URI`, `IMAGE_TAG`, `STABLE_IMAGE_TAG`, `CANARY_IMAGE_TAG` | `web`/`was` ECR 리포지토리 URI, 빌드 태그 및 stable/canary 배포 태그 |
+| **컨테이너 이미지 / 카나리** | `ECR_WEB_REPOSITORY_URI`, `ECR_WAS_REPOSITORY_URI`, `IMAGE_TAG`, `STABLE_IMAGE_TAG`, `CANARY_IMAGE_TAG` | `web`/`was` ECR 리포지토리 URI, 빌드 태그, stable/canary 배포 태그. `HTTPRoute` 가중치 `STABLE_WEIGHT`/`CANARY_WEIGHT`는 `.env`가 아니라 `deploy-all.sh`가 지정(100:0 → 검증 후 90:10) |
 | **애플리케이션** | `SPRING_PROFILES_ACTIVE`, `JAVA_OPTS`, `WAS_UPSTREAM_HOST`, `WAS_UPSTREAM_PORT` | Spring 런타임 프로필(`jpa`), JVM 옵션, Nginx 업스트림 호스트/포트 |
-| **DB / 시크릿** | `RDS_SECRET_NAME`, `RDS_APP_SECRET_NAME`, `RDS_BACKUP_SECRET_NAME`, `RDS_HOST`, `RDS_PORT`, `RDS_DB_NAME`, `JDBC_URL`, `JDBC_USERNAME`, `JDBC_PASSWORD` | admin/app/backup 계정별 Secrets Manager 시크릿 경로(`petclinic/*`) 및 ESO가 생성하는 시크릿 키 |
+| **DB / 시크릿** | `RDS_SECRET_NAME`, `RDS_APP_SECRET_NAME`, `RDS_BACKUP_SECRET_NAME`, `RDS_HOST`, `RDS_PORT`, `RDS_DB_NAME`, `JDBC_URL`, `JDBC_USERNAME`, `JDBC_PASSWORD`, `JDBC_DRIVER_CLASS_NAME` | admin/app/backup 계정별 Secrets Manager 시크릿 경로(`petclinic/*`), ESO가 생성하는 시크릿 키 및 MySQL JDBC 드라이버 클래스명 |
 | **관측성 / 백업** | `CW_LOG_GROUP_NAME`, `PROMETHEUS_SERVER_URL`, `GRAFANA_ADMIN_SECRET_NAME`, `ALERTMANAGER_WEBHOOK_SECRET_NAME`, `ALERTMANAGER_WEBHOOK_URL`, `BACKUP_S3_BUCKET_NAME` | CloudWatch 로그 그룹, Prometheus 쿼리 URL, Grafana·Alertmanager Webhook 시크릿 경로(`petclinic/*`), Webhook URL(post-cluster에서 시크릿 생성 시에만 사용), 백업용 S3 버킷명 |
 
 ---
@@ -250,3 +250,5 @@
 - `production-hardening`: EKS를 1.31에서 1.33이 아닌 표준 지원 `1.36`으로 올리고, 1.36을 지원하지 않는 Karpenter·KEDA·ESO·AMI만 함께 올림 / 1.33은 2026-07-29부터 확장 지원 구간이라 표준 지원이 긴 버전을 택했고(`docs/design.md` Q4), 나머지 애드온(NGF, LBC, kube-prometheus-stack 등) 상향은 Q6 후속 작업으로 남김. 기존 클러스터의 제자리 업그레이드는 다루지 않음
 - `production-hardening`: 배포 시 `HTTPRoute`를 먼저 100:0으로 적용하고 Gateway의 수용(`Accepted`, 현재 generation)을 확인한 뒤에 워크로드를 롤아웃하며, `X-Canary: always` 동적 경로 검증 후에만 90:10으로 개방함 / 이전 배포의 90:10 상태에서 재배포하더라도 검증 전 카나리 Pod가 일반 트래픽을 받지 않게 하기 위함
 - `production-hardening`: Alertmanager Webhook URL을 `.env` → envsubst 주입 대신 Secrets Manager + ESO로 전달하고 `url_file`로 읽음 / 토큰이 포함된 URL이 Helm release values와 Alertmanager 설정 Secret에 평문으로 남지 않게 하기 위함
+- `production-hardening`: DB 계정을 `petclinic_admin`(`db-init` 전용), `petclinic_app`(WAS DML 전용), `petclinic_backup`(`db-backup` 읽기/덤프 전용) 3개로 분리하고 Tomcat JDBC Pool 상한(`maxActive=10`)을 설정함 / 애플리케이션 침해 시 과도한 DB 권한 노출을 막고 최대 스케일 아웃 시에도 RDS `max_connections` 한도를 초과하지 않도록 보장하기 위함
+- `production-hardening`: Prometheus를 2 Replicas(AZ 분산 + 개별 `gp3` PVC)로 다중화하고 `was-stable`/`was-canary` KEDA `ScaledObject`에 `fallback`(4 / 2 레플리카)을 추가함 / 단일 AZ 장애나 Prometheus 일시 불능 시에도 모니터링과 WAS 오토스케일링 안전 용량이 유지되도록 하기 위함
