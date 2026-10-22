@@ -101,10 +101,22 @@ kubectl -n petclinic delete job db-init --ignore-not-found
 render_all "$K/jobs" | kubectl apply -f -
 kubectl -n petclinic wait --for=condition=Complete job/db-init --timeout=300s
 
-echo "== Workloads and routing (canary held at 0% until it passes the check below)"
+echo "== Routing: close canary (100/0) before any workload changes"
+# A re-deploy may start from 90/10; the new canary pods must not see user traffic before the check below.
+STABLE_WEIGHT=100 CANARY_WEIGHT=0 render_all "$K/gateway" | kubectl apply -f -
+gen=$(kubectl -n petclinic get httproute petclinic -o jsonpath='{.metadata.generation}')
+accepted=""
+for _ in $(seq 1 30); do
+  st=$(kubectl -n petclinic get httproute petclinic \
+    -o jsonpath='{.status.parents[0].conditions[?(@.type=="Accepted")].status}/{.status.parents[0].conditions[?(@.type=="Accepted")].observedGeneration}')
+  [ "$st" = "True/$gen" ] && { accepted=1; break; }
+  sleep 2
+done
+[ -n "$accepted" ] || { echo "HTTPRoute petclinic 100/0 (generation $gen) not accepted; workloads left unchanged" >&2; exit 1; }
+
+echo "== Workloads (canary held at 0% until it passes the check below)"
 render_all "$K/was" | kubectl apply -f -
 render_all "$K/web" | kubectl apply -f -
-STABLE_WEIGHT=100 CANARY_WEIGHT=0 render_all "$K/gateway" | kubectl apply -f -
 kubectl -n petclinic rollout status deploy/was-stable --timeout=600s
 kubectl -n petclinic rollout status deploy/web --timeout=300s
 kubectl -n petclinic rollout status deploy/was-canary --timeout=600s
