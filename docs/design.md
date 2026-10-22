@@ -447,27 +447,27 @@ flowchart TD
   - 2026년 10월 기준 확장 지원 종료가 임박한 EKS `1.31` 대신 표준 지원 버전인 **EKS `1.33`**으로 `infra/eksctl/cluster.yaml`의 `version`을 상향하고, `aws-ebs-csi-driver` 애드온 버전(`v1.37.0-eksbuild.1` 등 1.33 호환 버전) 및 `infra/karpenter/ec2nodeclass.yaml`의 AL2023 AMI alias(`al2023@v20260923` 등 최신 고정 릴리스)를 호환 세트로 업데이트.
   - 커밋: `fix: upgrade EKS to 1.33 and bump compatible AL2023 AMI and EBS CSI versions`
 
-- [ ] **Step 9: DB 최소 권한 계정 분리(Admin / App / Backup) 및 커넥션 풀 상한 설정 (`infra/aws/`, `k8s/secrets/`, `k8s/jobs/`, `k8s/was/`, `app/`)**
+- [x] **Step 9: DB 최소 권한 계정 분리(Admin / App / Backup) 및 커넥션 풀 상한 설정 (`infra/aws/`, `k8s/secrets/`, `k8s/jobs/`, `k8s/was/`, `app/`)**
   - `infra/aws/provision-aws-resources.sh`에서 RDS 마스터 시크릿(`$RDS_SECRET_NAME`, `petclinic_admin`) 외에 애플리케이션 전용 시크릿(`$RDS_APP_SECRET_NAME`, `petclinic_app`)과 백업 전용 시크릿(`$RDS_BACKUP_SECRET_NAME`, `petclinic_backup`)을 각각 생성하여 Secrets Manager에 저장.
   - `k8s/secrets/externalsecret-rds.yaml`에서 3개의 `ExternalSecret`을 정의하여 `petclinic-rds-admin-secret` (`db-init` 전용), `petclinic-rds-secret` (`was-stable`, `was-canary` 전용), `petclinic-rds-backup-secret` (`db-backup` 전용)으로 분리 동기화.
   - `k8s/jobs/job-db-init.yaml`이 `petclinic-rds-admin-secret`으로 접속해 `schema.sql`/`data.sql` 적재 후 `petclinic_app`(권한: `SELECT, INSERT, UPDATE, DELETE ON petclinic.*`) 및 `petclinic_backup`(권한: `SELECT, SHOW VIEW, TRIGGER, LOCK TABLES ON petclinic.*` 및 `PROCESS`) 계정을 멱등하게(`CREATE USER IF NOT EXISTS ...; ALTER USER ...; GRANT ...`) 생성·갱신하도록 구성.
   - `app/src/main/resources/spring/datasource-config.xml` 및 `data-access.properties`에 Tomcat JDBC Pool 상한(`maxActive=10`, `maxIdle=5`, `minIdle=2`, `initialSize=2`, `maxWait=5000`, `testOnBorrow=true`, `validationQuery=SELECT 1`)을 명시하여 최대 스케일 아웃 시에도 RDS 연결 예산을 초과하지 않도록 보장.
   - 커밋: `fix: split RDS admin/app/backup accounts and cap Tomcat JDBC connection pool`
 
-- [ ] **Step 10: Stable / Canary 이미지 태그 분리 및 단계별 카나리 배포·자동 롤백 (`k8s/web/`, `k8s/was/`, `k8s/gateway/`, `scripts/`)**
+- [x] **Step 10: Stable / Canary 이미지 태그 분리 및 단계별 카나리 배포·자동 롤백 (`k8s/web/`, `k8s/was/`, `k8s/gateway/`, `scripts/`)**
   - `.env.example`, `k8s/was/deployment-stable.yaml`, `k8s/was/deployment-canary.yaml`, `k8s/web/deployment.yaml`에서 Stable은 `${STABLE_IMAGE_TAG}`, Canary는 `${CANARY_IMAGE_TAG}`를 사용하도록 분리하고, `k8s/gateway/httproute-canary.yaml`의 가중치를 `${STABLE_WEIGHT}` / `${CANARY_WEIGHT}`로 템플릿화.
   - 카나리 트래픽 유입 시 단일 Canary Pod 포화를 방지하도록 `k8s/web/hpa.yaml`에 `web-canary` HPA(`minReplicas: 1`, `maxReplicas: 4`)를 추가하고, `k8s/was/keda-scaledobject.yaml`에 `was-canary` `ScaledObject`(`minReplicaCount: 1`, `maxReplicaCount: 3`)를 추가.
   - `scripts/deploy-all.sh`에서 배포 시 먼저 `STABLE_WEIGHT=100`, `CANARY_WEIGHT=0`으로 라우팅을 고정한 상태에서 Canary Deployment(`was-canary`, `web-canary`)를 롤아웃하고, `X-Canary: always` 헤더로 동적 경로(`/owners?lastName=`) 응답을 검증한 뒤에만 `STABLE_WEIGHT=90`, `CANARY_WEIGHT=10`으로 트래픽을 개방하며, 검증 실패 시 가중치를 `100/0`으로 유지하고 즉시 실패 종료하도록 수정.
   - 커밋: `fix: separate stable/canary image tags and gate canary traffic on health check`
 
-- [ ] **Step 11: 모니터링 고가용성(Prometheus Multi-AZ), KEDA Fallback, Web/WAS PDB 및 Alertmanager 수신처·알림 규칙 추가 (`k8s/monitoring/`, `k8s/web/`, `k8s/was/`)**
+- [x] **Step 11: 모니터링 고가용성(Prometheus Multi-AZ), KEDA Fallback, Web/WAS PDB 및 Alertmanager 수신처·알림 규칙 추가 (`k8s/monitoring/`, `k8s/web/`, `k8s/was/`)**
   - `k8s/monitoring/kube-prometheus-values.yaml`에 Prometheus `replicas: 2` 및 AZ 간 분산(`topologySpreadConstraints`)을 설정하고, Alertmanager `config`에 `${ALERTMANAGER_WEBHOOK_URL}` 기반 Webhook 수신처(receiver)를 구성.
   - `k8s/monitoring/prometheusrule-petclinic.yaml`을 생성하여 `PetClinicDBBackupFailed`, `PetClinicKedaMetricsError`, `PetClinicHttp5xxRateHigh` 알림 규칙을 정의하고 `scripts/deploy-all.sh`에서 배포.
   - `k8s/was/keda-scaledobject.yaml`에 `fallback: { failureThreshold: 3, replicas: 4 }`를 추가하여 Prometheus 장애 시에도 안전 레플리카 수를 유지하도록 구성.
   - `k8s/web/pdb.yaml` 및 `k8s/was/pdb.yaml`(`PodDisruptionBudget`, `minAvailable: 1`)을 추가하고 `web`/`was-stable`의 AZ 분산 정책을 `DoNotSchedule`로 강화.
   - 커밋: `fix: configure Prometheus Multi-AZ HA, KEDA fallback, Web/WAS PDBs, and Alertmanager rules`
 
-- [ ] **Step 12: 인프라 프로비저닝 스크립트 멱등성(Idempotency) 보완 및 정적 검증기 강화 (`infra/aws/`, `scripts/`, `docs/`)**
+- [x] **Step 12: 인프라 프로비저닝 스크립트 멱등성(Idempotency) 보완 및 정적 검증기 강화 (`infra/aws/`, `scripts/`, `docs/`)**
   - `infra/aws/provision-aws-resources.sh`의 각 단계에서 리소스(IAM Policy/Role, ECR, CloudWatch Log Group, S3 Bucket, WAFv2 WebACL, ACM 인증서, RDS SG/SubnetGroup/ParamGroup/Instance, Secrets Manager Secret)가 이미 존재할 경우 실패하지 않고 기존 리소스를 조회·갱신하여 이어서 실행할 수 있도록 멱등성 보완.
   - `scripts/validate-manifests.sh`에 신규 검증 항목(Stable/Canary 이미지 태그 분리, JDBC Pool `maxActive` 상한, DB 계정 시크릿 분리, KEDA `fallback`, Prometheus `replicas >= 2`, `PodDisruptionBudget` 존재 여부) 추가.
   - `docs/review.md`의 이전 라운드 미해결 표기 정합성 정리.
@@ -496,3 +496,12 @@ flowchart TD
 - 충돌: §1.3은 화면 UI와 도메인 모델 수정을 금지한다.
 - 제안: 두 JSP의 `flatpickr("#birthDate", {})`, `flatpickr("#date", {})`에 `{dateFormat: "Y/m/d"}`만 넣는다. 모델과 저장 형식은 그대로 두고 UI 설정 한 줄만 바꾸는 것이다. 이 수정을 §1.3의 예외로 허용할지 결정해 달라.
 - **답변 (사용자):** 허용한다. 두 JSP에 `dateFormat: "Y/m/d"`를 적용한다.
+
+### Q4. Step 8 (EKS 1.33) — 전제가 현재 상황과 달라 보류
+- 전제 불일치: EKS 1.33의 표준 지원은 2026-07-29에 끝났다. 지금(2026-10-22)은 추가 비용이 붙는 확장 지원 기간이고, 확장 지원도 2027-07-29에 끝난다. 현재 표준 지원 버전은 1.34–1.37이다. 근거: [EKS Kubernetes 버전 캘린더](https://docs.aws.amazon.com/eks/latest/userguide/kubernetes-versions.html)
+- 호환성 문제: 지금 고정된 Karpenter 1.0.6은 Kubernetes 1.33을 지원하지 않는다. 1.33에는 Karpenter 1.5 이상이 필요하다. 근거: [Karpenter 호환성 표](https://karpenter.sh/docs/upgrading/compatibility/). KEDA 2.15, LBC 차트 1.9.2, NGF 1.5.1, ESO 0.10, kube-prometheus-stack 65, metrics-server도 대상 버전에 맞춰 다시 확인해야 한다. 이 PC에는 AWS 자격 증명이 없어 `aws eks describe-addon-versions`로 EBS CSI 호환 버전을 확인하지 못했다.
+- 확인된 것: AMI 릴리스 `al2023@v20260923`은 존재하고 Kubernetes 1.33–1.37 AMI를 포함한다.
+- 결정 필요: (a) 설계대로 1.33으로 올리고 Karpenter를 1.5 이상으로 함께 올린다(확장 지원 비용 발생). (b) 표준 지원 버전(예: 1.35 또는 1.36)을 목표로 하고, 애드온 버전 세트를 그 버전에 맞춰 함께 올린다. 어느 쪽으로 할지 정해 주면 해당 버전 세트로 구현하겠다.
+
+### Q5. Step 12의 `docs/review.md` 정합성 정리 — CLAUDE.md와 충돌
+- Step 12는 `docs/review.md`의 이전 라운드 미해결 표기를 정리하라고 하지만, CLAUDE.md는 리뷰어가 쓴 내용을 구현 담당이 수정하지 못하게 한다(체크 표시만 허용). 지적된 총평(`No`)은 리뷰어가 쓴 문장이라 고치지 않았다. 리뷰어(Codex)가 다음 라운드에서 갱신하는 것으로 처리할지 정해 달라.
