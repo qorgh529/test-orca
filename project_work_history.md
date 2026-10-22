@@ -1,0 +1,62 @@
+# 프로젝트 작업 이력
+
+## 2026-10-22
+
+AWS EKS 기반 Spring Framework PetClinic(`qorgh529/test-orca`). 역할 분담: Antigravity(설계·보안 점검), Claude(구현), Codex(코드 리뷰). 오늘 PR #1–#5를 모두 master에 머지했다(최종 `d6305c6`).
+
+### 요약
+
+| PR | 내용 | 머지 시각 (KST) |
+|---|---|---|
+| #1 | PetClinic on EKS 초기 구축 (design.md Step 1–7, 리뷰 Round 1–2 반영) | 11:23 |
+| #2 | 운영 강화: design.md Step 8–12, 보안 점검 Round 3 | 13:22 |
+| #3 | `production-hardening` 리뷰·보안 Round 1 수정 | 15:20 |
+| #4 | architecture.md 후속 정리 | 16:35 |
+| #5 | 기능 설계서, EKS 1.36 애드온 전체 상향, 운영자 지정 카나리 비율 | 17:36 |
+
+### 1. 초기 구축 리뷰 반영 (오전, PR #1)
+- 리뷰 Round 2 처리: Karpenter 앱 노드풀을 On-Demand 기본(`np-app`)과 Spot 확장(`np-app-spot`)으로 분리, 카나리 롤아웃·경로 검사 실패 시 배포 중단.
+- Q3: 날짜 선택기(flatpickr)를 모델 형식 `yyyy/MM/dd`(`Y/m/d`)에 맞춤. 회귀 테스트 추가.
+- Q1: `was` 통합 Service 유지로 결정.
+- 공개 저장소 `qorgh529/test-orca` 생성, ORCA_WORKFLOW.md와 draw.io 아키텍처 다이어그램 반영.
+
+### 2. 운영 강화 Step 8–12 및 보안 Round 3 (PR #2)
+- **Step 9 – DB 최소 권한**: RDS 계정을 admin(db-init)·app(was, DML만)·backup(덤프만)으로 분리하고 시크릿 3개로 동기화, 모든 계정 `REQUIRE SSL`. Tomcat JDBC 풀 상한 `maxActive=10`. `scripts/rotate-db-secrets.sh` 추가.
+- **Step 10 – 카나리**: `STABLE_IMAGE_TAG`/`CANARY_IMAGE_TAG` 분리. 배포 중 100:0 고정 → `X-Canary: always` 검증 → 통과 시 90:10 개방. `web-canary` HPA 추가.
+- **Step 11 – 고가용성·알림**: Prometheus 2 Replicas AZ 분산, KEDA fallback, web/was PDB, AZ 분산 `DoNotSchedule`, PrometheusRule(백업 실패·KEDA 오류·오류율) → Alertmanager Webhook.
+- **Step 12 – 멱등성**: `provision-aws-resources.sh` 재실행 안전(기존 비밀번호 유지), 정적 검증기 규칙 확장.
+- **Step 8 – EKS 1.36** (Q4: 표준 지원 버전으로 결정): AMI `al2023@v20260930`, Karpenter 1.15.0(+ IAM 권한 3개), KEDA 2.21.0, ESO 2.13.0(API `v1`).
+- 작업 중 발견한 버그: KEDA 오류 알림이 `exported_namespace` 라벨을 보지 않아 울리지 않던 문제 수정.
+
+### 3. `production-hardening` 리뷰·보안 Round 1 (PR #3)
+- 재배포 시 카나리 트래픽 차단 순서 수정: 워크로드 변경 전에 100:0을 먼저 적용하고 Gateway `Accepted`(현재 generation) 확인.
+- 비밀번호 회전 시 ESO 갱신이 확인되지 않으면 db-init 전에 중단.
+- 백업이 한 번도 성공하지 않은 경우에도 알림 발생. promtool 단위 테스트(`tests/monitoring/`, `scripts/test-prometheus-rules.sh`) 추가.
+- `was-canary` KEDA fallback 추가.
+- Alertmanager Webhook URL을 Secrets Manager + ESO + `url_file`로 외부화, Alertmanager Egress 제한(DNS·HTTPS 443, IMDS 제외).
+- EBS CSI 애드온 버전을 `EBS_CSI_ADDON_VERSION`으로 고정.
+- architecture.md와 다이어그램(drawio/svg/png)을 EKS 1.36 기준으로 갱신.
+
+### 4. 문서 정리 (PR #4)
+- architecture.md의 PVC 용량, 환경변수 표 보정.
+
+### 5. 기능 설계서 기반 구현 (PR #5)
+- Antigravity가 작성한 `docs/features/production-hardening/design.md` 기준으로 코드 대조. 빠져 있던 Alertmanager peer 통신(:9094) 허용 추가.
+- **Q7** (사용자 결정: 애드온 전체를 서비스 오픈 전에 상향) → 설계서에 Step 6–9 추가 후 구현:
+  - NGF 1.5.1 → 2.8.0, Gateway API CRD v1.2.0 → v1.6.3. 데이터 플레인 Service가 `petclinic-gateway-nginx`로 바뀌어 ALB 백엔드 변경, 차트 PDB 사용.
+  - LBC 차트 1.9.2 → 3.6.1, IAM 정책을 업스트림 v3.6.1로 교체.
+  - kube-prometheus-stack 65.8.1 → 92.11.0(Prometheus v3.15.0), metrics-server 3.14.0, aws-for-fluent-bit 0.2.0.
+- **Q8** (Antigravity 답변: 운영자가 비율을 조정할 수 있어야 함) → Step 10:
+  - `deploy-all.sh`가 검증 후 `STABLE_WEIGHT`/`CANARY_WEIGHT`(기본 90:10)로 개방. 검증 전 100:0은 고정.
+  - `scripts/set-canary-weight.sh <0-100>`: 재배포 없이 비율 변경(0 = 롤백, 100 = 전체 카나리).
+- 루트 README 추가 및 버전·카나리 운영 방법 보정.
+
+### 검증
+- Maven 테스트 통과(78개), 매니페스트 정적 검증기 통과, promtool 2.54.1·3.15.0 규칙 테스트 통과.
+- 스텁 회귀 테스트: 카나리 차단 순서, 비밀번호 회전 중단, 프로비저닝 재실행, 카나리 비율 입력 검사.
+- 실제 AWS 프로비저닝, EKS 1.36 배포, Helm 렌더링·설치는 아직 하지 않음(helm·클러스터·AWS 자격 증명 없음).
+
+### 남은 일
+- AWS 자격 증명 설정(권장: IAM Identity Center SSO 프로필, `AWS_PROFILE` 사용) 후 `.env`의 `EBS_CSI_ADDON_VERSION` 채우기.
+- 실제 EKS 1.36 클러스터에 배포해 새 차트(NGF 2.8.0, LBC 3.6.1, kube-prometheus-stack 92.11.0) 동작 확인.
+- Codex·Antigravity의 다음 리뷰·보안 점검 라운드 처리.
