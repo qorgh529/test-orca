@@ -168,9 +168,9 @@ cluster() {
 }
 
 post_cluster() {
-  require AWS_REGION EKS_CLUSTER_NAME VPC_ID DB_PRIVATE_SUBNET_A_ID DB_PRIVATE_SUBNET_C_ID RDS_SECRET_NAME RDS_APP_SECRET_NAME RDS_BACKUP_SECRET_NAME RDS_DB_NAME RDS_PORT GRAFANA_ADMIN_SECRET_NAME
+  require AWS_REGION EKS_CLUSTER_NAME VPC_ID DB_PRIVATE_SUBNET_A_ID DB_PRIVATE_SUBNET_C_ID RDS_SECRET_NAME RDS_APP_SECRET_NAME RDS_BACKUP_SECRET_NAME RDS_DB_NAME RDS_PORT GRAFANA_ADMIN_SECRET_NAME ALERTMANAGER_WEBHOOK_SECRET_NAME
   local s
-  for s in "$RDS_SECRET_NAME" "$RDS_APP_SECRET_NAME" "$RDS_BACKUP_SECRET_NAME" "$GRAFANA_ADMIN_SECRET_NAME"; do
+  for s in "$RDS_SECRET_NAME" "$RDS_APP_SECRET_NAME" "$RDS_BACKUP_SECRET_NAME" "$GRAFANA_ADMIN_SECRET_NAME" "$ALERTMANAGER_WEBHOOK_SECRET_NAME"; do
     case "$s" in
       petclinic/*) ;;
       *) echo "secret names must start with petclinic/ (ESO IAM scope): $s" >&2; exit 1 ;;
@@ -242,6 +242,24 @@ post_cluster() {
     password=$(random_password)
     PW="$password" jq -n '{username: "admin", password: env.PW}' \
       | aws secretsmanager create-secret --name "$GRAFANA_ADMIN_SECRET_NAME" --secret-string file:///dev/stdin >/dev/null
+  fi
+
+  # The URL comes from .env once and lives only in Secrets Manager; re-running with it set updates the secret.
+  echo "== Secrets Manager: $ALERTMANAGER_WEBHOOK_SECRET_NAME"
+  if [ -n "${ALERTMANAGER_WEBHOOK_URL:-}" ]; then
+    case "$ALERTMANAGER_WEBHOOK_URL" in
+      https://*) ;;
+      *) echo "ALERTMANAGER_WEBHOOK_URL must be https:// (Alertmanager egress allows 443 only)" >&2; exit 1 ;;
+    esac
+    if aws secretsmanager describe-secret --secret-id "$ALERTMANAGER_WEBHOOK_SECRET_NAME" >/dev/null 2>&1; then
+      jq -n '{url: env.ALERTMANAGER_WEBHOOK_URL}' | aws secretsmanager put-secret-value \
+        --secret-id "$ALERTMANAGER_WEBHOOK_SECRET_NAME" --secret-string file:///dev/stdin >/dev/null
+    else
+      jq -n '{url: env.ALERTMANAGER_WEBHOOK_URL}' | aws secretsmanager create-secret \
+        --name "$ALERTMANAGER_WEBHOOK_SECRET_NAME" --secret-string file:///dev/stdin >/dev/null
+    fi
+  elif ! aws secretsmanager describe-secret --secret-id "$ALERTMANAGER_WEBHOOK_SECRET_NAME" >/dev/null 2>&1; then
+    echo "set ALERTMANAGER_WEBHOOK_URL to create $ALERTMANAGER_WEBHOOK_SECRET_NAME" >&2; exit 1
   fi
 }
 

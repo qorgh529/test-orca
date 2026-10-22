@@ -1,4 +1,4 @@
-# Alerts routed to ALERTMANAGER_WEBHOOK_URL (kube-prometheus-values.yaml).
+# Alerts routed to the webhook in ALERTMANAGER_WEBHOOK_SECRET_NAME (kube-prometheus-values.yaml).
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:

@@ -8,7 +8,7 @@ require AWS_REGION AWS_ACCOUNT_ID EKS_CLUSTER_NAME VPC_ID PUBLIC_SUBNET_A_ID PUB
   DOMAIN_NAME ROUTE53_HOSTED_ZONE_ID ACM_CERTIFICATE_ARN WAF_WEB_ACL_ARN \
   ECR_WEB_REPOSITORY_URI ECR_WAS_REPOSITORY_URI STABLE_IMAGE_TAG CANARY_IMAGE_TAG \
   RDS_SECRET_NAME RDS_APP_SECRET_NAME RDS_BACKUP_SECRET_NAME GRAFANA_ADMIN_SECRET_NAME PROMETHEUS_SERVER_URL CW_LOG_GROUP_NAME BACKUP_S3_BUCKET_NAME \
-  ALERTMANAGER_WEBHOOK_URL
+  ALERTMANAGER_WEBHOOK_SECRET_NAME
 
 "$ROOT/scripts/validate-manifests.sh"
 
@@ -77,15 +77,15 @@ helm upgrade --install nginx-gateway oci://ghcr.io/nginx/charts/nginx-gateway-fa
   --set-json 'topologySpreadConstraints=[{"maxSkew":1,"topologyKey":"topology.kubernetes.io/zone","whenUnsatisfiable":"DoNotSchedule","labelSelector":{"matchLabels":{"app.kubernetes.io/name":"nginx-gateway-fabric","app.kubernetes.io/instance":"nginx-gateway"}}}]'
 
 echo "== Secrets (ESO)"
-render_all "$K/secrets" "$K/monitoring/externalsecret-grafana.yaml" | kubectl apply -f -
+render_all "$K/secrets" "$K/monitoring/externalsecret-grafana.yaml" "$K/monitoring/externalsecret-alertmanager.yaml" | kubectl apply -f -
 kubectl -n petclinic wait --for=condition=Ready externalsecret/petclinic-rds-admin externalsecret/petclinic-rds externalsecret/petclinic-rds-backup --timeout=120s
-kubectl -n monitoring wait --for=condition=Ready externalsecret/grafana-admin --timeout=120s
+kubectl -n monitoring wait --for=condition=Ready externalsecret/grafana-admin externalsecret/alertmanager-webhook --timeout=120s
 
 echo "== Monitoring (ng-platform) and logging (all nodes)"
 helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
   --version 65.8.1 -n monitoring -f <(render "$K/monitoring/kube-prometheus-values.yaml") --wait
 kubectl apply -f "$K/monitoring/servicemonitor-petclinic.yaml" -f "$K/monitoring/networkpolicy-prometheus.yaml" \
-  -f "$K/monitoring/prometheusrule-petclinic.yaml"
+  -f "$K/monitoring/networkpolicy-alertmanager.yaml" -f "$K/monitoring/prometheusrule-petclinic.yaml"
 # After the monitoring stack: the operator-metrics ServiceMonitor needs its CRD (PetClinicKedaMetricsError).
 helm upgrade --install keda kedacore/keda --version 2.21.0 -n keda -f "$CRITICAL" \
   --set prometheus.operator.enabled=true --set prometheus.operator.serviceMonitor.enabled=true

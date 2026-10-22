@@ -51,10 +51,12 @@ alertmanager:
       - name: "null"
       - name: webhook
         webhook_configs:
-          - url: "${ALERTMANAGER_WEBHOOK_URL}"
+          # From Secrets Manager via externalsecret-alertmanager.yaml (mounted by alertmanagerSpec.secrets).
+          - url_file: /etc/alertmanager/secrets/alertmanager-webhook/url
             send_resolved: true
   alertmanagerSpec:
     <<: *platform
+    secrets: [alertmanager-webhook]
     storage:
       volumeClaimTemplate:
         spec:

@@ -211,6 +211,12 @@ for app in ("web", "was"):
                for _, d in k8s_docs):
         err(f"missing PodDisruptionBudget for {sel}")
 
+# Webhook URLs carry tokens: read from the ESO-synced Secret file, never inlined in Helm values.
+for r in kps.get("alertmanager", {}).get("config", {}).get("receivers") or []:
+    for w in r.get("webhook_configs") or []:
+        if "url" in w or not w.get("url_file"):
+            err(f"kube-prometheus-values: receiver {r.get('name')} must use url_file, not url")
+
 if errors:
     print("\n".join("FAIL " + e for e in errors))
     sys.exit(1)
