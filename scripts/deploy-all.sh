@@ -47,7 +47,7 @@ helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-contro
 
 # Resource Metrics API (metrics.k8s.io) for the web CPU HPA; EKS does not ship it.
 helm upgrade --install metrics-server metrics-server/metrics-server \
-  --version 3.12.2 -n kube-system -f "$CRITICAL"
+  --version 3.14.0 -n kube-system -f "$CRITICAL"
 
 # The karpenter chart only installs CRDs on first install; karpenter-crd keeps them current on upgrades.
 helm upgrade --install karpenter-crd oci://public.ecr.aws/karpenter/karpenter-crd \
@@ -89,14 +89,14 @@ kubectl -n monitoring wait --for=condition=Ready externalsecret/grafana-admin ex
 
 echo "== Monitoring (ng-platform) and logging (all nodes)"
 helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
-  --version 65.8.1 -n monitoring -f <(render "$K/monitoring/kube-prometheus-values.yaml") --wait
+  --version 92.11.0 -n monitoring -f <(render "$K/monitoring/kube-prometheus-values.yaml") --wait
 kubectl apply -f "$K/monitoring/servicemonitor-petclinic.yaml" -f "$K/monitoring/networkpolicy-prometheus.yaml" \
   -f "$K/monitoring/networkpolicy-alertmanager.yaml" -f "$K/monitoring/prometheusrule-petclinic.yaml"
 # After the monitoring stack: the operator-metrics ServiceMonitor needs its CRD (PetClinicKedaMetricsError).
 helm upgrade --install keda kedacore/keda --version 2.21.0 -n keda -f "$CRITICAL" \
   --set prometheus.operator.enabled=true --set prometheus.operator.serviceMonitor.enabled=true
 helm upgrade --install aws-for-fluent-bit eks/aws-for-fluent-bit \
-  --version 0.1.34 -n amazon-cloudwatch -f <(render "$K/logging/fluent-bit-values.yaml")
+  --version 0.2.0 -n amazon-cloudwatch -f <(render "$K/logging/fluent-bit-values.yaml")
 
 echo "== DB init Job + backup CronJob"
 kubectl -n petclinic create configmap petclinic-db-scripts \

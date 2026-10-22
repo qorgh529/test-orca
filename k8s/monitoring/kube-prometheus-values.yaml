@@ -1,4 +1,4 @@
-# kube-prometheus-stack 65.x — everything pinned to ng-platform, state on encrypted gp3 PVCs.
+# kube-prometheus-stack 92.x (Prometheus v3, Grafana chart 14) — everything pinned to ng-platform, state on encrypted gp3 PVCs.
 # Rendered with envsubst by scripts/deploy-all.sh.
 x-platform: &platform
   nodeSelector:

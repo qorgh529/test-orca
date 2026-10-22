@@ -227,7 +227,7 @@ sequenceDiagram
   - NGF 2.x는 Gateway마다 데이터 플레인 Deployment/Service(`petclinic-gateway-nginx`)를 따로 만든다. Helm 값을 `nginx.*`(데이터 플레인: 2 Replicas, `ClusterIP`, `np-app`, AZ `DoNotSchedule`, 차트 PDB `minAvailable: 1`)과 `nginxGateway.*`(컨트롤 플레인: 2 Replicas, `np-app`)로 나누고, ALB Ingress 백엔드를 `petclinic-gateway-nginx:80`으로 변경. 차트가 PDB를 만들므로 `k8s/gateway/pdb-nginx-gateway.yaml`은 삭제.
 - [x] **Step 7: AWS Load Balancer Controller `v3.6.1`(차트 `3.6.1`) 상향 (`scripts/deploy-all.sh`, `infra/aws/iam-policies/`)**
   - v3부터 차트 버전이 앱 버전과 같다. `lbc-policy.json`을 업스트림 v3.6.1 `iam_policy.json`으로 교체(기존 파일은 v2.9.2 업스트림 원본과 동일).
-- [ ] **Step 8: `kube-prometheus-stack` `92.11.0`, `metrics-server` `3.14.0`, `aws-for-fluent-bit` `0.2.0` 상향 (`scripts/deploy-all.sh`, `k8s/monitoring/`, `k8s/logging/`)**
+- [x] **Step 8: `kube-prometheus-stack` `92.11.0`, `metrics-server` `3.14.0`, `aws-for-fluent-bit` `0.2.0` 상향 (`scripts/deploy-all.sh`, `k8s/monitoring/`, `k8s/logging/`)**
   - kube-prometheus-stack 92.x(Prometheus `v3.15.0`, Grafana 차트 14)에서 기존 values 키가 유지되는지 확인하고, PrometheusRule 단위 테스트를 promtool `3.15.0`으로 재검증.
   - aws-for-fluent-bit 이미지 태그를 차트 기본값 `3.2.1`로 고정.
 - [ ] **Step 9: 문서 반영 (`docs/architecture.md`)**
