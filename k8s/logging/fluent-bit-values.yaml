@@ -3,7 +3,7 @@
 # Rendered with envsubst by scripts/deploy-all.sh.
 image:
   repository: public.ecr.aws/aws-observability/aws-for-fluent-bit
-  tag: 2.32.2
+  tag: 3.2.1
 
 serviceAccount:
   create: false

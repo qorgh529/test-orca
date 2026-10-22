@@ -17,6 +17,32 @@ ${BACKUP_S3_BUCKET_NAME}'
 
 render() { envsubst "$TEMPLATE_VARS" < "$1"; }
 
+# Canary split: integers 0-100 that add up to 100.
+check_weights() {
+  [[ "$1" =~ ^[0-9]+$ && "$2" =~ ^[0-9]+$ ]] && (( $1 + $2 == 100 )) \
+    || { echo "STABLE_WEIGHT/CANARY_WEIGHT must be integers 0-100 summing to 100 (got $1/$2)" >&2; exit 1; }
+}
+
+# Apply HTTPRoute petclinic with the given weights and wait until NGF accepts that generation
+# (Accepted alone may be left over from the previous generation).
+apply_route_weights() {
+  STABLE_WEIGHT="$1" CANARY_WEIGHT="$2" render "$ROOT/k8s/gateway/httproute-canary.yaml" | kubectl apply -f -
+  wait_route_accepted
+}
+
+wait_route_accepted() {
+  local gen st _
+  gen=$(kubectl -n petclinic get httproute petclinic -o jsonpath='{.metadata.generation}')
+  for _ in $(seq 1 30); do
+    st=$(kubectl -n petclinic get httproute petclinic \
+      -o jsonpath='{.status.parents[0].conditions[?(@.type=="Accepted")].status}/{.status.parents[0].conditions[?(@.type=="Accepted")].observedGeneration}')
+    [ "$st" = "True/$gen" ] && return 0
+    sleep 2
+  done
+  echo "HTTPRoute petclinic generation $gen not accepted by the gateway" >&2
+  exit 1
+}
+
 # Render every *.yaml in the given dirs/files as one multi-document stream.
 render_all() {
   local f

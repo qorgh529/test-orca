@@ -10,6 +10,10 @@ require AWS_REGION AWS_ACCOUNT_ID EKS_CLUSTER_NAME VPC_ID PUBLIC_SUBNET_A_ID PUB
   RDS_SECRET_NAME RDS_APP_SECRET_NAME RDS_BACKUP_SECRET_NAME GRAFANA_ADMIN_SECRET_NAME PROMETHEUS_SERVER_URL CW_LOG_GROUP_NAME BACKUP_S3_BUCKET_NAME \
   ALERTMANAGER_WEBHOOK_SECRET_NAME
 
+# Split opened after the canary check (Q8: chosen per release risk). Checked before anything changes.
+OPEN_STABLE="${STABLE_WEIGHT:-90}" OPEN_CANARY="${CANARY_WEIGHT:-10}"
+check_weights "$OPEN_STABLE" "$OPEN_CANARY"
+
 "$ROOT/scripts/validate-manifests.sh"
 
 K="$ROOT/k8s"
@@ -28,7 +32,8 @@ EOF
 echo "== Namespaces, StorageClass, Gateway API CRDs"
 kubectl apply -f "$K/base/namespace.yaml"
 kubectl apply -f "$K/base"
-kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.0/standard-install.yaml
+# v1.6.3 is the Gateway API version NGF 2.8.0 supports; server-side apply (CRDs exceed the client-side annotation limit).
+kubectl apply --server-side -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.3/standard-install.yaml
 
 echo "== Helm repos"
 helm repo add eks https://aws.github.io/eks-charts
@@ -40,13 +45,13 @@ helm repo update
 
 echo "== Controllers on ng-critical (SAs with IRSA are created by eksctl)"
 helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
-  --version 1.9.2 -n kube-system -f "$CRITICAL" \
+  --version 3.6.1 -n kube-system -f "$CRITICAL" \
   --set clusterName="$EKS_CLUSTER_NAME" --set region="$AWS_REGION" --set vpcId="$VPC_ID" \
   --set serviceAccount.create=false --set serviceAccount.name=aws-load-balancer-controller
 
 # Resource Metrics API (metrics.k8s.io) for the web CPU HPA; EKS does not ship it.
 helm upgrade --install metrics-server metrics-server/metrics-server \
-  --version 3.12.2 -n kube-system -f "$CRITICAL"
+  --version 3.14.0 -n kube-system -f "$CRITICAL"
 
 # The karpenter chart only installs CRDs on first install; karpenter-crd keeps them current on upgrades.
 helm upgrade --install karpenter-crd oci://public.ecr.aws/karpenter/karpenter-crd \
@@ -68,13 +73,18 @@ helm upgrade --install external-secrets external-secrets/external-secrets \
 echo "== Karpenter np-app NodePool"
 render_all "$ROOT/infra/karpenter" | kubectl apply -f -
 
-echo "== NGF gateway on np-app (ClusterIP; the ALB targets pod IPs), 2 replicas across AZs"
+echo "== NGF on np-app: control plane (2 replicas) + per-Gateway data plane petclinic-gateway-nginx"
+# NGF 2.x provisions the data plane (Deployment + ClusterIP Service + PDB) when the Gateway is applied;
+# the ALB targets its pod IPs. 2 replicas across AZs, minAvailable 1 during drains/consolidation.
 helm upgrade --install nginx-gateway oci://ghcr.io/nginx/charts/nginx-gateway-fabric \
-  --version 1.5.1 -n nginx-gateway \
-  --set fullnameOverride=nginx-gateway --set service.type=ClusterIP \
-  --set nginxGateway.replicaCount=2 \
-  --set-json 'nodeSelector={"workload-tier":"app"}' \
-  --set-json 'topologySpreadConstraints=[{"maxSkew":1,"topologyKey":"topology.kubernetes.io/zone","whenUnsatisfiable":"DoNotSchedule","labelSelector":{"matchLabels":{"app.kubernetes.io/name":"nginx-gateway-fabric","app.kubernetes.io/instance":"nginx-gateway"}}}]'
+  --version 2.8.0 -n nginx-gateway --set fullnameOverride=nginx-gateway \
+  --set nginxGateway.replicas=2 \
+  --set-json 'nginxGateway.nodeSelector={"workload-tier":"app"}' \
+  --set-json 'nginxGateway.topologySpreadConstraints=[{"maxSkew":1,"topologyKey":"topology.kubernetes.io/zone","whenUnsatisfiable":"DoNotSchedule","labelSelector":{"matchLabels":{"app.kubernetes.io/name":"nginx-gateway-fabric","app.kubernetes.io/instance":"nginx-gateway"}}}]' \
+  --set nginx.replicas=2 --set nginx.service.type=ClusterIP --set nginx.podDisruptionBudget.enable=true \
+  --set-json 'nginx.pod.nodeSelector={"workload-tier":"app"}' \
+  --set-json 'nginx.pod.topologySpreadConstraints=[{"maxSkew":1,"topologyKey":"topology.kubernetes.io/zone","whenUnsatisfiable":"DoNotSchedule","labelSelector":{"matchLabels":{"app.kubernetes.io/name":"petclinic-gateway-nginx"}}}]' \
+  --wait
 
 echo "== Secrets (ESO)"
 render_all "$K/secrets" "$K/monitoring/externalsecret-grafana.yaml" "$K/monitoring/externalsecret-alertmanager.yaml" | kubectl apply -f -
@@ -83,14 +93,14 @@ kubectl -n monitoring wait --for=condition=Ready externalsecret/grafana-admin ex
 
 echo "== Monitoring (ng-platform) and logging (all nodes)"
 helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
-  --version 65.8.1 -n monitoring -f <(render "$K/monitoring/kube-prometheus-values.yaml") --wait
+  --version 92.11.0 -n monitoring -f <(render "$K/monitoring/kube-prometheus-values.yaml") --wait
 kubectl apply -f "$K/monitoring/servicemonitor-petclinic.yaml" -f "$K/monitoring/networkpolicy-prometheus.yaml" \
   -f "$K/monitoring/networkpolicy-alertmanager.yaml" -f "$K/monitoring/prometheusrule-petclinic.yaml"
 # After the monitoring stack: the operator-metrics ServiceMonitor needs its CRD (PetClinicKedaMetricsError).
 helm upgrade --install keda kedacore/keda --version 2.21.0 -n keda -f "$CRITICAL" \
   --set prometheus.operator.enabled=true --set prometheus.operator.serviceMonitor.enabled=true
 helm upgrade --install aws-for-fluent-bit eks/aws-for-fluent-bit \
-  --version 0.1.34 -n amazon-cloudwatch -f <(render "$K/logging/fluent-bit-values.yaml")
+  --version 0.2.0 -n amazon-cloudwatch -f <(render "$K/logging/fluent-bit-values.yaml")
 
 echo "== DB init Job + backup CronJob"
 kubectl -n petclinic create configmap petclinic-db-scripts \
@@ -104,15 +114,7 @@ kubectl -n petclinic wait --for=condition=Complete job/db-init --timeout=300s
 echo "== Routing: close canary (100/0) before any workload changes"
 # A re-deploy may start from 90/10; the new canary pods must not see user traffic before the check below.
 STABLE_WEIGHT=100 CANARY_WEIGHT=0 render_all "$K/gateway" | kubectl apply -f -
-gen=$(kubectl -n petclinic get httproute petclinic -o jsonpath='{.metadata.generation}')
-accepted=""
-for _ in $(seq 1 30); do
-  st=$(kubectl -n petclinic get httproute petclinic \
-    -o jsonpath='{.status.parents[0].conditions[?(@.type=="Accepted")].status}/{.status.parents[0].conditions[?(@.type=="Accepted")].observedGeneration}')
-  [ "$st" = "True/$gen" ] && { accepted=1; break; }
-  sleep 2
-done
-[ -n "$accepted" ] || { echo "HTTPRoute petclinic 100/0 (generation $gen) not accepted; workloads left unchanged" >&2; exit 1; }
+wait_route_accepted
 
 echo "== Workloads (canary held at 0% until it passes the check below)"
 render_all "$K/was" | kubectl apply -f -
@@ -148,7 +150,7 @@ for _ in $(seq 1 30); do
 done
 [ -n "$ok" ] || { echo "canary path check failed: https://$DOMAIN_NAME/owners via X-Canary: always; canary stays at 0%" >&2; exit 1; }
 
-echo "== Open canary: 90/10"
-STABLE_WEIGHT=90 CANARY_WEIGHT=10 render "$K/gateway/httproute-canary.yaml" | kubectl apply -f -
+echo "== Open canary: $OPEN_STABLE/$OPEN_CANARY (later changes: scripts/set-canary-weight.sh)"
+apply_route_weights "$OPEN_STABLE" "$OPEN_CANARY"
 
 echo "Done: https://$DOMAIN_NAME"

@@ -1,4 +1,5 @@
-# Alertmanager may only resolve DNS and post to the HTTPS webhook; the instance metadata endpoint is excluded.
+# Alertmanager may only resolve DNS, gossip with its peers (:9094, used once replicas > 1) and post to the
+# HTTPS webhook; the instance metadata endpoint is excluded.
 # ponytail: any HTTPS destination is allowed because the webhook host is not known here; pin an ipBlock
 # (or an egress proxy) if the receiver has fixed addresses.
 apiVersion: networking.k8s.io/v1
@@ -19,6 +20,12 @@ spec:
       ports:
         - { protocol: UDP, port: 53 }
         - { protocol: TCP, port: 53 }
+    - to:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: alertmanager }
+      ports:
+        - { protocol: TCP, port: 9094 }
+        - { protocol: UDP, port: 9094 }
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0
