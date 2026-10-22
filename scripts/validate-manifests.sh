@@ -211,6 +211,12 @@ for app in ("web", "was"):
                for _, d in k8s_docs):
         err(f"missing PodDisruptionBudget for {sel}")
 
+# EBS CSI add-on version is pinned (design §4.1).
+eks = docs.get(root / "infra/eksctl/cluster.yaml", [{}])[0]
+for a in eks.get("addons") or []:
+    if a["name"] == "aws-ebs-csi-driver" and not a.get("version"):
+        err("infra/eksctl/cluster.yaml: addon aws-ebs-csi-driver must set version")
+
 # Webhook URLs carry tokens: read from the ESO-synced Secret file, never inlined in Helm values.
 for r in kps.get("alertmanager", {}).get("config", {}).get("receivers") or []:
     for w in r.get("webhook_configs") or []:
