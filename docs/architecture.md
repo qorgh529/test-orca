@@ -120,73 +120,27 @@
 
 ---
 
-## 4. 데이터 흐름 — Mermaid 다이어그램
+## 4. 데이터 흐름 — Draw.io 아키텍처 다이어그램
 
-```mermaid
-flowchart TD
-    User["사용자 브라우저"]
-    R53["Route 53 (도메인 DNS)"]
-    ACM["ACM (TLS 인증서)"]
-    WAF["AWS WAFv2 (Managed Rules)"]
-    ALB["ALB (HTTPS 443 · HTTP->HTTPS)<br/>LBC 관리 · target-type: ip"]
+> 원본 파일: [`docs/architecture.drawio`](./architecture.drawio) · 편집 가능 이미지(Embedded XML): [`docs/architecture.drawio.svg`](./architecture.drawio.svg) / [`docs/architecture.drawio.png`](./architecture.drawio.png)
 
-    subgraph VPC["VPC (ap-northeast-2a / ap-northeast-2c)"]
-        subgraph AppSubnets["프라이빗 서브넷 (앱) — Amazon EKS 1.31"]
-            subgraph NPApp["np-app (On-Demand 기본) + np-app-spot (Spot 확장)"]
-                NGF["NGF Gateway (2 Replicas + PDB)<br/>HTTPRoute 카나리 분할"]
-                WebStable["web · Nginx (Stable)<br/>정적 에셋 · proxy -> was-stable:8080"]
-                WebCanary["web-canary · Nginx (Canary)<br/>정적 에셋 · proxy -> was-canary:8080"]
-                HPA["HPA (CPU 60%)<br/>web 수평 확장"]
-                WASStable["was-stable · Tomcat 11<br/>ROOT.war · JMX :9404"]
-                WASCanary["was-canary · Tomcat 11<br/>ROOT.war · JMX :9404"]
-                KEDA["KEDA ScaledObject<br/>was-stable 수평 확장"]
-            end
+![AWS EKS 기반 Spring Framework PetClinic 아키텍처](./architecture.drawio.svg)
 
-            subgraph NGCritical["ng-critical · 관리형 노드 그룹 (Taint: critical)"]
-                CritAddons["CoreDNS · LBC · Metrics Server · Karpenter<br/>KEDA · ESO · EBS CSI"]
-                DBJobs["db-init Job (스키마/데이터 적재)<br/>db-backup CronJob (mysqldump -> S3)"]
-            end
-
-            subgraph NGPlatform["ng-platform · 관리형 노드 그룹 (Taint: platform)"]
-                PromStack["Prometheus · Grafana · Alertmanager<br/>EBS gp3 암호화 PVC"]
-            end
-
-            FluentBit["Fluent Bit DaemonSet (모든 노드)"]
-        end
-
-        subgraph DBSubnets["프라이빗 서브넷 (DB)"]
-            RDSPrimary[("RDS MySQL 8.0 Primary<br/>Multi-AZ · TLS Required")]
-            RDSStandby[("RDS MySQL 8.0 Standby<br/>동기 복제 · 자동 장애 조치")]
-        end
-    end
-
-    ECR["Amazon ECR (IMMUTABLE · KMS)"]
-    SecretsMgr["AWS Secrets Manager (RDS · Grafana 시크릿)"]
-    BackupS3[("Amazon S3 백업 버킷<br/>SSE-KMS · Public 차단")]
-    CWLogs["Amazon CloudWatch Logs"]
-
-    User -->|"① DNS 질의"| R53
-    User -->|"② HTTPS :443"| ALB
-    ACM -.->|"TLS 인증서"| ALB
-    WAF -.->|"SQLi / CommonRuleSet 보호"| ALB
-    ALB -->|"③ target-type: ip (:80)"| NGF
-    NGF -->|"④ 90% 기본"| WebStable
-    NGF -->|"④ 10% 또는 X-Canary: always"| WebCanary
-    HPA -.->|"metrics.k8s.io CPU"| WebStable
-    WebStable -->|"⑤ 동적 요청 :8080"| WASStable
-    WebCanary -->|"⑤ 동적 요청 :8080"| WASCanary
-    PromStack -.->|"ServiceMonitor 스크래핑 (:9113 / :9404)"| NPApp
-    PromStack -.->|"요청률 쿼리 (:9090)"| KEDA
-    KEDA -.->|"스케일링"| WASStable
-    WASStable -->|"⑥ JDBC TLS :3306"| RDSPrimary
-    WASCanary -->|"⑥ JDBC TLS :3306"| RDSPrimary
-    DBJobs -->|"⑥ MySQL TLS :3306"| RDSPrimary
-    DBJobs -->|"백업 업로드 (HTTPS :443)"| BackupS3
-    RDSPrimary <-->|"동기 복제"| RDSStandby
-    SecretsMgr -.->|"ESO 동기화"| CritAddons
-    ECR -.->|"이미지 Pull"| AppSubnets
-    FluentBit -.->|"컨테이너/RDS 로그"| CWLogs
-```
+### 단계별 트래픽 및 제어 흐름 (① ~ ⑥)
+1. **① DNS 조회**: 사용자 브라우저가 서비스 도메인 질의 시 **Amazon Route 53**에서 ALB의 A(Alias) 레코드를 반환한다.
+2. **② HTTPS 접속 및 WAF 필터링**: 브라우저는 `443` 포트로 접속하며, **AWS WAFv2**(Common / SQLi / KnownBadInputs 관리형 규칙)를 통과한 요청만 **Application Load Balancer(ALB)** 에서 **AWS ACM** 공인 인증서로 TLS 종단 처리된다.
+3. **③ ALB → NGF Gateway (`target-type: ip`)**: AWS Load Balancer Controller(LBC)가 구성한 ALB가 NodePort 없이 `np-app` 노드풀의 **NGF Gateway Pod** 프라이빗 IP(`:80`)로 직접 라우팅한다.
+4. **④ NGF Gateway → `web` / `web-canary` (`HTTPRoute` 카나리 분할)**:
+   - 기본 트래픽은 `web`(90%)과 `web-canary`(10%)로 가중치 분배되며, `X-Canary: always` 헤더가 포함된 요청은 100% `web-canary`로 전달된다.
+   - `web` Deployment는 Metrics Server(`metrics.k8s.io`)의 CPU 사용률(60%)을 기준으로 **HPA**가 2~10개 Pod로 자동 수평 확장한다.
+5. **⑤ `web` → `was` 리버스 프록시 (`:8080`)**:
+   - 정적 리소스(`/resources/*`, `/webjars/*`)는 Nginx 컨테이너에서 보안 헤더·캐시 만료 헤더와 함께 직접 응답한다.
+   - 동적 서블릿 요청은 `web` → `was-stable:8080`, `web-canary` → `was-canary:8080`으로 각각 프록시된다.
+   - `ng-platform`의 **Prometheus**가 `was` JMX Exporter(`:9404/metrics`) 지표를 수집하고, `ng-critical`의 **KEDA**가 PromQL 요청률(`> 50 req/s`)을 조회하여 `was-stable`을 2~10개 Pod로 수평 확장한다.
+6. **⑥ `was` 및 DB 관리 워크로드 → RDS MySQL 8.0 (`:3306` TLS)**:
+   - **ESO**가 **AWS Secrets Manager**에서 동기화한 `petclinic-rds-secret`을 주입받아 프라이빗 DB 서브넷의 **RDS MySQL Primary**에 TLS(`require_secure_transport=ON`, `sslMode=REQUIRED`)로 연결한다.
+   - `ng-critical`의 `db-init` Job(스키마·초기 데이터 적재)과 `db-backup` CronJob(일일 `mysqldump` 후 **Amazon S3** `SSE-KMS` 업로드) 역시 동일한 시크릿과 TLS 설정으로 동작한다.
+   - 모든 노드의 컨테이너 로그와 RDS 에러/슬로우쿼리 로그는 **Fluent Bit DaemonSet** 및 RDS 로그 내보내기를 통해 **Amazon CloudWatch Logs**로 수집된다.
 
 ---
 
