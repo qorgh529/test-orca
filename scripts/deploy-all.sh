@@ -6,8 +6,9 @@ set -euo pipefail
 
 require AWS_REGION AWS_ACCOUNT_ID EKS_CLUSTER_NAME VPC_ID PUBLIC_SUBNET_A_ID PUBLIC_SUBNET_C_ID \
   DOMAIN_NAME ROUTE53_HOSTED_ZONE_ID ACM_CERTIFICATE_ARN WAF_WEB_ACL_ARN \
-  ECR_WEB_REPOSITORY_URI ECR_WAS_REPOSITORY_URI IMAGE_TAG \
-  RDS_SECRET_NAME GRAFANA_ADMIN_SECRET_NAME PROMETHEUS_SERVER_URL CW_LOG_GROUP_NAME BACKUP_S3_BUCKET_NAME
+  ECR_WEB_REPOSITORY_URI ECR_WAS_REPOSITORY_URI STABLE_IMAGE_TAG CANARY_IMAGE_TAG \
+  RDS_SECRET_NAME RDS_APP_SECRET_NAME RDS_BACKUP_SECRET_NAME GRAFANA_ADMIN_SECRET_NAME PROMETHEUS_SERVER_URL CW_LOG_GROUP_NAME BACKUP_S3_BUCKET_NAME \
+  ALERTMANAGER_WEBHOOK_URL
 
 "$ROOT/scripts/validate-manifests.sh"
 
@@ -47,16 +48,17 @@ helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-contro
 helm upgrade --install metrics-server metrics-server/metrics-server \
   --version 3.12.2 -n kube-system -f "$CRITICAL"
 
+# The karpenter chart only installs CRDs on first install; karpenter-crd keeps them current on upgrades.
+helm upgrade --install karpenter-crd oci://public.ecr.aws/karpenter/karpenter-crd \
+  --version 1.15.0 -n kube-system
 helm upgrade --install karpenter oci://public.ecr.aws/karpenter/karpenter \
-  --version 1.0.6 -n kube-system -f "$CRITICAL" \
+  --version 1.15.0 -n kube-system -f "$CRITICAL" \
   --set settings.clusterName="$EKS_CLUSTER_NAME" \
   --set-json "controller.env=[{\"name\":\"AWS_REGION\",\"value\":\"$AWS_REGION\"}]" \
   --set serviceAccount.create=false --set serviceAccount.name=karpenter
 
-helm upgrade --install keda kedacore/keda --version 2.15.2 -n keda -f "$CRITICAL"
-
 helm upgrade --install external-secrets external-secrets/external-secrets \
-  --version 0.10.4 -n external-secrets -f "$CRITICAL" \
+  --version 2.13.0 -n external-secrets -f "$CRITICAL" \
   --set-json 'webhook.nodeSelector={"workload-tier":"critical"}' \
   --set-json 'webhook.tolerations=[{"key":"node-role","operator":"Equal","value":"critical","effect":"NoSchedule"}]' \
   --set-json 'certController.nodeSelector={"workload-tier":"critical"}' \
@@ -76,13 +78,17 @@ helm upgrade --install nginx-gateway oci://ghcr.io/nginx/charts/nginx-gateway-fa
 
 echo "== Secrets (ESO)"
 render_all "$K/secrets" "$K/monitoring/externalsecret-grafana.yaml" | kubectl apply -f -
-kubectl -n petclinic wait --for=condition=Ready externalsecret/petclinic-rds --timeout=120s
+kubectl -n petclinic wait --for=condition=Ready externalsecret/petclinic-rds-admin externalsecret/petclinic-rds externalsecret/petclinic-rds-backup --timeout=120s
 kubectl -n monitoring wait --for=condition=Ready externalsecret/grafana-admin --timeout=120s
 
 echo "== Monitoring (ng-platform) and logging (all nodes)"
 helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
   --version 65.8.1 -n monitoring -f <(render "$K/monitoring/kube-prometheus-values.yaml") --wait
-kubectl apply -f "$K/monitoring/servicemonitor-petclinic.yaml" -f "$K/monitoring/networkpolicy-prometheus.yaml"
+kubectl apply -f "$K/monitoring/servicemonitor-petclinic.yaml" -f "$K/monitoring/networkpolicy-prometheus.yaml" \
+  -f "$K/monitoring/prometheusrule-petclinic.yaml"
+# After the monitoring stack: the operator-metrics ServiceMonitor needs its CRD (PetClinicKedaMetricsError).
+helm upgrade --install keda kedacore/keda --version 2.21.0 -n keda -f "$CRITICAL" \
+  --set prometheus.operator.enabled=true --set prometheus.operator.serviceMonitor.enabled=true
 helm upgrade --install aws-for-fluent-bit eks/aws-for-fluent-bit \
   --version 0.1.34 -n amazon-cloudwatch -f <(render "$K/logging/fluent-bit-values.yaml")
 
@@ -95,13 +101,12 @@ kubectl -n petclinic delete job db-init --ignore-not-found
 render_all "$K/jobs" | kubectl apply -f -
 kubectl -n petclinic wait --for=condition=Complete job/db-init --timeout=300s
 
-echo "== Workloads and routing"
+echo "== Workloads and routing (canary held at 0% until it passes the check below)"
 render_all "$K/was" | kubectl apply -f -
 render_all "$K/web" | kubectl apply -f -
-render_all "$K/gateway" | kubectl apply -f -
+STABLE_WEIGHT=100 CANARY_WEIGHT=0 render_all "$K/gateway" | kubectl apply -f -
 kubectl -n petclinic rollout status deploy/was-stable --timeout=600s
 kubectl -n petclinic rollout status deploy/web --timeout=300s
-# The HTTPRoute already sends 10% to canary, so a broken canary must fail the deploy too.
 kubectl -n petclinic rollout status deploy/was-canary --timeout=600s
 kubectl -n petclinic rollout status deploy/web-canary --timeout=300s
 
@@ -125,9 +130,13 @@ aws route53 change-resource-record-sets --hosted-zone-id "$ROUTE53_HOSTED_ZONE_I
 echo "== Canary path check (X-Canary: always)"
 ok=""
 for _ in $(seq 1 30); do
-  if curl -fsS -o /dev/null --max-time 10 --connect-to "$DOMAIN_NAME:443:$alb:443"       -H "X-Canary: always" "https://$DOMAIN_NAME/owners?lastName="; then ok=1; break; fi
+  if curl -fsS -o /dev/null --max-time 10 --connect-to "$DOMAIN_NAME:443:$alb:443" \
+      -H "X-Canary: always" "https://$DOMAIN_NAME/owners?lastName="; then ok=1; break; fi
   sleep 10
 done
-[ -n "$ok" ] || { echo "canary path check failed: https://$DOMAIN_NAME/owners via X-Canary: always" >&2; exit 1; }
+[ -n "$ok" ] || { echo "canary path check failed: https://$DOMAIN_NAME/owners via X-Canary: always; canary stays at 0%" >&2; exit 1; }
+
+echo "== Open canary: 90/10"
+STABLE_WEIGHT=90 CANARY_WEIGHT=10 render "$K/gateway/httproute-canary.yaml" | kubectl apply -f -
 
 echo "Done: https://$DOMAIN_NAME"

@@ -1,4 +1,4 @@
-# Roll a candidate out with: kubectl -n petclinic set image deploy/was-canary tomcat=<uri>:<new-tag>
+# Image is CANARY_IMAGE_TAG; scripts/deploy-all.sh rolls it out at 0% traffic and opens 10% only after a check.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -31,7 +31,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: tomcat
-          image: ${ECR_WAS_REPOSITORY_URI}:${IMAGE_TAG}
+          image: ${ECR_WAS_REPOSITORY_URI}:${CANARY_IMAGE_TAG}
           ports:
             - { name: http, containerPort: 8080 }
             - { name: metrics, containerPort: 9404 }

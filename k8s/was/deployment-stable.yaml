@@ -19,7 +19,7 @@ spec:
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: topology.kubernetes.io/zone
-          whenUnsatisfiable: ScheduleAnyway
+          whenUnsatisfiable: DoNotSchedule
           labelSelector:
             matchLabels: { app: was, track: stable }
       securityContext:
@@ -31,7 +31,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: tomcat
-          image: ${ECR_WAS_REPOSITORY_URI}:${IMAGE_TAG}
+          image: ${ECR_WAS_REPOSITORY_URI}:${STABLE_IMAGE_TAG}
           ports:
             - { name: http, containerPort: 8080 }
             - { name: metrics, containerPort: 9404 }

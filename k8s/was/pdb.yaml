@@ -1,0 +1,11 @@
+# Keep one stable was pod during node drains / Karpenter consolidation. No PDB for was-canary:
+# with a single replica, minAvailable 1 would block every drain.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: was-stable
+  namespace: petclinic
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app: was, track: stable }

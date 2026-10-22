@@ -1,0 +1,35 @@
+# Alerts routed to ALERTMANAGER_WEBHOOK_URL (kube-prometheus-values.yaml).
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: petclinic
+  namespace: monitoring
+spec:
+  groups:
+    - name: petclinic
+      rules:
+        # Daily CronJob: no success for 26h covers both failed and missed runs, and clears itself on the next success.
+        - alert: PetClinicDBBackupFailed
+          expr: time() - kube_cronjob_status_last_successful_time{namespace="petclinic", cronjob="db-backup"} > 26 * 3600
+          labels: { severity: critical }
+          annotations:
+            summary: "petclinic db-backup has not succeeded for over 26h"
+        # Scaling queries to Prometheus are failing; was runs on the ScaledObject fallback (4 replicas).
+        # Scraped from the keda namespace without honorLabels, so the metric's own namespace label
+        # arrives as exported_namespace.
+        - alert: PetClinicKedaMetricsError
+          expr: sum by (scaledObject) (increase(keda_scaled_object_errors_total{exported_namespace="petclinic"}[5m])) > 0
+          for: 5m
+          labels: { severity: warning }
+          annotations:
+            summary: "KEDA cannot read metrics for ScaledObject {{ $labels.scaledObject }}"
+        # ponytail: Tomcat errorCount counts every status >= 400, so 4xx are included. Switch to a
+        # 5xx-only series (e.g. ALB HTTPCode_Target_5XX via CloudWatch exporter) if 4xx noise pages people.
+        - alert: PetClinicHttp5xxRateHigh
+          expr: |
+            sum(rate(tomcat_errorcount_total{namespace="petclinic", port="8080"}[5m]))
+              / sum(rate(tomcat_requestcount_total{namespace="petclinic", port="8080"}[5m])) > 0.05
+          for: 5m
+          labels: { severity: critical }
+          annotations:
+            summary: "petclinic WAS error responses above 5% for 5m"

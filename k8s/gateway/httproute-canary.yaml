@@ -1,4 +1,5 @@
-# Canary split: change the weights to shift traffic; `X-Canary: always` pins a request to canary.
+# Canary split: STABLE_WEIGHT / CANARY_WEIGHT are set by scripts/deploy-all.sh (100/0 until the canary
+# passes its check, then 90/10). `X-Canary: always` pins a request to canary at any weight.
 # No hostname match: ALB health checks arrive with the target IP as Host.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
@@ -20,5 +21,9 @@ spec:
     - matches:
         - path: { type: PathPrefix, value: / }
       backendRefs:
-        - { name: web, port: 80, weight: 90 }
-        - { name: web-canary, port: 80, weight: 10 }
+        - name: web
+          port: 80
+          weight: ${STABLE_WEIGHT}
+        - name: web-canary
+          port: 80
+          weight: ${CANARY_WEIGHT}

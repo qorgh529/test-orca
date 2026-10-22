@@ -13,9 +13,19 @@ prometheus:
   prometheusSpec:
     <<: *platform
     retention: 15d
+    # One replica per AZ, each with its own gp3 PVC: an AZ outage leaves metrics and KEDA scaling up.
+    replicas: 2
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: prometheus
     # Pick up ServiceMonitors without the Helm release label (servicemonitor-petclinic.yaml).
     serviceMonitorSelectorNilUsesHelmValues: false
     podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
     storageSpec:
       volumeClaimTemplate:
         spec:
@@ -26,6 +36,23 @@ prometheus:
               storage: 50Gi
 
 alertmanager:
+  # Replaces the chart default config. Watchdog/InfoInhibitor fire by design and go nowhere.
+  config:
+    route:
+      receiver: webhook
+      group_by: [alertname, namespace]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+      routes:
+        - receiver: "null"
+          matchers: ['alertname =~ "Watchdog|InfoInhibitor"']
+    receivers:
+      - name: "null"
+      - name: webhook
+        webhook_configs:
+          - url: "${ALERTMANAGER_WEBHOOK_URL}"
+            send_resolved: true
   alertmanagerSpec:
     <<: *platform
     storage:

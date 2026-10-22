@@ -17,3 +17,24 @@ spec:
         target:
           type: Utilization
           averageUtilization: 60
+---
+# Canary takes 10% of traffic once opened; scale it so a single pod does not saturate first.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: web-canary
+  namespace: petclinic
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: web-canary
+  minReplicas: 1
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60

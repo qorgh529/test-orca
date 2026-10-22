@@ -9,6 +9,10 @@ spec:
     name: was-stable
   minReplicaCount: 2
   maxReplicaCount: 10
+  # Prometheus unreachable for 3 polls: hold 4 replicas instead of freezing at the last value.
+  fallback:
+    failureThreshold: 3
+    replicas: 4
   pollingInterval: 15
   cooldownPeriod: 300
   triggers:
@@ -17,4 +21,23 @@ spec:
         serverAddress: ${PROMETHEUS_SERVER_URL}
         query: sum(rate(tomcat_requestcount_total{namespace="petclinic",service="was-stable",port="8080"}[1m]))
         # Target requests/second per replica.
+        threshold: "50"
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: was-canary
+  namespace: petclinic
+spec:
+  scaleTargetRef:
+    name: was-canary
+  minReplicaCount: 1
+  maxReplicaCount: 3
+  pollingInterval: 15
+  cooldownPeriod: 300
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: ${PROMETHEUS_SERVER_URL}
+        query: sum(rate(tomcat_requestcount_total{namespace="petclinic",service="was-canary",port="8080"}[1m]))
         threshold: "50"

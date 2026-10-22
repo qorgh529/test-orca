@@ -6,7 +6,7 @@ kind: ClusterConfig
 metadata:
   name: ${EKS_CLUSTER_NAME}
   region: ${AWS_REGION}
-  version: "1.31"
+  version: "1.36"
   tags:
     karpenter.sh/discovery: ${EKS_CLUSTER_NAME}
 
@@ -55,7 +55,9 @@ addons:
       {"nodeSelector":{"workload-tier":"critical"},
        "tolerations":[{"key":"node-role","operator":"Equal","value":"critical","effect":"NoSchedule"}]}
   - name: aws-ebs-csi-driver
-    version: v1.36.0-eksbuild.1
+    # ponytail: unpinned, so EKS installs its default build for 1.36. Pin it to the output of
+    # `aws eks describe-addon-versions --addon-name aws-ebs-csi-driver --kubernetes-version 1.36`
+    # (not checkable here without AWS credentials) to make rebuilds reproducible.
     attachPolicyARNs: ["arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"]
     configurationValues: |-
       {"controller":{"nodeSelector":{"workload-tier":"critical"},
