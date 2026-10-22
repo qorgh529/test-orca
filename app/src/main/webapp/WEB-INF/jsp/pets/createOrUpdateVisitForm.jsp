@@ -10,7 +10,7 @@
         <link rel="stylesheet" href="/webjars/flatpickr/4.6.13/dist/flatpickr.min.css">
         <script src="/webjars/flatpickr/4.6.13/dist/flatpickr.js"></script>
         <script>
-            flatpickr("#date", {});
+            flatpickr("#date", {dateFormat: "Y/m/d"});
         </script>
     </jsp:attribute>
     <jsp:body>

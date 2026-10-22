@@ -57,6 +57,16 @@ class VisitControllerTests {
     }
 
     @Test
+    void testProcessNewVisitFormWithPickerDate() throws Exception {
+        // flatpickr is configured with dateFormat "Y/m/d" (createOrUpdateVisitForm.jsp); a bind error would re-render the form instead of redirecting
+        mockMvc.perform(post("/owners/*/pets/{petId}/visits/new", TEST_PET_ID)
+            .param("date", "2026/10/21")
+            .param("description", "Visit Description")
+        )
+            .andExpect(status().is3xxRedirection());
+    }
+
+    @Test
     void testProcessNewVisitFormHasErrors() throws Exception {
         mockMvc.perform(post("/owners/*/pets/{petId}/visits/new", TEST_PET_ID)
             .param("name", "George")
