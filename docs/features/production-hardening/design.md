@@ -222,7 +222,7 @@ sequenceDiagram
 
 > Step 6–8은 Q7 사용자 결정(애드온 전체 상향, 서비스 오픈 전 진행, 1.36 신규 클러스터 기준)에 따라 추가한다. 이 단계들은 §1.3 세 번째 항목과 Q6의 "후속 작업 분리"를 대체한다.
 
-- [ ] **Step 6: Gateway API CRD `v1.6.3` 및 NGINX Gateway Fabric `2.8.0` 상향 (`scripts/deploy-all.sh`, `k8s/gateway/`)**
+- [x] **Step 6: Gateway API CRD `v1.6.3` 및 NGINX Gateway Fabric `2.8.0` 상향 (`scripts/deploy-all.sh`, `k8s/gateway/`)**
   - Gateway API standard CRD를 `v1.2.0` → `v1.6.3`(NGF 2.8.0 지원 버전)으로 올리고 `--server-side`로 적용.
   - NGF 2.x는 Gateway마다 데이터 플레인 Deployment/Service(`petclinic-gateway-nginx`)를 따로 만든다. Helm 값을 `nginx.*`(데이터 플레인: 2 Replicas, `ClusterIP`, `np-app`, AZ `DoNotSchedule`, 차트 PDB `minAvailable: 1`)과 `nginxGateway.*`(컨트롤 플레인: 2 Replicas, `np-app`)로 나누고, ALB Ingress 백엔드를 `petclinic-gateway-nginx:80`으로 변경. 차트가 PDB를 만들므로 `k8s/gateway/pdb-nginx-gateway.yaml`은 삭제.
 - [ ] **Step 7: AWS Load Balancer Controller `v3.6.1`(차트 `3.6.1`) 상향 (`scripts/deploy-all.sh`, `infra/aws/iam-policies/`)**

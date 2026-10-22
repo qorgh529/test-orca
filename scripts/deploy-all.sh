@@ -28,7 +28,8 @@ EOF
 echo "== Namespaces, StorageClass, Gateway API CRDs"
 kubectl apply -f "$K/base/namespace.yaml"
 kubectl apply -f "$K/base"
-kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.0/standard-install.yaml
+# v1.6.3 is the Gateway API version NGF 2.8.0 supports; server-side apply (CRDs exceed the client-side annotation limit).
+kubectl apply --server-side -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.3/standard-install.yaml
 
 echo "== Helm repos"
 helm repo add eks https://aws.github.io/eks-charts
@@ -68,13 +69,18 @@ helm upgrade --install external-secrets external-secrets/external-secrets \
 echo "== Karpenter np-app NodePool"
 render_all "$ROOT/infra/karpenter" | kubectl apply -f -
 
-echo "== NGF gateway on np-app (ClusterIP; the ALB targets pod IPs), 2 replicas across AZs"
+echo "== NGF on np-app: control plane (2 replicas) + per-Gateway data plane petclinic-gateway-nginx"
+# NGF 2.x provisions the data plane (Deployment + ClusterIP Service + PDB) when the Gateway is applied;
+# the ALB targets its pod IPs. 2 replicas across AZs, minAvailable 1 during drains/consolidation.
 helm upgrade --install nginx-gateway oci://ghcr.io/nginx/charts/nginx-gateway-fabric \
-  --version 1.5.1 -n nginx-gateway \
-  --set fullnameOverride=nginx-gateway --set service.type=ClusterIP \
-  --set nginxGateway.replicaCount=2 \
-  --set-json 'nodeSelector={"workload-tier":"app"}' \
-  --set-json 'topologySpreadConstraints=[{"maxSkew":1,"topologyKey":"topology.kubernetes.io/zone","whenUnsatisfiable":"DoNotSchedule","labelSelector":{"matchLabels":{"app.kubernetes.io/name":"nginx-gateway-fabric","app.kubernetes.io/instance":"nginx-gateway"}}}]'
+  --version 2.8.0 -n nginx-gateway --set fullnameOverride=nginx-gateway \
+  --set nginxGateway.replicas=2 \
+  --set-json 'nginxGateway.nodeSelector={"workload-tier":"app"}' \
+  --set-json 'nginxGateway.topologySpreadConstraints=[{"maxSkew":1,"topologyKey":"topology.kubernetes.io/zone","whenUnsatisfiable":"DoNotSchedule","labelSelector":{"matchLabels":{"app.kubernetes.io/name":"nginx-gateway-fabric","app.kubernetes.io/instance":"nginx-gateway"}}}]' \
+  --set nginx.replicas=2 --set nginx.service.type=ClusterIP --set nginx.podDisruptionBudget.enable=true \
+  --set-json 'nginx.pod.nodeSelector={"workload-tier":"app"}' \
+  --set-json 'nginx.pod.topologySpreadConstraints=[{"maxSkew":1,"topologyKey":"topology.kubernetes.io/zone","whenUnsatisfiable":"DoNotSchedule","labelSelector":{"matchLabels":{"app.kubernetes.io/name":"petclinic-gateway-nginx"}}}]' \
+  --wait
 
 echo "== Secrets (ESO)"
 render_all "$K/secrets" "$K/monitoring/externalsecret-grafana.yaml" "$K/monitoring/externalsecret-alertmanager.yaml" | kubectl apply -f -

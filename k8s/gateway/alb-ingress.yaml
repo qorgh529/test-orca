@@ -1,4 +1,5 @@
-# Internet-facing ALB (LBC) -> NGF data-plane pods directly (target-type: ip).
+# Internet-facing ALB (LBC) -> NGF data-plane pods directly (target-type: ip). NGF 2.x names the
+# data-plane Service <gateway>-<gatewayclass> = petclinic-gateway-nginx.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -25,6 +26,6 @@ spec:
             pathType: Prefix
             backend:
               service:
-                name: nginx-gateway
+                name: petclinic-gateway-nginx
                 port:
                   number: 80
