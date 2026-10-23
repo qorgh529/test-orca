@@ -244,18 +244,18 @@ sequenceDiagram
 > [!NOTE]
 > 요구사항에 따라 **스크립트 작성과 `--dry-run` 검증까지만 수행**하며, 실제 AWS 자원에 닿는 본 실행은 하지 않는다. 향후 운영자가 실제 클러스터에서 실행할 때 참고할 수 있도록 실자원 접촉 단계는 별도로 `[위험]` 표시해 구분한다.
 
-- [ ] **Step 1: `.gitignore` 및 `.env.example` 업데이트 (`.gitignore`, `.env.example`)**
+- [x] (`676ae9d`) **Step 1: `.gitignore` 및 `.env.example` 업데이트 (`.gitignore`, `.env.example`)**
   - `.gitignore`에 `.daily-nodegroup-state.json`을 추가하여 로컬 노드그룹 스케일 상태 파일이 커밋되지 않도록 설정한다.
   - `.env.example` 하단에 `RDS_INSTANCE_ID`, `NG_CRITICAL_DESIRED_SIZE`, `NG_PLATFORM_DESIRED_SIZE` 선택적 환경변수(비워 두면 각각 `${EKS_CLUSTER_NAME}-mysql`, `2`, `2` 사용)를 주석과 함께 추가하고 `.env.example`이 `source` 검증을 통과하는지 확인한다.
-- [ ] **Step 2: 퇴근 전 리소스 중지 스크립트 작성 (`scripts/daily-stop.sh`)**
+- [x] (`67814f0`) **Step 2: 퇴근 전 리소스 중지 스크립트 작성 (`scripts/daily-stop.sh`)**
   - `#!/usr/bin/env bash`, `set -euo pipefail`, `. "$(dirname "$0")/lib.sh"` 기반으로 작성하고 실행 권한(`chmod +x`)을 부여한다.
   - `--dry-run`, `-h`/`--help` 옵션 파싱 및 알 수 없는 옵션 에러 처리(`exit 1`)를 구현한다.
   - §3.2의 순서(① `db-backup` CronJob `suspend: true` → ② `ScaledObject` 일시 중지·`HPA` 삭제·`web`/`was`/`nginx-gateway` Deployment `replicas=0` 축소 → ③ Karpenter `NodePool` `np-app`/`np-app-spot` 한도 `0` 패치 및 `NodeClaim` 삭제 대기 → ④ RDS `stop-db-instance` 멱등 호출 → ⑤ `ng-critical`·`ng-platform` 원래 스케일 설정 백업(`.daily-nodegroup-state.json`, `desiredSize > 0`일 때만) 및 `minSize=0,desiredSize=0` 멱등 축소 → ⑥ 중지 불가 리소스 잔여 비용 안내 출력)를 구현한다.
-- [ ] **Step 3: 출근 시 리소스 기동 스크립트 작성 (`scripts/daily-start.sh`)**
+- [x] (`1132fd5`) **Step 3: 출근 시 리소스 기동 스크립트 작성 (`scripts/daily-start.sh`)**
   - `#!/usr/bin/env bash`, `set -euo pipefail`, `. "$(dirname "$0")/lib.sh"` 기반으로 작성하고 실행 권한(`chmod +x`)을 부여한다.
   - `--dry-run`, `-h`/`--help` 옵션 파싱 및 알 수 없는 옵션 에러 처리(`exit 1`)를 구현한다.
   - §3.3의 순서(① RDS `start-db-instance` 멱등 비동기 요청 → ② `.daily-nodegroup-state.json` 또는 기본값(`2/2/4`)으로 `ng-critical`·`ng-platform` 복원 및 핵심 컨트롤러 Ready 대기 → ③ RDS `db-instance-available` 대기 → ④ `infra/karpenter/nodepool-app.yaml` 재적용으로 Karpenter `NodePool` 복원, NGF 및 `web`/`was` 최소 레플리카 복원, KEDA `ScaledObject` 일시 중지 해제, `k8s/web/hpa.yaml` 재적용, `db-backup` CronJob `suspend: false` 해제 → ⑤ 상시 과금 리소스 안내 출력)를 구현한다.
-- [ ] **Step 4: 정적 검증기 보강 및 `--dry-run` 검증 (`scripts/validate-manifests.sh`)**
+- [x] (`ec854b2`) **Step 4: 정적 검증기 보강 및 `--dry-run` 검증 (`scripts/validate-manifests.sh`)**
   - `scripts/validate-manifests.sh`에서 `scripts/daily-stop.sh` 및 `scripts/daily-start.sh`의 `bash -n` 문법 검사와 `AWS_REGION=ap-northeast-2 EKS_CLUSTER_NAME=petclinic-eks` 환경에서의 `--dry-run` 실행(종료 코드 `0` 및 잔여 비용 안내 문구 포함 여부)을 검증하도록 추가한다.
   - `./scripts/validate-manifests.sh`, `./scripts/daily-stop.sh --dry-run`, `./scripts/daily-start.sh --dry-run`을 실행하여 통과를 확인한다.
 - [ ] **[위험] Step 5 (본 작업에서는 실행하지 않음 — 운영자 수동 실행 전용): 실제 AWS 클러스터 및 RDS 대상 중지·기동 실행**
