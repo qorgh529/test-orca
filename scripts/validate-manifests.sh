@@ -3,6 +3,7 @@
 #   1. YAML syntax           2. no :latest / untagged images (templated: STABLE/CANARY_IMAGE_TAG)
 #   3. no plaintext secrets  4. node-tier placement + non-root securityContext
 #   5. stable/canary tags, DB secret per role, JDBC pool cap, KEDA fallback, Prometheus HA, PDBs
+#   6. scripts/daily-{stop,start}.sh syntax + offline --dry-run
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
@@ -11,6 +12,15 @@ if ! (set -eu; set -a; . "$ROOT/.env.example") >/dev/null 2>&1; then
   echo "FAIL .env.example does not source cleanly (quote values containing spaces)"
   exit 1
 fi
+
+# Daily stop/start: valid bash, and --dry-run runs offline and prints the remaining-cost notice.
+for s in daily-stop daily-start; do
+  bash -n "$ROOT/scripts/$s.sh" || { echo "FAIL scripts/$s.sh: bash syntax"; exit 1; }
+  if ! out=$(AWS_REGION=ap-northeast-2 EKS_CLUSTER_NAME=petclinic-eks bash "$ROOT/scripts/$s.sh" --dry-run 2>&1) \
+     || ! grep -q "Non-stoppable resources" <<<"$out"; then
+    echo "FAIL scripts/$s.sh --dry-run"; echo "$out"; exit 1
+  fi
+done
 
 "${PYTHON:-python3}" - "$ROOT" <<'PY'
 import pathlib, re, subprocess, sys
