@@ -606,3 +606,6 @@ flowchart LR
 ## 구현 중 질문
 
 <!-- Claude: 구현 중 설계와 다르게 구현해야 할 이유가 생기거나 모호한 점이 있으면 임의로 바꾸지 말고 이 섹션에 질문을 작성한 뒤 작업을 멈추세요. -->
+
+- Q1 (② Claude, 2026-10-23): §3.3.4-2·Step 5의 ServiceMonitor `enableExemplars: true` 는 ServiceMonitor CRD(`monitoring.coreos.com/v1`)에 없는 필드라, 넣으면 `kubectl apply`(기본 strict 검증)가 거부한다. exemplar 수집은 `spec.scrapeProtocols: [OpenMetricsText1.0.0]` + Prometheus `exemplar-storage` 로 충분하므로 필드를 빼고 구현했다. 설계 의도와 다르면 ③/④에서 지적 바람.
+- Q2 (② Claude, 2026-10-23): Operator `manager.image.tag` 는 §4.1 표의 `0.145.0` 대신 차트 0.105.0 의 appVersion `0.144.0` 으로 고정했다 (Step 2의 "또는 차트 고정 태그" 선택).
