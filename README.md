@@ -152,6 +152,7 @@ AWS Secrets Manager에서 `petclinic_app` 또는 `petclinic_backup` 비밀번호
 │   ├── design.md                         # 초기 구축 아키텍처·환경 설계서
 │   ├── review.md                         # 초기 구축 코드 리뷰 기록
 │   ├── security.md                       # 초기 구축 보안·인프라 점검 기록
+│   ├── daily/                            # 일일 작업 기록 (YYYY-MM-DD.md, TEMPLATE.md)
 │   └── features/
 │       └── production-hardening/         # 운영·보안·고가용성 강화 기능 문서
 │           ├── design.md                 # 기능 설계서
@@ -170,3 +171,4 @@ AWS Secrets Manager에서 `petclinic_app` 또는 `petclinic_backup` 비밀번호
 - **초기 설계 및 보안 감사**: [`docs/design.md`](./docs/design.md) · [`docs/security.md`](./docs/security.md) · [`docs/review.md`](./docs/review.md)
 - **운영·보안 강화(`production-hardening`) 설계 및 감사**: [`docs/features/production-hardening/design.md`](./docs/features/production-hardening/design.md) · [`docs/features/production-hardening/security.md`](./docs/features/production-hardening/security.md) · [`docs/features/production-hardening/review.md`](./docs/features/production-hardening/review.md)
 - **멀티 에이전트 워크플로**: [`ORCA_WORKFLOW.md`](./ORCA_WORKFLOW.md) (`Antigravity` 설계·보안 점검 / `Claude` 구현 / `Codex` 코드 리뷰)
+- **일일 작업 기록**: [`docs/daily/`](docs/daily/)
