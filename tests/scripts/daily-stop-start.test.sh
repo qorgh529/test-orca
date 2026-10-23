@@ -28,7 +28,8 @@ EOF
 cat > "$T/bin/kubectl" <<'EOF'
 #!/usr/bin/env bash
 echo "kubectl $*" >> "$LOG"
-[ -t 0 ] || cat >/dev/null
+# Only `apply -f -` gets piped input; reading stdin otherwise hangs when it is an open pipe.
+[[ " $* " == *" -f - "* ]] && cat >/dev/null
 if [[ " $* " == *" get "* ]]; then
   if [ -n "${KUBECTL_GET_ERROR:-}" ]; then echo "$KUBECTL_GET_ERROR" >&2; exit 1; fi
   [[ "$*" == *jsonpath* ]] && echo "${REPLICAS:-0}"
@@ -44,7 +45,7 @@ fails=0
 check() {
   local name=$1 script=$2 want=$3 rc=0; shift 3
   : > "$LOG"
-  env "$@" bash "$T/scripts/$script.sh" > "$T/out" 2>&1 || rc=$?
+  env "$@" bash "$T/scripts/$script.sh" < /dev/null > "$T/out" 2>&1 || rc=$?
   if [ "$want" = ok ] && [ "$rc" = 0 ]; then return 0; fi
   if [ "$want" != ok ] && [ "$rc" != 0 ] && grep -qF -- "$want" "$T/out"; then return 0; fi
   echo "--- $name: exit $rc, wanted ${want}"; cat "$T/out"; return 1
@@ -103,6 +104,9 @@ t "start restores the saved size" eval '
 t "start rejects a corrupt state file before any change" eval '
   echo "{broken" > "$STATE" && check corrupt daily-start "cannot parse" RDS_STATUS=available NG_SCALING="0 0 5" &&
   ! called update-nodegroup-config'
+t "start leaves a stopped RDS alone when the state file is corrupt" eval '
+  echo "{broken" > "$STATE" && check corrupt-rds daily-start "cannot parse" RDS_STATUS=stopped NG_SCALING="0 0 5" &&
+  ! called start-db-instance && ! called update-nodegroup-config'
 t "start rejects a saved desiredSize of 0" eval '
   echo "{\"ng-critical\":{\"minSize\":0,\"desiredSize\":0,\"maxSize\":4}}" > "$STATE" &&
   check zero daily-start "invalid size for ng-critical" RDS_STATUS=available NG_SCALING="0 0 4" &&

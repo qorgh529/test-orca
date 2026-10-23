@@ -62,6 +62,19 @@ notice() {
 EOF
 }
 
+# Resolve and validate both node group targets before any change, so a bad state file or NG_* value
+# stops here instead of after RDS has already been started.
+declare -A target
+for ng in ng-critical ng-platform; do
+  sz=$(target_size "$ng")
+  read -r min desired max <<<"$sz"
+  if ! [[ "$min $desired $max" =~ ^[0-9]+\ [0-9]+\ [0-9]+$ ]] || (( desired < 1 || min > desired || desired > max )); then
+    echo "invalid size for $ng: min=$min desired=$desired max=$max (check $(basename "$STATE") / NG_* env)" >&2
+    exit 1
+  fi
+  target[$ng]="$min $desired $max"
+done
+
 echo "== 1/4 RDS $RDS_INSTANCE_ID start"
 if (( DRY_RUN )); then
   st=stopped; echo "[DRY-RUN] assuming RDS status: $st"
@@ -83,12 +96,7 @@ esac
 echo "== 2/4 Managed node groups"
 changed=()
 for ng in ng-critical ng-platform; do
-  sz=$(target_size "$ng")
-  read -r min desired max <<<"$sz"
-  if ! [[ "$min $desired $max" =~ ^[0-9]+\ [0-9]+\ [0-9]+$ ]] || (( desired < 1 || min > desired || desired > max )); then
-    echo "invalid size for $ng: min=$min desired=$desired max=$max (check $(basename "$STATE") / NG_* env)" >&2
-    exit 1
-  fi
+  read -r min desired max <<<"${target[$ng]}"
   if (( DRY_RUN )); then
     cur="0 0 4"; echo "[DRY-RUN] assuming $ng min/desired/max: $cur"
   else
