@@ -26,3 +26,39 @@
 - [x] `k8s/tracing/tempo-values.yaml:39`, `scripts/lib.sh:16`, `scripts/deploy-all.sh:109` — S3 수명 주기 만료 일수는 `TEMPO_RETENTION_DAYS`(기본 `14`일) 환경변수로 설정 가능하며 `scripts/lib.sh:16`의 `TEMPLATE_VARS`에도 등록되어 있으나, 정작 `k8s/tracing/tempo-values.yaml:39`는 `retention: 336h`로 하드코딩되어 있어 운영자가 `.env`에서 `TEMPO_RETENTION_DAYS`를 변경할 경우 Tempo Compactor 보존 기간과 S3 Lifecycle 삭제 시점이 불일치하게 된다. / 해결책: `scripts/deploy-all.sh`에서 `TEMPO_RETENTION_DAYS`의 양의 정수 검증 후 파생 변수(예: `TEMPO_RETENTION_HOURS="$((TEMPO_RETENTION_DAYS * 24))h"`)로 `tempo-values.yaml`의 `retention`을 렌더링하거나, 두 설정이 항상 일치하도록 구성할 것. — `277762e` `ddd37a6`
 
 배포 가능 여부: No
+
+---
+
+## Security Round 2 — 2026-10-23 (대상 커밋: c29eab6)
+
+점검 범위: `git diff master...HEAD` 전체 및 Round 1 피드백 반영 커밋(`277762e`, `ddd37a6`, `eee4869`), `docs/architecture.md` 보안 구조(§7), `docs/features/apm-tracing/design.md` 보안 요구사항(§5) 준수 여부.
+
+### Round 1 지적 사항 수정 확인
+- **Critical (`k8s/tracing/tempo-values.yaml:55-61`)**: `jaeger: null`, `opencensus: null` 덮어쓰기를 제거하고 차트 기본 수신기 맵 구조를 유지한 채 `otlp` 수신기만 정의하여 `grafana/tempo` `1.24.4` Helm 템플릿 렌더링 오류를 해결함(인그레스는 `k8s/tracing/networkpolicy-tracing.yaml:50-61`로 `:4317`, `:4318`, `:3200`만 허용). (`277762e`)
+- **High (`k8s/tracing/tempo-values.yaml:30`)**: `tempo.memBallastSizeMbs: 0`을 명시적으로 설정하여 `1Gi` 메모리 Limits 내 OOMKilled 위험을 해소함. (`277762e`)
+- **Medium 1 (`k8s/tracing/tempo-values.yaml:36`, `scripts/validate-manifests.sh:256-271`)**: Tempo 컨테이너에 `readOnlyRootFilesystem: true`를 적용하고, `scripts/validate-manifests.sh`에서 트레이싱 Helm values 3종(`otel-operator-values.yaml`, `otel-collector-values.yaml`, `tempo-values.yaml`)의 비루트 실행(`runAsNonRoot: true`), 권한 상승 금지(`allowPrivilegeEscalation: false`), `capabilities.drop: [ALL]`, 읽기 전용 루트 파일시스템(`readOnlyRootFilesystem: true`)을 정적 검증하도록 보강함. (`277762e`, `ddd37a6`)
+- **Medium 2 (`scripts/deploy-all.sh:15-18`)**: `envsubst` 렌더링 전 `OTEL_TRACES_SAMPLER_ARG`(`^(0(\.[0-9]+)?|1(\.0+)?)$`) 및 `OTEL_DEPLOYMENT_ENVIRONMENT`(`^[A-Za-z0-9._-]+$`) 형식·범위 검증을 추가하여 잘못된 샘플링 비율 및 속성 인젝션을 차단함. (`ddd37a6`)
+- **Low 1 (`scripts/deploy-all.sh:19-20`, `scripts/lib.sh:16`, `k8s/tracing/tempo-values.yaml:42`, `scripts/validate-manifests.sh:273-274`)**: `TEMPO_RETENTION_DAYS` 양의 정수 검증 후 `TEMPO_RETENTION_HOURS="$(( ${TEMPO_RETENTION_DAYS:-14} * 24 ))h"`로 Tempo `retention`을 렌더링하고 `validate-manifests.sh`에서 검증하도록 수정하여 S3 Lifecycle 만료 일수와 일관성을 확보함. (`277762e`, `ddd37a6`)
+
+### 점검 항목별 요약
+- **시크릿/자격증명 하드코딩 및 `.env` 커밋 여부**: 이상 없음 (`.env` 미추적, 정적 AWS 키 미사용, IRSA `monitoring/tempo` 전용).
+- **문서(`docs/daily` 포함) 내 계정 ID·ARN·엔드포인트·개인 URL 실값 노출 여부**: 이상 없음 (`docs/daily/2026-10-23.md` 외 전체 문서에서 실값 노출 없음 확인).
+- **IAM/권한 과다 부여, 최소 권한 원칙 위반**: 이상 없음 (`infra/aws/iam-policies/tempo-policy.json` 전용 버킷 최소 권한 및 백업 버킷 분리 확인).
+- **네트워크 노출 (열린 포트, `0.0.0.0/0`, 공개 버킷)**: 이상 없음 (Tempo S3 퍼블릭 차단·SSE-KMS 암호화, `networkpolicy-petclinic.yaml` 및 `networkpolicy-tracing.yaml` 최소 포트 허용 및 IMDS `169.254.169.254/32` 차단 확인).
+- **입력 검증 누락 (인젝션, 경로 조작, SSRF)**: 이상 없음 (`OTEL_TRACES_SAMPLER_ARG`, `OTEL_DEPLOYMENT_ENVIRONMENT`, `TEMPO_RETENTION_DAYS`, 버킷명 중복 방지 모두 검증 완료).
+- **의존성 취약점 및 고정되지 않은 버전**: 이상 없음 (모든 Helm 차트 및 컨테이너 이미지 명시적 버전 태그 고정 확인).
+- **Dockerfile/IaC 및 `design.md` · `architecture.md` 보안 구조 준수 여부**: 이상 없음 (`scripts/validate-manifests.sh` 42개 YAML · 6개 워크로드 및 오프라인 회귀 테스트 전 건 통과 확인).
+
+### Critical
+지적 사항 없음.
+
+### High
+지적 사항 없음.
+
+### Medium
+지적 사항 없음.
+
+### Low
+지적 사항 없음.
+
+배포 가능 여부: Yes
