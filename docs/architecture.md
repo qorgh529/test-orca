@@ -10,11 +10,13 @@
   - `web`(Nginx 1.27 정적 서빙 + 리버스 프록시)과 `was`(Tomcat 11 언패킹 WAR + JMX Exporter) 2-Tier 분리 및 각각 CPU 기반 HPA / Prometheus 요청률 기반 KEDA 오토스케일링
   - 3-Tier 노드 분리: `np-app`(Karpenter On-Demand 기본 풀 + `np-app-spot` Spot 확장 풀), `ng-critical`(클러스터 컨트롤러 및 DB 초기화/백업 Job 전용 관리형 노드 그룹), `ng-platform`(모니터링 스택 및 `gp3` PVC 전용 관리형 노드 그룹)
   - 프라이빗 DB 서브넷의 RDS MySQL 8.0 Multi-AZ(Primary/Standby 동기 복제), S3 암호화 백업(`CronJob`), 역할별 DB 계정(admin/app/backup) 분리, AWS Secrets Manager + External Secrets Operator(ESO) 기반 시크릿 동기화
+  - 업무 외 시간 비용 절감을 위한 일일 리소스 중지·기동 스크립트(`scripts/daily-stop.sh`, `scripts/daily-start.sh` — Karpenter 앱 노드, EKS 관리형 노드 그룹, RDS MySQL 일괄 제어 및 잔여 비용 안내)
 - **제외 범위 (Out-of-Scope)**:
   - Spring Boot 내장 톰캣 JAR로의 전환 (외부 Tomcat 11 컨테이너 배포 구조 유지)
   - 멀티 리전 액티브-액티브 구성 (`ap-northeast-2` 단일 리전 Multi-AZ에 집중)
   - 기존 EKS 1.31 클러스터의 제자리 업그레이드 절차 (현재 구성은 1.36 새 클러스터 생성 기준, `docs/features/production-hardening/design.md` §1.3)
   - 비즈니스 도메인 모델 변경 (단, 외부 RDS 환경변수 바인딩 및 flatpickr `yyyy/MM/dd` 날짜 형식 호환 패치는 반영)
+  - 일일 중지 시 EKS 컨트롤 플레인, NAT Gateway, ALB(`Ingress`), `gp3` EBS PVC 삭제·재생성 및 EventBridge/Lambda 기반 자동 스케줄러 구축 (`docs/features/daily-stop-start/design.md` §1.4)
 
 ---
 
@@ -40,7 +42,7 @@
 .
 ├── .env.example                          # 환경변수 템플릿 (시크릿 평문 미포함, source 검증 통과)
 ├── .gitattributes                        # 셸 스크립트 LF 줄바꿈 및 실행 권한 유지
-├── .gitignore                            # 빌드 산출물, .env, 로컬 시크릿 제외
+├── .gitignore                            # 빌드 산출물, .env, 로컬 시크릿, .daily-nodegroup-state.json 제외
 ├── AGENTS.md                             # Codex 코드 리뷰어 규칙
 ├── CLAUDE.md                             # Claude 구현 규칙
 ├── ORCA_WORKFLOW.md                      # 에이전트 역할 분담 및 워크플로 정의
@@ -49,7 +51,7 @@
 │   ├── design.md                         # 초기 구축 설계서
 │   ├── review.md                         # 코드 리뷰 기록
 │   ├── security.md                       # 보안·인프라 점검 기록
-│   └── features/<기능명>/{review,security}.md  # 기능 브랜치별 리뷰·보안 점검 기록
+│   └── features/<기능명>/{design,review,security}.md  # 기능 브랜치별 설계·리뷰·보안 점검 기록
 ├── app/                                  # spring-framework-petclinic 소스 코드
 │   ├── pom.xml                           # Maven WAR 빌드, MySQL/PostgreSQL/H2/HSQLDB 프로필
 │   └── src/
@@ -118,15 +120,18 @@
 │   └── logging/
 │       └── fluent-bit-values.yaml        # aws-for-fluent-bit DaemonSet 설정 (전 노드 Toleration → CloudWatch Logs)
 ├── tests/
-│   └── monitoring/petclinic-rules.test.yaml  # PrometheusRule promtool 단위 테스트
+│   ├── monitoring/petclinic-rules.test.yaml  # PrometheusRule promtool 단위 테스트
+│   └── scripts/daily-stop-start.test.sh  # daily-stop.sh / daily-start.sh 오프라인 회귀 테스트 (가짜 aws/kubectl)
 └── scripts/
     ├── lib.sh                            # 공통 환경변수 로드(.env), 필수 변수 검증, envsubst 렌더링 함수
     ├── build-and-push.sh                 # ECR 로그인 및 web / was 이미지 빌드·푸시
     ├── deploy-all.sh                     # 애드온/매니페스트 배포, 카나리 100:0 고정 후 롤아웃, Route 53 연결, 카나리 E2E 검증 후 STABLE_WEIGHT:CANARY_WEIGHT(기본 90:10) 개방
     ├── set-canary-weight.sh              # 재배포 없이 카나리 비율 변경 (0 = 긴급 롤백, 100 = 전체 카나리)
     ├── rotate-db-secrets.sh              # Secrets Manager DB 비밀번호 변경 반영 (ESO 강제 동기화 확인 → db-init → was 재시작)
+    ├── daily-stop.sh                     # 퇴근 전 앱/Karpenter 노드·RDS·관리형 노드그룹 일괄 중지 및 잔여 비용 안내 (--dry-run 지원)
+    ├── daily-start.sh                    # 출근 시 RDS·관리형 노드그룹·Karpenter·워크로드/오토스케일러/CronJob 일괄 복원 (--dry-run 지원)
     ├── test-prometheus-rules.sh          # promtool로 PrometheusRule 단위 테스트 실행
-    └── validate-manifests.sh             # YAML 문법, 고정 이미지/애드온 버전, 평문 시크릿 부재, 노드 티어/비루트, 역할별 DB 시크릿·PDB·KEDA fallback 등 정적 검증기
+    └── validate-manifests.sh             # YAML 문법, 고정 이미지/애드온 버전, 평문 시크릿 부재, 노드 티어/비루트, 역할별 DB 시크릿·PDB·KEDA fallback, daily-stop/start 문법·--dry-run·회귀 테스트 검증기
 ```
 
 ---
@@ -153,6 +158,16 @@
    - `ng-critical`의 `db-init` Job은 admin 계정 시크릿(`petclinic-rds-admin-secret`)으로 스키마·초기 데이터를 적재하고 app/backup 계정을 생성하며, `db-backup` CronJob은 읽기 전용 backup 계정 시크릿(`petclinic-rds-backup-secret`)으로 일일 `mysqldump` 후 **Amazon S3** `SSE-KMS`에 업로드한다. 모두 TLS로만 연결한다.
    - 모든 노드의 컨테이너 로그와 RDS 에러/슬로우쿼리 로그는 **Fluent Bit DaemonSet** 및 RDS 로그 내보내기를 통해 **Amazon CloudWatch Logs**로 수집된다.
 
+### 일일 리소스 중지·기동 제어 흐름 (`scripts/daily-stop.sh` · `scripts/daily-start.sh`)
+- **퇴근 전 중지 (`scripts/daily-stop.sh [--dry-run]`)**:
+  1. **앱 계층 및 Karpenter 노드 축소 (`ng-critical`의 Karpenter 컨트롤러가 살아 있을 때 먼저 수행)**: `cronjob/db-backup`을 `suspend: true`로 전환 → KEDA `ScaledObject`(`was-stable`, `was-canary`)에 `paused-replicas=0` 어노테이션 설정 및 `web`/`web-canary` HPA 삭제 → `web`/`was`와 NGF(`nginx-gateway` 컨트롤 플레인 먼저, 이어서 `petclinic-gateway-nginx` 데이터 플레인) Deployment를 `replicas=0`으로 축소 → Karpenter `NodePool`(`np-app`, `np-app-spot`) `limits`를 `cpu=0, memory=0Gi`로 패치하고 `nodeclaim --all` 삭제 완료를 대기하여 앱 EC2 노드를 모두 종료한다 (`NotFound`만 건너뛰며 `Forbidden`·인증·연결 오류 시 즉시 중단).
+  2. **RDS MySQL 중지**: `${RDS_INSTANCE_ID:-${EKS_CLUSTER_NAME}-mysql}` 상태가 `available`이면 `stop-db-instance`를 호출한다 (`stopping`/`stopped`이면 멱등 건너뜀).
+  3. **관리형 노드 그룹 축소**: `ng-critical`, `ng-platform`의 현재 `minSize`/`desiredSize`/`maxSize`를 조회해 `desiredSize > 0`이면 `.daily-nodegroup-state.json`(`umask 077`)에 백업한 뒤 `minSize=0, desiredSize=0`으로 축소하고, 각 update ID를 `describe-update`로 조회해 `Successful`을 확인한다(`Failed`/`Cancelled`/15분 초과 시 오류 종료). 마지막으로 중지 불가 리소스(EKS 컨트롤 플레인, NAT Gateway, ALB, 스토리지) 및 RDS 7일 자동 재시작 안내를 출력한다.
+- **출근 시 기동 (`scripts/daily-start.sh [--dry-run]`)**:
+  1. **사전 검증 및 RDS 시작 요청**: 변경 전 `.daily-nodegroup-state.json`(없으면 `NG_*` 환경변수 또는 기본값 `2/2/4`)의 `minSize`/`desiredSize`/`maxSize` 정수·범위(`1 <= desiredSize`, `minSize <= desiredSize <= maxSize`)를 먼저 검증한다. 이어서 가장 느린 RDS를 먼저 시작(`stopped`이면 즉시 `start-db-instance`, `stopping`이면 `db-instance-stopped` 대기 후 시작)하여 노드 그룹 복원과 병렬로 진행한다.
+  2. **관리형 노드 그룹 및 컨트롤러 복원**: `ng-critical`, `ng-platform`의 `minSize`/`desiredSize`/`maxSize`를 복원(update ID별 `describe-update` `Successful` 확인)하고, `coredns`, `karpenter`, `aws-load-balancer-controller`, `external-secrets`, `keda-operator`의 `rollout status`를 확인한다.
+  3. **RDS `available` 대기 및 앱 계층 복원**: `db-instance-available` 확인 후 `infra/karpenter/nodepool-app.yaml` 재적용으로 Karpenter `NodePool` 한도를 복원하고, NGF(최소 2), KEDA 일시중지 어노테이션 해제, `was-stable`(최소 2)/`was-canary`(최소 1)/`web`(최소 2)/`web-canary`(최소 1) 스케일 업(현재 레플리카가 최소치 이상이면 유지), `k8s/web/hpa.yaml` 재적용, Deployment `rollout status` 확인 후 `cronjob/db-backup`을 `suspend: false`로 재개한다 (필수 리소스 부재·오류 시 즉시 실패 처리).
+
 ---
 
 ## 5. 실행 환경 — 런타임, 컨테이너/클라우드 리소스, 환경변수 목록
@@ -177,10 +192,10 @@
 
 | 이름 | 관리 주체 | 용량 / 인스턴스 전략 | Taint | Label | 역할 |
 |---|---|---|---|---|---|
-| **`np-app`** | Karpenter `NodePool` (`weight: 100`) | **On-Demand 전용** (`c6i`/`m6i`/`t3` `large`~`2xlarge`, 한도 `16 vCPU / 64Gi`) | 없음 | `workload-tier=app` | 앱 워크로드(`NGF`, `web`, `was`) 기본 용량 수용 |
-| **`np-app-spot`** | Karpenter `NodePool` | **Spot 전용** (`c6i`/`m6i`/`t3` `large`~`2xlarge`, 한도 `48 vCPU / 192Gi`) | 없음 | `workload-tier=app` | `np-app` 한도 초과 시 앱 워크로드 Spot 확장 수용 |
-| **`ng-critical`** | EKS Managed NodeGroup | On-Demand (`m6i.large`, Min 2 / Desired 2 / Max 4, Multi-AZ) | `node-role=critical:NoSchedule` | `workload-tier=critical` | 클러스터 컨트롤러 및 `db-init` / `db-backup` 실행 |
-| **`ng-platform`** | EKS Managed NodeGroup | On-Demand (`m6i.large`, Min 2 / Desired 2 / Max 4, Multi-AZ) | `node-role=platform:NoSchedule` | `workload-tier=platform` | Prometheus(50Gi × 2), Grafana(10Gi), Alertmanager(10Gi) 및 `gp3` PVC |
+| **`np-app`** | Karpenter `NodePool` (`weight: 100`) | **On-Demand 전용** (`c6i`/`m6i`/`t3` `large`~`2xlarge`, 한도 `16 vCPU / 64Gi`, 일일 중지 시 `0`) | 없음 | `workload-tier=app` | 앱 워크로드(`NGF`, `web`, `was`) 기본 용량 수용 |
+| **`np-app-spot`** | Karpenter `NodePool` | **Spot 전용** (`c6i`/`m6i`/`t3` `large`~`2xlarge`, 한도 `48 vCPU / 192Gi`, 일일 중지 시 `0`) | 없음 | `workload-tier=app` | `np-app` 한도 초과 시 앱 워크로드 Spot 확장 수용 |
+| **`ng-critical`** | EKS Managed NodeGroup | On-Demand (`m6i.large`, Min 2 / Desired 2 / Max 4, Multi-AZ, 일일 중지 시 Min 0 / Desired 0) | `node-role=critical:NoSchedule` | `workload-tier=critical` | 클러스터 컨트롤러 및 `db-init` / `db-backup` 실행 |
+| **`ng-platform`** | EKS Managed NodeGroup | On-Demand (`m6i.large`, Min 2 / Desired 2 / Max 4, Multi-AZ, 일일 중지 시 Min 0 / Desired 0) | `node-role=platform:NoSchedule` | `workload-tier=platform` | Prometheus(50Gi × 2), Grafana(10Gi), Alertmanager(10Gi) 및 `gp3` PVC |
 
 ### 5.3 환경변수 목록 (`.env.example` 기준 — 실제 값은 저장소에 기재하지 않음)
 
@@ -193,13 +208,14 @@
 | **애플리케이션** | `SPRING_PROFILES_ACTIVE`, `JAVA_OPTS`, `WAS_UPSTREAM_HOST`, `WAS_UPSTREAM_PORT` | Spring 런타임 프로필(`jpa`), JVM 옵션, Nginx 업스트림 호스트/포트 |
 | **DB / 시크릿** | `RDS_SECRET_NAME`, `RDS_APP_SECRET_NAME`, `RDS_BACKUP_SECRET_NAME`, `RDS_HOST`, `RDS_PORT`, `RDS_DB_NAME`, `JDBC_URL`, `JDBC_USERNAME`, `JDBC_PASSWORD`, `JDBC_DRIVER_CLASS_NAME` | admin/app/backup 계정별 Secrets Manager 시크릿 경로(`petclinic/*`), ESO가 생성하는 시크릿 키 및 MySQL JDBC 드라이버 클래스명 |
 | **관측성 / 백업** | `CW_LOG_GROUP_NAME`, `PROMETHEUS_SERVER_URL`, `GRAFANA_ADMIN_SECRET_NAME`, `ALERTMANAGER_WEBHOOK_SECRET_NAME`, `ALERTMANAGER_WEBHOOK_URL`, `BACKUP_S3_BUCKET_NAME` | CloudWatch 로그 그룹, Prometheus 쿼리 URL, Grafana·Alertmanager Webhook 시크릿 경로(`petclinic/*`), Webhook URL(post-cluster에서 시크릿 생성 시에만 사용), 백업용 S3 버킷명 |
+| **일일 중지·기동 (선택)** | `RDS_INSTANCE_ID`, `NG_CRITICAL_DESIRED_SIZE`, `NG_PLATFORM_DESIRED_SIZE` (및 `NG_CRITICAL_MIN_SIZE`, `NG_CRITICAL_MAX_SIZE`, `NG_PLATFORM_MIN_SIZE`, `NG_PLATFORM_MAX_SIZE`) | `daily-stop.sh` / `daily-start.sh` 대상 RDS 식별자(기본 `${EKS_CLUSTER_NAME}-mysql`) 및 `.daily-nodegroup-state.json` 미존재 시 관리형 노드 그룹 복원 기본 용량(기본 `2 / 2 / 4`) |
 
 ---
 
 ## 6. 외부 의존성 — 외부 API, DB, 서비스
 
 - **AWS 관리형 서비스**:
-  - **Amazon RDS for MySQL (`8.0.39`)**: 애플리케이션 영속 데이터 저장소 (`:3306`, Multi-AZ, `require_secure_transport=ON`, `error`/`slowquery` CloudWatch 로그 내보내기, 삭제 보호 활성화)
+  - **Amazon RDS for MySQL (`8.0.39`)**: 애플리케이션 영속 데이터 저장소 (`:3306`, Multi-AZ, `require_secure_transport=ON`, `error`/`slowquery` CloudWatch 로그 내보내기, 삭제 보호 활성화, 일일 중지 후 7일 경과 시 AWS 정책에 따라 자동 재시작)
   - **AWS Secrets Manager**: RDS 계정별 접속 정보(`$RDS_SECRET_NAME` admin, `$RDS_APP_SECRET_NAME` app, `$RDS_BACKUP_SECRET_NAME` backup), Grafana 관리자 자격증명(`$GRAFANA_ADMIN_SECRET_NAME`), Alertmanager Webhook URL(`$ALERTMANAGER_WEBHOOK_SECRET_NAME`) 보관
   - **Amazon S3**: `db-backup` CronJob의 `mysqldump` 백업 파일 저장소 (퍼블릭 액세스 완전 차단, SSE-KMS 기본 암호화, 버전 관리 활성화)
   - **Amazon ECR**: `petclinic-web`, `petclinic-was` 컨테이너 이미지 저장소 (`IMMUTABLE` 태그, 푸시 시 자동 스캔, KMS 암호화)
@@ -236,6 +252,9 @@
 5. **컨테이너 및 네임스페이스 하드닝**:
    - 모든 네임스페이스에 워크로드 특성에 맞는 Pod Security Standards(`petclinic`: `enforce: restricted`, `nginx-gateway`/`external-secrets`/`keda`: `enforce: baseline`, `monitoring`/`amazon-cloudwatch`: `enforce: privileged`) 레이블을 적용한다.
    - `web`, `was`, `db-init`, `db-backup`의 모든 컨테이너는 비루트 사용자(`UID/GID 10001`), `runAsNonRoot: true`, `allowPrivilegeEscalation: false`, `capabilities: { drop: ["ALL"] }`, `seccompProfile: RuntimeDefault`, `readOnlyRootFilesystem: true`로 실행되며, 런타임 쓰기가 필요한 경로만 `emptyDir` 볼륨으로 마운트한다.
+6. **일일 중지·기동 스크립트 최소 권한 및 무결성 보호 (`scripts/daily-stop.sh` · `scripts/daily-start.sh`)**:
+   - 두 스크립트는 AWS 컨트롤 플레인(`eks:DescribeCluster`, `eks:DescribeNodegroup`, `eks:UpdateNodegroupConfig`, `eks:DescribeUpdate`, `rds:DescribeDBInstances`, `rds:StopDBInstance`, `rds:StartDBInstance`)과 K8s 스케일링·롤아웃 API(`petclinic`·`nginx-gateway` 리소스 제어, 클러스터 범위 `nodepools`/`nodeclaims` 제어, `kube-system`·`external-secrets`·`keda` `deployments` 조회)만 사용하며, DB 비밀번호나 K8s `Secret` 값을 읽거나 출력하지 않는다.
+   - 관리형 노드 그룹 스케일 백업 파일(`.daily-nodegroup-state.json`)은 `.gitignore`로 추적에서 제외하고 `umask 077`로 생성하며, 기동 시 모든 변경(RDS 시작 포함) 전에 JSON 유효성과 `minSize`/`desiredSize`/`maxSize` 정수·범위(`desiredSize >= 1`, `minSize <= desiredSize <= maxSize`)를 검증해 손상된 상태 파일이나 잘못된 환경변수로 인한 비정상 스케일링·부분 기동을 차단한다.
 
 ---
 
@@ -254,3 +273,7 @@
 - `production-hardening`: Prometheus를 2 Replicas(AZ 분산 + 개별 `gp3` PVC)로 다중화하고 `was-stable`/`was-canary` KEDA `ScaledObject`에 `fallback`(4 / 2 레플리카)을 추가함 / 단일 AZ 장애나 Prometheus 일시 불능 시에도 모니터링과 WAS 오토스케일링 안전 용량이 유지되도록 하기 위함
 - `production-hardening`: 서비스 오픈 전에 NGF `2.8.0`(Gateway API `v1.6.3`), LBC `v3.6.1`, kube-prometheus-stack `92.11.0`, metrics-server `3.14.0`, aws-for-fluent-bit `0.2.0`까지 1.36 기준으로 상향함 / NGF 2.x 재설치·CRD 메이저 변경은 운영 중이면 다운타임이 생기므로, 사용자 트래픽이 없을 때 신규 클러스터 기준으로 맞춰 두기 위함. NGF 2.x에서 데이터 플레인 Service가 `petclinic-gateway-nginx`로 바뀌어 ALB 백엔드를 변경하고, 차트가 PDB를 제공하므로 별도 `pdb-nginx-gateway.yaml`은 삭제함
 - `production-hardening`: 카나리 개방 비율을 운영자가 정하도록 `STABLE_WEIGHT`/`CANARY_WEIGHT`(기본 90:10)를 받고, 재배포 없이 비율만 바꾸는 `scripts/set-canary-weight.sh`를 둠 (설계 Q8) / 배포 위험도에 따라 처음 여는 비율을 고르고 지표를 보며 넓히거나 즉시 100:0으로 되돌리는 것이 카나리를 택한 목적이기 때문. 검증 전 100:0 고정은 설정으로 바꿀 수 없음
+- `daily-stop-start`: 퇴근 전 중지(`scripts/daily-stop.sh`) 시 `ng-critical` 관리형 노드 그룹보다 앱 워크로드(NGF 컨트롤 플레인 먼저 → 데이터 플레인·`web`·`was`)와 Karpenter `NodePool`(`np-app`, `np-app-spot` 한도 `0`)을 먼저 축소하고 `NodeClaim` 종료를 대기함 / Karpenter 컨트롤러가 `ng-critical`에서 실행되므로 관리형 노드를 먼저 내리면 앱 EC2 인스턴스가 정리되지 않고 밤새 과금되기 때문
+- `daily-stop-start`: 출근 시 기동(`scripts/daily-start.sh`)에서 `.daily-nodegroup-state.json` 및 `NG_*` 목표 용량(`minSize`/`desiredSize`/`maxSize`)을 최우선 검증한 뒤 가장 느린 RDS 시작 요청(`stopping`이면 `db-instance-stopped` 대기 후 시작)과 관리형 노드 그룹 복원을 병렬 진행하고, 핵심 컨트롤러와 RDS `available` 확인 후 앱 계층을 복원함 / 잘못된 설정으로 인한 부분 기동을 막고 Multi-AZ RDS 기동 대기 시간을 단축하면서 WAS 초기 기동 시 DB 연결 실패를 방지하기 위함
+- `daily-stop-start`: 일일 중지 대상에서 EKS 컨트롤 플레인, NAT Gateway, ALB(`Ingress`), `gp3` EBS PVC를 제외하고 스크립트 출력으로 잔여 비용 및 RDS 7일 자동 재시작 정책만 안내함 / 삭제·재생성 시 수십 분의 프로비저닝 지연, ALB DNS·ACM·WAF 재연결, 모니터링 데이터 유실이 발생하여 일일 온오프 목적에 맞지 않기 때문
+- `daily-stop-start`: `daily-stop.sh`는 K8s 리소스 조회 시 `NotFound`만 건너뛰고 권한·인증·연결 오류는 즉시 중단하며, `daily-start.sh`는 필수 컨트롤러·워크로드 부재를 포함한 모든 조회·복원 실패 시 즉시 중단하도록 구현하고 가짜 `aws`/`kubectl` 기반 오프라인 회귀 테스트(`tests/scripts/daily-stop-start.test.sh`)로 검증함 / RBAC 누락이나 인증 만료 상태에서 관리형 노드 그룹만 0으로 내려가거나 워크로드 미복원 상태가 정상 복원으로 오인되는 것을 방지하기 위함
