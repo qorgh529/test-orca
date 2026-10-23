@@ -25,12 +25,14 @@ fi
 
 run() { if (( DRY_RUN )); then echo "[DRY-RUN] $*"; else "$@"; fi; }
 
-# kubectl <verb> <resource> [args] in <ns> ("" = cluster scope), skipped when the resource is absent.
+# kubectl <verb> <resource> [args] in <ns> ("" = cluster scope), skipped only when the resource is NotFound.
+# Any other lookup error (Forbidden, expired auth, API unreachable) aborts before the node groups go to 0.
 kube() {
-  local ns=$1 verb=$2 res=$3; shift 3
+  local ns=$1 verb=$2 res=$3 err; shift 3
   local nsarg=(); [ -n "$ns" ] && nsarg=(-n "$ns")
-  if (( ! DRY_RUN )) && ! kubectl "${nsarg[@]}" get "$res" >/dev/null 2>&1; then
-    echo "skip: ${ns:-cluster} $res not found"; return 0
+  if (( ! DRY_RUN )) && ! err=$(kubectl "${nsarg[@]}" get "$res" 2>&1 >/dev/null); then
+    if [[ "$err" == *"(NotFound)"* ]]; then echo "skip: ${ns:-cluster} $res not found"; return 0; fi
+    echo "$err" >&2; echo "cannot read ${ns:-cluster} $res, stopping before any further change" >&2; exit 1
   fi
   run kubectl "${nsarg[@]}" "$verb" "$res" "$@"
 }
@@ -87,6 +89,8 @@ for ng in ng-critical ng-platform; do
       --query 'nodegroup.scalingConfig.[minSize,desiredSize,maxSize]' --output text)
   fi
   read -r min desired max <<<"$sc"
+  [[ "$min $desired $max" =~ ^[0-9]+\ [0-9]+\ [0-9]+$ ]] \
+    || { echo "unexpected scalingConfig for $ng: '$sc'" >&2; exit 1; }
   if (( min == 0 && desired == 0 )); then echo "$ng already 0"; continue; fi
   # Keep the size from before the first stop: a re-run at desired 0 must not overwrite it.
   if (( desired > 0 )); then
@@ -94,8 +98,11 @@ for ng in ng-critical ng-platform; do
       echo "[DRY-RUN] save $ng $min/$desired/$max to ${STATE#"$ROOT"/}"
     else
       cur='{}'; [ -f "$STATE" ] && cur=$(cat "$STATE")
-      jq --arg ng "$ng" --argjson min "$min" --argjson d "$desired" --argjson max "$max" \
-        '.[$ng] = {minSize: $min, desiredSize: $d, maxSize: $max}' <<<"$cur" > "$STATE.tmp"
+      if ! (umask 077; jq --arg ng "$ng" --argjson min "$min" --argjson d "$desired" --argjson max "$max" \
+          '.[$ng] = {minSize: $min, desiredSize: $d, maxSize: $max}' <<<"$cur" > "$STATE.tmp"); then
+        rm -f "$STATE.tmp"
+        echo "cannot update ${STATE#"$ROOT"/} (corrupt JSON?): fix or remove it, then re-run" >&2; exit 1
+      fi
       mv "$STATE.tmp" "$STATE"
     fi
   fi
