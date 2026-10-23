@@ -28,10 +28,10 @@
 | **Ingress LB** | AWS ALB (AWS Load Balancer Controller) | HTTP(`80`)→HTTPS(`443`) 리다이렉트, TLS 1.3/1.2 종단, 비정상 헤더 드롭, `target-type: ip`로 NGF Pod에 직접 라우팅 | 퍼블릭 서브넷 (`2a`, `2c`) |
 | **L7 Gateway** | NGINX Gateway Fabric 2.x (`nginx-gateway`) | Gateway API(`v1.6.3`). 컨트롤 플레인(2 Replicas)이 Gateway마다 데이터 플레인 `petclinic-gateway-nginx`(2 Replicas, AZ 분산, 차트 PDB `minAvailable: 1`, `ClusterIP`)를 생성. `HTTPRoute`로 `web` / `web-canary` 트래픽 분할(배포 중 100:0, 카나리 검증 후 90:10, `X-Canary: always`는 항상 `web-canary`) | `nginx-gateway` / `np-app` (`workload-tier=app`) |
 | **Web Tier** | `web`, `web-canary` (Nginx + Exporter) | `/resources/*`, `/webjars/*` 정적 에셋 직접 서빙 및 보안 헤더 부여, 동적 요청을 각각 `was-stable:8080`, `was-canary:8080`으로 프록시. 사이드카 `nginx-prometheus-exporter`(`:9113`) 내장. CPU 60% 기준 HPA(`web` 2~10, `web-canary` 1~4), stable PDB(`minAvailable: 1`) | `petclinic` / `np-app` (`workload-tier=app`) |
-| **WAS Tier** | `was-stable`, `was-canary` (Tomcat 11 + JMX Exporter) | 사전 언패킹된 `webapps/ROOT` 구동(`jpa` 프로필, 읽기 전용 루트 파일시스템), JMX Exporter(`:9404/metrics`)로 `Catalina_GlobalRequestProcessor_requestCount` 노출. Prometheus 요청률 기반 KEDA `ScaledObject`(`was-stable` 2~10·fallback 4, `was-canary` 1~3·fallback 2), stable PDB(`minAvailable: 1`), Tomcat JDBC 풀 최대 10 | `petclinic` / `np-app` (`workload-tier=app`) |
+| **WAS Tier** | `was-stable`, `was-canary` (Tomcat 11 + JMX Exporter) | 사전 언패킹된 `webapps/ROOT` 구동(`jpa` 프로필, 읽기 전용 루트 파일시스템), JMX Exporter(`:9404/metrics`)로 `tomcat_requestcount_total`, `tomcat_errorcount_total` 등 노출. Prometheus 요청률 기반 KEDA `ScaledObject`(`was-stable` 2~10·fallback 4, `was-canary` 1~3·fallback 2), stable PDB(`minAvailable: 1`), Tomcat JDBC 풀 최대 10 | `petclinic` / `np-app` (`workload-tier=app`) |
 | **Cluster Controllers** | CoreDNS, LBC, Metrics Server, Karpenter, KEDA, ESO, EBS CSI | 클러스터 핵심 제어부 및 오토스케일러·시크릿·스토리지 드라이버 | `kube-system`, `keda`, `external-secrets` / `ng-critical` (Taint: `node-role=critical:NoSchedule`) |
 | **DB Jobs** | `db-init` (Job), `db-backup` (CronJob) | 배포 시 admin 계정으로 멱등 스키마/초기 데이터 적재(`schema.sql`, `data.sql`) 및 app/backup 계정 생성·권한 부여, 매일 03:00 KST `mysqldump` 압축본을 S3(`SSE-KMS`)에 업로드 | `petclinic` / `ng-critical` (Taint: `node-role=critical:NoSchedule`) |
-| **Observability** | Prometheus, Grafana, Alertmanager, Fluent Bit | `ServiceMonitor` 기반 `web`(`:9113`)·`was`(`:9404`) 메트릭 수집, KEDA 스케일링 쿼리 제공, `gp3` 암호화 볼륨 영속화, Prometheus 2 Replicas AZ 분산, `PrometheusRule`(백업 실패·KEDA 오류·오류율) → Alertmanager Webhook. Fluent Bit DaemonSet은 전 노드 컨테이너 로그를 CloudWatch Logs로 전송 | `monitoring` (`ng-platform`, Taint: `node-role=platform:NoSchedule`) / `amazon-cloudwatch` (Fluent Bit 전 노드 Toleration) |
+| **Observability** | Prometheus, Grafana, Alertmanager, kube-state-metrics, node-exporter, Fluent Bit | `ServiceMonitor` 기반 `web`(`:9113`)·`was`(`:9404`) 메트릭 수집, KEDA 스케일링 쿼리 제공, `gp3` 암호화 볼륨 영속화, Prometheus 2 Replicas AZ 분산, `PrometheusRule`(백업 실패·KEDA 오류·오류율) → Alertmanager Webhook. `node-exporter` 및 Fluent Bit DaemonSet은 전 노드에서 메트릭·컨테이너 로그(→ CloudWatch Logs) 수집 | `monitoring` (`ng-platform`, Taint: `node-role=platform:NoSchedule`; `node-exporter`는 전 노드 Toleration) / `amazon-cloudwatch` (Fluent Bit 전 노드 Toleration) |
 | **Data / Storage / Registry** | RDS MySQL 8.0, Secrets Manager, S3, ECR | Multi-AZ Primary/Standby RDB(`require_secure_transport=ON`), RDS(admin/app/backup)·Grafana·Alertmanager Webhook 시크릿 보관, DB 백업 버킷, 불변 태그(`IMMUTABLE`) 및 KMS 암호화 컨테이너 레지스트리 | 프라이빗 DB 서브넷 (`2a`, `2c`) 및 AWS 관리형 서비스 |
 
 ---
@@ -46,12 +46,18 @@
 ├── AGENTS.md                             # Codex 코드 리뷰어 규칙
 ├── CLAUDE.md                             # Claude 구현 규칙
 ├── ORCA_WORKFLOW.md                      # 에이전트 역할 분담 및 워크플로 정의
+├── README.md                             # 프로젝트 아키텍처 개요, 빠른 시작 가이드 및 Day-2 운영 런북
 ├── docs/
 │   ├── architecture.md                   # 시스템 전체 아키텍처 현황 (본 문서)
+│   ├── architecture.drawio               # 공식 AWS 아이콘 기반 아키텍처 다이어그램 원본
+│   ├── architecture.drawio.{svg,png}     # 내보낸 다이어그램 이미지 (Embedded XML 포함)
 │   ├── design.md                         # 초기 구축 설계서
 │   ├── review.md                         # 코드 리뷰 기록
 │   ├── security.md                       # 보안·인프라 점검 기록
-│   └── features/<기능명>/{design,review,security}.md  # 기능 브랜치별 설계·리뷰·보안 점검 기록
+│   ├── daily/                            # 조율 에이전트 일일 작업 기록 (TEMPLATE.md, YYYY-MM-DD.md)
+│   └── features/                         # 기능 브랜치별 설계·리뷰·보안 점검 기록
+│       ├── production-hardening/{design,review,security}.md
+│       └── daily-stop-start/{design,review,security}.md
 ├── app/                                  # spring-framework-petclinic 소스 코드
 │   ├── pom.xml                           # Maven WAR 빌드, MySQL/PostgreSQL/H2/HSQLDB 프로필
 │   └── src/
@@ -113,8 +119,8 @@
 │   │   ├── externalsecret-alertmanager.yaml # Alertmanager Webhook URL ExternalSecret (url_file로 마운트)
 │   │   ├── externalsecret-grafana.yaml   # Grafana 관리자 자격증명 ExternalSecret
 │   │   ├── kube-prometheus-values.yaml   # Prometheus(2 Replicas AZ 분산), Grafana, Alertmanager ng-platform 배치 및 gp3 PVC 설정
-│   │   ├── networkpolicy-alertmanager.yaml # Alertmanager Egress 제한 (DNS, HTTPS 443만, IMDS 제외)
-│   │   ├── networkpolicy-prometheus.yaml # Prometheus :9090 Ingress 제한 (KEDA, Grafana, 자기 자신만 허용)
+│   │   ├── networkpolicy-alertmanager.yaml # Alertmanager Egress 제한 (DNS, 피어 가십 :9094, HTTPS :443만, IMDS 제외)
+│   │   ├── networkpolicy-prometheus.yaml # Prometheus Ingress 제한 (KEDA·Grafana → :9090, 자기 자신 → :9090·:8080)
 │   │   ├── prometheusrule-petclinic.yaml # 백업 실패(첫 성공 없음 포함), KEDA 지표 오류, WAS 오류율 알림 규칙
 │   │   └── servicemonitor-petclinic.yaml # web(:9113), was(:9404) 스크래핑 ServiceMonitor
 │   └── logging/
@@ -239,7 +245,7 @@
    - RDS 보안 그룹은 오직 EKS 클러스터 보안 그룹에서 오는 `TCP 3306`만 허용하며 퍼블릭 접근(`--no-publicly-accessible`)을 차단한다.
    - Amazon VPC CNI의 `enableNetworkPolicy: "true"` 및 `enablePolicyEventLogs: "true"`를 활성화한다.
    - `petclinic` 네임스페이스는 `default-deny-all`(Ingress/Egress 기본 차단) 정책을 기반으로 DNS(`53`), `nginx-gateway`→`web`(`8080`), `web`→`was`(`8080`), `Prometheus`→`web`(`9113`)/`was`(`9404`), `was`·`db-init`·`db-backup`→RDS(`3306`), `db-backup`→S3/STS(`443`) 통신만 명시적으로 허용한다.
-   - `monitoring` 네임스페이스의 Prometheus(`:9090`)는 `prometheus-ingress` NetworkPolicy를 통해 KEDA, Grafana, Prometheus 자체 Pod에서의 접근만 허용하고, Alertmanager는 `alertmanager-egress` NetworkPolicy로 DNS와 HTTPS(`443`, IMDS `169.254.169.254` 제외) 송신만 허용한다.
+   - `monitoring` 네임스페이스의 Prometheus(`:9090`)는 `prometheus-ingress` NetworkPolicy를 통해 KEDA, Grafana, Prometheus 자체 Pod(`:9090`, `:8080`)에서의 접근만 허용하고, Alertmanager는 `alertmanager-egress` NetworkPolicy로 DNS(`53`), 피어 가십(`9094`), HTTPS(`443`, IMDS `169.254.169.254/32` 제외) 송신만 허용한다.
 3. **최소 권한 IAM (IRSA) 및 IMDS 차단**:
    - 모든 관리형 노드 그룹(`ng-critical`, `ng-platform`)에 `disableIMDSv1: true`, `disablePodIMDS: true`를 설정하고, Karpenter `EC2NodeClass`(`np-app`)에 `httpTokens: required`, `httpPutResponseHopLimit: 1`을 설정하여 일반 Pod가 노드 IAM Role 자격증명을 탈취하지 못하게 차단한다.
    - 컨트롤러 및 백업 잡은 전용 IRSA ServiceAccount를 사용하며, 리소스 범위를 최소한으로 제한한다 (ESO는 `secret:petclinic/*` 읽기만, `db-backup`은 `s3:::${BACKUP_S3_BUCKET_NAME}/petclinic/*`의 `s3:PutObject`만, Fluent Bit는 지정된 로그 그룹 쓰기만 허용).
