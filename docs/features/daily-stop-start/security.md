@@ -25,3 +25,31 @@
 - [x] (`3917898`) `scripts/daily-stop.sh:98` — 로컬 상태 파일(`.daily-nodegroup-state.json.tmp` → `.daily-nodegroup-state.json`) 생성 시 파일 권한을 제한하지 않아 기본 `umask`에 따라 동일 호스트의 다른 로컬 사용자가 스케일 상태 파일을 읽을 수 있으며, 기존 상태 파일이 손상된 경우 `jq` 실행이 실패한다. / 해결책: 상태 파일 작성 시 `umask 077`(또는 `chmod 600`)을 적용하여 파일 접근 권한을 소유자로 제한하고, 기존 상태 파일 파싱 실패 시 명확한 오류 메시지를 출력할 것.
 
 배포 가능 여부: No
+
+## Security Round 2 — 2026-10-23 (대상 커밋: 4c7375f)
+
+점검 범위: `git diff master...HEAD` 전체(`.env.example`, `.gitignore`, `scripts/daily-stop.sh`, `scripts/daily-start.sh`, `scripts/validate-manifests.sh`, `tests/scripts/daily-stop-start.test.sh`, `docs/features/daily-stop-start/design.md`, `docs/features/daily-stop-start/review.md`, `docs/daily/2026-10-23.md`), `docs/architecture.md` 보안 구조(§7), `docs/features/daily-stop-start/design.md` 보안 요구사항(§5) 준수 여부 및 Round 1 `[x]` 항목 수정 검증.
+
+### 점검 항목별 요약 및 Round 1 수정 확인
+- **시크릿/자격증명 하드코딩 및 `.env` 커밋 여부**: 이상 없음 (`scripts/validate-manifests.sh` 통과, `.env` 및 `.daily-nodegroup-state.json`은 `.gitignore`로 추적 제외, 신규 스크립트 및 테스트 코드 내 시크릿 접촉 없음).
+- **문서(`docs/daily` 포함) 내 계정 ID·ARN·엔드포인트·개인 URL 실값 노출 여부**: 이상 없음 (`docs/daily/2026-10-23.md`의 Round 1~2 기록을 포함한 모든 문서에서 플레이스홀더 사용 확인).
+- **IAM/권한 과다 부여, 최소 권한 원칙 위반**: 이상 없음 (`82d3c8f`에서 `docs/features/daily-stop-start/design.md:235`에 `kube-system`, `external-secrets`, `keda` 네임스페이스 `deployments` 조회 권한(`get`, `list`, `watch`)이 반영되어 실제 스크립트 동작과 최소 권한 명세가 일치함).
+- **네트워크 노출 / 의존성 / Dockerfile·IaC**: 기존 보안 설정 변경 없음 (`k8s/`, `infra/`, `docker/`, `app/` 무변경).
+- **입력 검증 및 오류 전파 (Round 1 `[x]` 항목 재검증)**:
+  - Round 1 High (`3917898`): `scripts/daily-stop.sh:30-38`에서 `NotFound`만 건너뛰고 권한 거부(`Forbidden`)·인증 만료 등 조회 오류 발생 시 관리형 노드그룹 축소 전에 즉시 중단(`exit 1`)하며, `scripts/daily-start.sh:28-37`에서 필수 리소스 조회·복원 실패 시 건너뛰지 않고 즉시 중단함을 코드 및 오프라인 회귀 테스트(`tests/scripts/daily-stop-start.test.sh` 15/15 통과)로 확인.
+  - Round 1 Medium (`3917898`, `83672f5`, `aa34ebc`): 상태 파일 JSON 파싱 실패 및 범위(`desiredSize >= 1`, `minSize <= desiredSize <= maxSize`) 검증 실패 시 기본값 폴백 없이 중단, `scalingConfig` 및 `replicas` 산술 비교 전 정수 정규식(`^[0-9]+$`) 검증, RDS `stopping` 대기 후 기동, `minSize`/`desiredSize`/`maxSize` 3개 값 모두 비교 복원 확인.
+  - Round 1 Low (`3917898`): `scripts/daily-stop.sh:101-106`에서 `umask 077`로 `.daily-nodegroup-state.json.tmp` 권한을 소유자로 제한하고 손상된 기존 상태 파일 덮어쓰기 거부 확인.
+
+### Critical
+지적 사항 없음.
+
+### High
+지적 사항 없음.
+
+### Medium
+지적 사항 없음.
+
+### Low
+- [ ] `scripts/daily-start.sh:65`, `scripts/daily-start.sh:86` — 로컬 상태 파일(`.daily-nodegroup-state.json`) 및 `NG_*` 환경변수의 파싱·범위 검증(`target_size`)이 Step 2(86~91행)에서 수행되어, RDS가 `stopped` 상태일 때 손상된 상태 파일이나 잘못된 `NG_*` 값으로 실행하면 Step 1(78행)의 `aws rds start-db-instance` 호출이 먼저 실행된 뒤에 중단된다(`design.md` §3.3의 "변경 전에 중단" 원칙 대비 사전 검증 순서 미흡). / 해결책: Step 1의 RDS 시작 요청 전에 `ng-critical`, `ng-platform`의 `target_size` 파싱 및 정수·범위 검증을 먼저 수행하여 입력·상태 파일 오류 시 AWS 리소스 상태 변경 없이 즉시 중단할 것.
+
+배포 가능 여부: Yes
