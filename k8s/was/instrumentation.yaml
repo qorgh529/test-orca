@@ -1,0 +1,51 @@
+# Java auto-instrumentation for was-stable / was-canary (annotation instrumentation.opentelemetry.io/inject-java).
+# The operator adds an init container that copies the agent and sets JAVA_TOOL_OPTIONS; the image is unchanged.
+# Must exist before the was pods are created (scripts/deploy-all.sh applies it first).
+apiVersion: opentelemetry.io/v1alpha1
+kind: Instrumentation
+metadata:
+  name: petclinic-java
+  namespace: petclinic
+spec:
+  exporter:
+    endpoint: http://otel-collector-opentelemetry-collector.monitoring.svc.cluster.local:4318
+  propagators: [tracecontext, baggage]
+  # Head sampling. RED metrics are not sampled; exemplars only point at sampled traces (trace_based).
+  sampler:
+    type: parentbased_traceidratio
+    argument: "${OTEL_TRACES_SAMPLER_ARG}"
+  java:
+    image: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-java:2.12.0
+    env:
+      - { name: OTEL_TRACES_EXPORTER, value: otlp }
+      - { name: OTEL_METRICS_EXPORTER, value: otlp }
+      # Logs stay on stdout -> Fluent Bit -> CloudWatch Logs.
+      - { name: OTEL_LOGS_EXPORTER, value: none }
+      - { name: OTEL_METRICS_EXEMPLAR_FILTER, value: trace_based }
+      - { name: OTEL_INSTRUMENTATION_LOGBACK_MDC_ENABLED, value: "true" }
+      - { name: OTEL_INSTRUMENTATION_JDBC_ENABLED, value: "true" }
+---
+# app/src/main/resources/logback.xml plus trace_id/span_id from the agent's MDC.
+# Loaded with -Dlogback.configurationFile (JAVA_OPTS in deployment-*.yaml), so no image rebuild.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: petclinic-was-logback
+  namespace: petclinic
+data:
+  logback.xml: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <configuration>
+        <contextListener class="ch.qos.logback.classic.jul.LevelChangePropagator">
+            <resetJUL>true</resetJUL>
+        </contextListener>
+        <appender name="console" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder>
+                <pattern>%-5level [trace_id=%X{trace_id:-} span_id=%X{span_id:-}] %logger{0} - %msg%n</pattern>
+            </encoder>
+        </appender>
+        <logger name="org.springframework.samples.petclinic" level="debug"/>
+        <root level="info">
+            <appender-ref ref="console"/>
+        </root>
+    </configuration>
