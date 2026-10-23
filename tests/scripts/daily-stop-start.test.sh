@@ -20,7 +20,9 @@ cat > "$T/bin/aws" <<'EOF'
 echo "aws $*" >> "$LOG"
 case "$*" in
   *describe-db-instances*) echo "${RDS_STATUS:-available}" ;;
-  *describe-nodegroup*) echo "${NG_SCALING:-2 2 4}" | tr ' ' '\t' ;;
+  # Return only as many fields as the --query asks for ([minSize,desiredSize] -> 2).
+  *describe-nodegroup*) n=$(grep -o ',' <<<"${*##*--query}" | wc -l)
+    echo "${NG_SCALING:-2 2 4}" | cut -d' ' -f1-$((n + 1)) | tr ' ' '\t' ;;
 esac
 EOF
 cat > "$T/bin/kubectl" <<'EOF'
