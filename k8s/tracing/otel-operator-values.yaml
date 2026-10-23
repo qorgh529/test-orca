@@ -20,11 +20,20 @@ manager:
   resources:
     requests: { cpu: 100m, memory: 128Mi }
     limits: { memory: 256Mi }
+  # Chart defaults, pinned here so validate-manifests.sh can check them.
+  securityContext: &container-sc
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: [ALL]
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
 
 kubeRBACProxy:
   image:
     repository: quay.io/brancz/kube-rbac-proxy
     tag: v0.20.0
+  securityContext: *container-sc
 
 # Pod-level seccomp so the restricted PSS holds for every container.
 securityContext:

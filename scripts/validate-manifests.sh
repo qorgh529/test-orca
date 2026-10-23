@@ -253,6 +253,25 @@ if (tempo.get("serviceAccount") or {}).get("name") != "tempo" or not any(
         (sa.get("metadata") or {}) == {"name": "tempo", "namespace": "monitoring"}
         for sa in (eks.get("iam") or {}).get("serviceAccounts") or []):
     err("tempo-values: serviceAccount tempo must be the IRSA SA monitoring/tempo in infra/eksctl/cluster.yaml")
+# Tracing pods run non-root without privilege escalation; collector and Tempo also on a read-only root.
+collector = values("k8s/tracing/otel-collector-values.yaml")
+operator = values("k8s/tracing/otel-operator-values.yaml")
+for where, pod, containers, ro in (
+        ("otel-operator-values", operator.get("securityContext"),
+         [(operator.get("manager") or {}).get("securityContext"), (operator.get("kubeRBACProxy") or {}).get("securityContext")], False),
+        ("otel-collector-values", collector.get("podSecurityContext"), [collector.get("securityContext")], True),
+        ("tempo-values", tempo.get("securityContext"), [(tempo.get("tempo") or {}).get("securityContext")], True)):
+    if (pod or {}).get("runAsNonRoot") is not True:
+        err(f"{where}: pod securityContext must set runAsNonRoot: true")
+    for sc in containers:
+        sc = sc or {}
+        if sc.get("allowPrivilegeEscalation") is not False or "ALL" not in ((sc.get("capabilities") or {}).get("drop") or []):
+            err(f"{where}: container securityContext must set allowPrivilegeEscalation: false and drop ALL")
+        if ro and sc.get("readOnlyRootFilesystem") is not True:
+            err(f"{where}: container securityContext must set readOnlyRootFilesystem: true")
+# Block retention follows TEMPO_RETENTION_DAYS like the S3 lifecycle.
+if (tempo.get("tempo") or {}).get("retention") != "${TEMPO_RETENTION_HOURS}":
+    err("tempo-values: tempo.retention must be ${TEMPO_RETENTION_HOURS} (rendered from TEMPO_RETENTION_DAYS)")
 inst = find("Instrumentation", "petclinic-java")
 if not inst or (inst["spec"].get("sampler") or {}).get("argument") != "${OTEL_TRACES_SAMPLER_ARG}":
     err("Instrumentation/petclinic-java: sampler.argument must be ${OTEL_TRACES_SAMPLER_ARG}")

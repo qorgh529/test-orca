@@ -10,6 +10,14 @@ require AWS_REGION AWS_ACCOUNT_ID EKS_CLUSTER_NAME VPC_ID PUBLIC_SUBNET_A_ID PUB
   RDS_SECRET_NAME RDS_APP_SECRET_NAME RDS_BACKUP_SECRET_NAME GRAFANA_ADMIN_SECRET_NAME PROMETHEUS_SERVER_URL CW_LOG_GROUP_NAME BACKUP_S3_BUCKET_NAME \
   ALERTMANAGER_WEBHOOK_SECRET_NAME TEMPO_S3_BUCKET_NAME
 export OTEL_TRACES_SAMPLER_ARG="${OTEL_TRACES_SAMPLER_ARG:-0.1}" OTEL_DEPLOYMENT_ENVIRONMENT="${OTEL_DEPLOYMENT_ENVIRONMENT:-production}"
+# Rendered into manifests: a sampler ratio in [0, 1], an attribute value without ',' '=' or spaces,
+# and the same retention days as the S3 lifecycle (provision-aws-resources.sh).
+[[ "$OTEL_TRACES_SAMPLER_ARG" =~ ^(0(\.[0-9]+)?|1(\.0+)?)$ ]] \
+  || { echo "OTEL_TRACES_SAMPLER_ARG must be a number from 0 to 1 (got $OTEL_TRACES_SAMPLER_ARG)" >&2; exit 1; }
+[[ "$OTEL_DEPLOYMENT_ENVIRONMENT" =~ ^[A-Za-z0-9._-]+$ ]] \
+  || { echo "OTEL_DEPLOYMENT_ENVIRONMENT may only contain letters, digits, . _ -" >&2; exit 1; }
+[[ "${TEMPO_RETENTION_DAYS:-14}" =~ ^[1-9][0-9]*$ ]] || { echo "TEMPO_RETENTION_DAYS must be a positive integer" >&2; exit 1; }
+export TEMPO_RETENTION_HOURS="$(( ${TEMPO_RETENTION_DAYS:-14} * 24 ))h"
 
 # Split opened after the canary check (Q8: chosen per release risk). Checked before anything changes.
 OPEN_STABLE="${STABLE_WEIGHT:-90}" OPEN_CANARY="${CANARY_WEIGHT:-10}"
