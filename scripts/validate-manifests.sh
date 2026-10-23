@@ -3,7 +3,7 @@
 #   1. YAML syntax           2. no :latest / untagged images (templated: STABLE/CANARY_IMAGE_TAG)
 #   3. no plaintext secrets  4. node-tier placement + non-root securityContext
 #   5. stable/canary tags, DB secret per role, JDBC pool cap, KEDA fallback, Prometheus HA, PDBs
-#   6. scripts/daily-{stop,start}.sh syntax + offline --dry-run
+#   6. scripts/daily-{stop,start}.sh syntax, offline --dry-run, tests/scripts/daily-stop-start.test.sh (needs jq)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
@@ -21,6 +21,8 @@ for s in daily-stop daily-start; do
     echo "FAIL scripts/$s.sh --dry-run"; echo "$out"; exit 1
   fi
 done
+# Real-mode branches (lookup errors, RDS stopping, state file, maxSize) against fake aws/kubectl.
+bash "$ROOT/tests/scripts/daily-stop-start.test.sh" || { echo "FAIL tests/scripts/daily-stop-start.test.sh"; exit 1; }
 
 "${PYTHON:-python3}" - "$ROOT" <<'PY'
 import pathlib, re, subprocess, sys
