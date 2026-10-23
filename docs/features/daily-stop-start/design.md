@@ -162,27 +162,28 @@ sequenceDiagram
 
 1. **Step 1 — RDS MySQL 시작 요청 (병렬 기동으로 대기 시간 단축)**:
    - RDS Multi-AZ 기동(약 5~10분)과 EKS 관리형 노드그룹 기동(약 3~5분)을 병렬로 진행하기 위해 가장 먼저 RDS 상태를 확인한다.
-   - `DBInstanceStatus`가 `stopped`이면 `aws rds start-db-instance --db-instance-identifier "$RDS_INSTANCE_ID"`를 호출한다. `starting` 또는 `available`이면 호출을 생략한다 (멱등).
+   - `DBInstanceStatus`가 `stopped`이면 `aws rds start-db-instance --db-instance-identifier "$RDS_INSTANCE_ID"`를 호출한다. `stopping`이면 `aws rds wait db-instance-stopped` 후 시작을 요청한다(중지 직후 기동 대비, review R1 M1). `starting` 또는 `available`이면 호출을 생략한다 (멱등).
 2. **Step 2 — EKS 관리형 노드그룹(`ng-critical`, `ng-platform`) 원래 값 복원**:
    - 목표 스케일 값 결정 우선순위:
-     1. `$ROOT/.daily-nodegroup-state.json`에 해당 노드그룹의 `desiredSize > 0` 기록이 있으면 그 `{minSize, desiredSize, maxSize}` 사용
-     2. 상태 파일이 없거나 값이 비어 있으면 환경변수 기본값(`NG_CRITICAL_MIN_SIZE=2`, `NG_CRITICAL_DESIRED_SIZE=2`, `NG_CRITICAL_MAX_SIZE=4` / `NG_PLATFORM_MIN_SIZE=2`, `NG_PLATFORM_DESIRED_SIZE=2`, `NG_PLATFORM_MAX_SIZE=4` — `infra/eksctl/cluster.yaml`과 동일) 사용
-   - 현재 노드그룹의 `minSize`와 `desiredSize`가 이미 목표값과 일치하면 `update-nodegroup-config` 호출을 생략한다 (멱등).
+     1. `$ROOT/.daily-nodegroup-state.json`에 해당 노드그룹 기록이 있으면 그 `{minSize, desiredSize, maxSize}` 사용. 파일을 파싱할 수 없거나 값이 §5.5 검증을 통과하지 못하면 기본값으로 대체하지 않고 변경 전에 중단한다 (review R1 M2)
+     2. 상태 파일이 없거나 해당 노드그룹 기록이 없으면 환경변수 기본값(`NG_CRITICAL_MIN_SIZE=2`, `NG_CRITICAL_DESIRED_SIZE=2`, `NG_CRITICAL_MAX_SIZE=4` / `NG_PLATFORM_MIN_SIZE=2`, `NG_PLATFORM_DESIRED_SIZE=2`, `NG_PLATFORM_MAX_SIZE=4` — `infra/eksctl/cluster.yaml`과 동일) 사용
+   - 현재 노드그룹의 `minSize`, `desiredSize`, `maxSize` 세 값이 모두 목표값과 일치하면 `update-nodegroup-config` 호출을 생략한다 (멱등, review R1 M3).
    - 일치하지 않으면 `aws eks update-nodegroup-config`로 복원하고 두 노드그룹 모두 `aws eks wait nodegroup-active`를 대기한다.
    - `kube-system`, `external-secrets`, `keda` 네임스페이스의 필수 컨트롤러(`coredns`, `karpenter`, `aws-load-balancer-controller`, `external-secrets`, `keda-operator`)가 `rollout status` Ready가 될 때까지 대기한다.
 3. **Step 3 — RDS `available` 상태 확인**:
    - `aws rds wait db-instance-available --db-instance-identifier "$RDS_INSTANCE_ID"`를 실행하여 WAS Pod 기동 전에 DB 연결이 가능한 상태임을 보장한다.
 4. **Step 4 — Karpenter `NodePool` 및 앱 워크로드·오토스케일러·CronJob 복원**:
-   - `render_all "$ROOT/infra/karpenter" | kubectl apply -f -`를 실행하여 `np-app`(`16 vCPU / 64Gi`)과 `np-app-spot`(`48 vCPU / 192Gi`)의 원래 `limits`를 매니페스트 기준으로 멱등 복원한다.
+   - `render "$ROOT/infra/karpenter/nodepool-app.yaml" | kubectl apply -f -`를 실행하여 (EC2NodeClass는 중지 대상이 아니므로 NodePool 파일만 재적용) `np-app`(`16 vCPU / 64Gi`)과 `np-app-spot`(`48 vCPU / 192Gi`)의 원래 `limits`를 매니페스트 기준으로 멱등 복원한다.
    - `nginx-gateway` 네임스페이스에서 `deploy/nginx-gateway` 및 `deploy/petclinic-gateway-nginx`의 현재 레플리카가 `2` 미만이면 `2`로 스케일 업하고 `rollout status`를 대기한다.
    - `petclinic` 네임스페이스에서:
+     - `ScaledObject` (`was-stable`, `was-canary`)에서 `autoscaling.keda.sh/paused-replicas-` 및 `autoscaling.keda.sh/paused-` 어노테이션을 먼저 제거하여 KEDA 자동 확장을 재개한다 (`paused-replicas=0`이 남아 있으면 KEDA가 레플리카를 0으로 되돌림).
      - `was-stable`(최소 `2`), `was-canary`(최소 `1`), `web`(최소 `2`), `web-canary`(최소 `1`)의 현재 `.spec.replicas`가 최소치 미만(`0`)일 때만 최소 레플리카로 스케일 업한다 (이미 기동되어 오토스케일러가 확장한 상태라면 현재 레플리카를 깎지 않음).
-     - `ScaledObject` (`was-stable`, `was-canary`)에서 `autoscaling.keda.sh/paused-replicas-` 및 `autoscaling.keda.sh/paused-` 어노테이션을 제거하여 KEDA 자동 확장을 재개한다.
      - `kubectl apply -f "$ROOT/k8s/web/hpa.yaml"`로 `web` 및 `web-canary` HPA를 복원한다.
      - `was-stable`, `web`, `was-canary`, `web-canary` Deployment의 `rollout status`를 확인한다.
    - `cronjob/db-backup`을 `{"spec":{"suspend":false}}`로 패치하여 일일 백업 스케줄을 재개한다.
 5. **Step 5 — 복원 완료 및 상시 비용 안내 출력**:
    - 복원된 노드그룹/워크로드/RDS 요약과 함께 §3.4의 상시 비용 안내를 출력한다.
+6. **오류 처리 (review R1 H1)**: 기동 단계에서 다루는 컨트롤러·Deployment·ScaledObject·CronJob은 모두 필수다. `kubectl` 조회·변경이 실패하면(`NotFound` 포함) 건너뛰지 않고 즉시 실패로 종료한다. 중지 스크립트는 `NotFound`만 건너뛰고(부분 설치·재실행 대비), 권한·인증·연결 오류는 관리형 노드그룹 축소 전에 중단한다.
 
 ### 3.4 중지 불가 리소스 및 잔여 비용 출력 형식
 `daily-stop.sh`와 `daily-start.sh` 모두 마지막에 아래 정보를 포함한 안내 블록을 출력한다 (`ap-northeast-2` 리전 기준):
@@ -231,11 +232,12 @@ sequenceDiagram
    - 스크립트를 실행하는 운영자(또는 자동화 Role)는 다음 최소 권한만 필요로 한다:
      - EKS: `eks:DescribeCluster`, `eks:DescribeNodegroup`, `eks:UpdateNodegroupConfig` (대상 클러스터 `${EKS_CLUSTER_NAME}` 및 노드그룹 `ng-critical`, `ng-platform`으로 범위 제한)
      - RDS: `rds:DescribeDBInstances`, `rds:StopDBInstance`, `rds:StartDBInstance` (대상 DB 인스턴스 `${EKS_CLUSTER_NAME}-mysql`로 범위 제한)
-     - Kubernetes RBAC: `petclinic`·`nginx-gateway` 네임스페이스의 `deployments`, `deployments/scale`, `horizontalpodautoscalers`, `cronjobs`, `scaledobjects.keda.sh` 및 클러스터 범위의 `nodepools.karpenter.sh`, `nodeclaims.karpenter.sh` 제어 권한
+     - Kubernetes RBAC: `petclinic`·`nginx-gateway` 네임스페이스의 `deployments`, `deployments/scale`, `horizontalpodautoscalers`, `cronjobs`, `scaledobjects.keda.sh` 및 클러스터 범위의 `nodepools.karpenter.sh`, `nodeclaims.karpenter.sh` 제어 권한, 그리고 기동 시 컨트롤러 Ready 확인용 `kube-system`(`coredns`, `karpenter`, `aws-load-balancer-controller`)·`external-secrets`·`keda` 네임스페이스 `deployments` 조회(`get`, `list`, `watch`) 권한 (security R1 M2)
 4. **안전한 `--dry-run` 격리**:
    - `--dry-run` 실행 시에는 어떠한 변경 API(`update-nodegroup-config`, `stop-db-instance`, `start-db-instance`, `kubectl scale/patch/delete/apply`)나 원격 조회도 실행하지 않아 자격증명이 없거나 프로덕션 클러스터에 연결된 상태에서도 부작용 없이 안전하게 동작을 검증할 수 있어야 한다.
 5. **입력값 검증**:
-   - `NG_CRITICAL_DESIRED_SIZE`, `NG_PLATFORM_DESIRED_SIZE` 또는 상태 파일에서 읽은 숫자 값은 정규식(`^[0-9]+$`) 및 범위(`minSize <= desiredSize <= maxSize`, `desiredSize >= 1`)를 검증하여 손상된 상태 파일이나 잘못된 환경변수로 인해 노드그룹이 비정상 설정되는 것을 방지한다.
+   - `NG_CRITICAL_DESIRED_SIZE`, `NG_PLATFORM_DESIRED_SIZE` 또는 상태 파일에서 읽은 숫자 값은 정규식(`^[0-9]+$`) 및 범위(`minSize <= desiredSize <= maxSize`, `desiredSize >= 1`)를 검증하여 (AWS describe 응답의 `scalingConfig`와 Deployment `.spec.replicas`도 산술 비교 전에 정수 검증) 손상된 상태 파일이나 잘못된 환경변수로 인해 노드그룹이 비정상 설정되는 것을 방지한다.
+6. **로컬 상태 파일 권한**: `.daily-nodegroup-state.json`은 `umask 077`로 작성해 소유자만 읽을 수 있게 한다 (security R1 Low).
 
 ---
 
@@ -258,6 +260,7 @@ sequenceDiagram
 - [x] (`ec854b2`) **Step 4: 정적 검증기 보강 및 `--dry-run` 검증 (`scripts/validate-manifests.sh`)**
   - `scripts/validate-manifests.sh`에서 `scripts/daily-stop.sh` 및 `scripts/daily-start.sh`의 `bash -n` 문법 검사와 `AWS_REGION=ap-northeast-2 EKS_CLUSTER_NAME=petclinic-eks` 환경에서의 `--dry-run` 실행(종료 코드 `0` 및 잔여 비용 안내 문구 포함 여부)을 검증하도록 추가한다.
   - `./scripts/validate-manifests.sh`, `./scripts/daily-stop.sh --dry-run`, `./scripts/daily-start.sh --dry-run`을 실행하여 통과를 확인한다.
+- [x] **Step 4a: 오프라인 회귀 테스트 (`tests/scripts/daily-stop-start.test.sh`, review R1 M4)** — 가짜 `aws`/`kubectl`로 조회 오류 전파, RDS `stopping`, 상태 파일 저장·보존·복원·손상 거부, `maxSize`만 다른 경우를 검증하고 `scripts/validate-manifests.sh`에서 실행한다 (jq 필요, 없으면 SKIP 출력).
 - [ ] **[위험] Step 5 (본 작업에서는 실행하지 않음 — 운영자 수동 실행 전용): 실제 AWS 클러스터 및 RDS 대상 중지·기동 실행**
   - ⚠️ **주의**: 요구사항("스크립트 작성과 dry-run 검증까지만 하고, 실제 AWS 실행은 하지 않는다")에 따라 Claude는 이 단계를 실행하지 않는다. 실제 AWS 환경에 적용할 때는 반드시 사용자 컨펌 후 `--dry-run` 없이 실행한다.
 
