@@ -20,7 +20,7 @@ cat > "$T/bin/aws" <<'EOF'
 echo "aws $*" >> "$LOG"
 case "$*" in
   *describe-db-instances*) echo "${RDS_STATUS:-available}" ;;
-  *update-nodegroup-config*) ng=${*##*--nodegroup-name }; echo "upd-${ng%% *}" ;;
+  *update-nodegroup-config*) a="$*"; ng=${a##*--nodegroup-name }; echo "upd-${ng%% *}" ;;
   *describe-update*) echo "${UPDATE_STATUS:-Successful}" ;;
   # Return only as many fields as the --query asks for ([minSize,desiredSize] -> 2).
   *describe-nodegroup*) n=$(grep -o ',' <<<"${*##*--query}" | wc -l)
