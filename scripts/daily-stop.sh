@@ -25,6 +25,27 @@ fi
 
 run() { if (( DRY_RUN )); then echo "[DRY-RUN] $*"; else "$@"; fi; }
 
+# Poll one node group update to completion. `aws eks wait nodegroup-active` only checks the node group
+# status, so an update that EKS accepted but later failed would still look done.
+wait_update() {
+  local ng=$1 id=$2 st=unknown _
+  if (( DRY_RUN )); then echo "[DRY-RUN] poll aws eks describe-update --nodegroup-name $ng until Successful"; return; fi
+  for _ in $(seq 1 60); do
+    st=$(aws eks describe-update --name "$EKS_CLUSTER_NAME" --nodegroup-name "$ng" --update-id "$id" \
+      --query 'update.status' --output text)
+    case "$st" in
+      Successful) echo "$ng update $id: Successful"; return 0 ;;
+      Failed|Cancelled)
+        echo "$ng update $id: $st" >&2
+        aws eks describe-update --name "$EKS_CLUSTER_NAME" --nodegroup-name "$ng" --update-id "$id" \
+          --query 'update.errors' --output json >&2 || true
+        exit 1 ;;
+    esac
+    sleep 15
+  done
+  echo "$ng update $id: still $st after 15 minutes" >&2; exit 1
+}
+
 # kubectl <verb> <resource> [args] in <ns> ("" = cluster scope), skipped only when the resource is NotFound.
 # Any other lookup error (Forbidden, expired auth, API unreachable) aborts before the node groups go to 0.
 kube() {
@@ -80,7 +101,7 @@ case "$st" in
 esac
 
 echo "== 3/3 Managed node groups to 0"
-changed=()
+updates=()
 for ng in ng-critical ng-platform; do
   if (( DRY_RUN )); then
     sc="2 2 4"; echo "[DRY-RUN] assuming $ng min/desired/max: $sc"
@@ -106,12 +127,13 @@ for ng in ng-critical ng-platform; do
       mv "$STATE.tmp" "$STATE"
     fi
   fi
-  run aws eks update-nodegroup-config --cluster-name "$EKS_CLUSTER_NAME" --nodegroup-name "$ng" \
-    --scaling-config "minSize=0,desiredSize=0,maxSize=$max" --query 'update.status' --output text
-  changed+=("$ng")
+  id=$(run aws eks update-nodegroup-config --cluster-name "$EKS_CLUSTER_NAME" --nodegroup-name "$ng" \
+    --scaling-config "minSize=0,desiredSize=0,maxSize=$max" --query 'update.id' --output text)
+  if (( DRY_RUN )); then echo "$id"; fi
+  updates+=("$ng=$id")
 done
-for ng in "${changed[@]}"; do
-  run aws eks wait nodegroup-active --cluster-name "$EKS_CLUSTER_NAME" --nodegroup-name "$ng"
+for u in "${updates[@]}"; do
+  wait_update "${u%%=*}" "${u#*=}"
 done
 
 notice

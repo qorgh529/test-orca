@@ -13,13 +13,15 @@ cp "$REPO/k8s/web/hpa.yaml" "$T/k8s/web/"
 STATE="$T/.daily-nodegroup-state.json"
 LOG="$T/calls.log"
 
-# Fakes answer from env: RDS_STATUS, NG_SCALING ("min desired max"), REPLICAS,
+# Fakes answer from env: RDS_STATUS, NG_SCALING ("min desired max"), UPDATE_STATUS, REPLICAS,
 # and KUBECTL_GET_ERROR (stderr text; makes every kubectl get fail).
 cat > "$T/bin/aws" <<'EOF'
 #!/usr/bin/env bash
 echo "aws $*" >> "$LOG"
 case "$*" in
   *describe-db-instances*) echo "${RDS_STATUS:-available}" ;;
+  *update-nodegroup-config*) ng=${*##*--nodegroup-name }; echo "upd-${ng%% *}" ;;
+  *describe-update*) echo "${UPDATE_STATUS:-Successful}" ;;
   # Return only as many fields as the --query asks for ([minSize,desiredSize] -> 2).
   *describe-nodegroup*) n=$(grep -o ',' <<<"${*##*--query}" | wc -l)
     echo "${NG_SCALING:-2 2 4}" | cut -d' ' -f1-$((n + 1)) | tr ' ' '\t' ;;
@@ -90,6 +92,22 @@ t "start is a no-op on a running environment" eval '
 t "start rejects desired > max from env" eval '
   check bad-env daily-start "invalid size for ng-critical" RDS_STATUS=available NG_CRITICAL_DESIRED_SIZE=9 &&
   ! called update-nodegroup-config'
+
+# GitHub Codex P2: a node group update that EKS accepts but then fails is an error, not "done".
+t "stop fails when a node group update fails" eval '
+  rm -f "$STATE" &&
+  check stop-update-failed daily-stop "ng-critical update upd-ng-critical: Failed" NG_SCALING="2 2 4" UPDATE_STATUS=Failed KUBECTL_GET_ERROR="$NOTFOUND" &&
+  ! grep -q "Non-stoppable resources" "$T/out"'
+t "start fails when a node group update fails" eval '
+  rm -f "$STATE" &&
+  check start-update-failed daily-start "ng-critical update upd-ng-critical: Failed" RDS_STATUS=available NG_SCALING="0 0 4" UPDATE_STATUS=Failed &&
+  ! grep -q "== Restored" "$T/out"'
+t "stop and start track each update to Successful" eval '
+  rm -f "$STATE" && check stop-update-ok daily-stop ok NG_SCALING="2 2 4" KUBECTL_GET_ERROR="$NOTFOUND" &&
+  called "describe-update.*ng-critical --update-id upd-ng-critical" &&
+  called "describe-update.*ng-platform --update-id upd-ng-platform" &&
+  rm -f "$STATE" && check start-update-ok daily-start ok RDS_STATUS=available NG_SCALING="0 0 4" &&
+  called "describe-update.*ng-platform --update-id upd-ng-platform" && ! called "wait nodegroup-active"'
 
 # M2: state file save / keep / restore / reject.
 t "stop saves the original size" eval '
