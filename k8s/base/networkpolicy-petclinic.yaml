@@ -71,3 +71,23 @@ spec:
   egress:
     - ports:
         - { protocol: TCP, port: 443 }
+---
+# Traces and metrics from the OTel Java agent (k8s/was/instrumentation.yaml) to the collector.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: was-egress-to-otel-collector
+  namespace: petclinic
+spec:
+  podSelector:
+    matchLabels: { app: was }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: monitoring }
+          podSelector:
+            matchLabels: { app.kubernetes.io/name: opentelemetry-collector }
+      ports:
+        - { protocol: TCP, port: 4317 }
+        - { protocol: TCP, port: 4318 }
