@@ -13,6 +13,8 @@ prometheus:
   prometheusSpec:
     <<: *platform
     retention: 15d
+    # Exemplars (trace_id) from the OTel collector's OpenMetrics endpoint -> Grafana links to Tempo.
+    enableFeatures: [exemplar-storage]
     # One replica per AZ, each with its own gp3 PVC: an AZ outage leaves metrics and KEDA scaling up.
     replicas: 2
     topologySpreadConstraints:
@@ -77,6 +79,26 @@ grafana:
     enabled: true
     storageClassName: gp3
     size: 10Gi
+  sidecar:
+    datasources:
+      # Exemplar trace_id on the default Prometheus datasource opens the trace in Tempo.
+      exemplarTraceIdDestinations:
+        datasourceUid: tempo
+        traceIdLabelName: trace_id
+  additionalDataSources:
+    - name: Tempo
+      type: tempo
+      uid: tempo
+      url: http://tempo.monitoring.svc.cluster.local:3200
+      access: proxy
+      jsonData:
+        httpMethod: GET
+        tracesToMetrics:
+          datasourceUid: prometheus
+        serviceMap:
+          datasourceUid: prometheus
+        nodeGraph:
+          enabled: true
 
 prometheusOperator:
   <<: *platform
