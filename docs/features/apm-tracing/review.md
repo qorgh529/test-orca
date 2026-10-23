@@ -16,3 +16,22 @@
 Tempo 차트 렌더링 실패와 메모리 설정 문제를 수정하고 `helm template`로 실제 차트 출력을 검증해야 한다. 공개 저장소에 노출된 계정 ID·ARN·개인 엔드포인트 실값은 확인하지 못했다.
 
 머지 가능 여부: No
+
+## Review Round 2 — 2026-10-23 (대상 커밋: eee4869)
+
+### Critical
+지적 사항 없음.
+
+### High
+지적 사항 없음.
+
+### Medium / Low
+지적 사항 없음.
+
+### 기존 아키텍처 일치
+`k8s/tracing/otel-operator-values.yaml:4`, `k8s/tracing/otel-collector-values.yaml:14`, `k8s/tracing/tempo-values.yaml:4`의 노드 배치는 `docs/architecture.md`의 `ng-critical` 컨트롤러·`ng-platform` 관측성 티어와 일치한다. 기존 아키텍처와 어긋나는 변경은 확인하지 못했다.
+
+### 총평
+1차 리뷰의 세 항목은 `k8s/tracing/tempo-values.yaml:30`, `k8s/tracing/tempo-values.yaml:42`, `k8s/tracing/tempo-values.yaml:55` 및 `scripts/deploy-all.sh:20`에서 수정된 것을 확인했다. `git diff --check master...HEAD`는 통과했으며, Helm 렌더링과 실클러스터 동작은 이번 리뷰 환경에서 재실행하지 않았다.
+
+머지 가능 여부: Yes
