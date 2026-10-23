@@ -110,7 +110,7 @@ sequenceDiagram
     Karp-->>Op: 5. workload-tier=app EC2 인스턴스 전부 종료 확인
     Op->>RDS: 6. describe-db-instances 상태 확인 (available일 때만 stop-db-instance 호출)
     Op->>EKS: 7. ng-critical, ng-platform 현재 scalingConfig 조회 → desiredSize>0이면 .daily-nodegroup-state.json 저장
-    Op->>EKS: 8. ng-critical, ng-platform minSize=0, desiredSize=0 업데이트 및 nodegroup-active 대기
+    Op->>EKS: 8. ng-critical, ng-platform minSize=0, desiredSize=0 업데이트 및 update ID별 describe-update Successful 대기
     Op-->>Op: 9. 중지 불가 리소스(EKS 컨트롤 플레인, NAT GW, ALB) 잔여 비용 안내 출력
 ```
 
@@ -133,7 +133,7 @@ sequenceDiagram
    - 각 노드그룹(`ng-critical`, `ng-platform`)의 현재 `scalingConfig`(`minSize`, `desiredSize`, `maxSize`)를 조회한다.
    - 현재 `desiredSize > 0`인 경우에만 `$ROOT/.daily-nodegroup-state.json`에 해당 노드그룹의 `{minSize, desiredSize, maxSize}`를 저장/갱신한다. (이미 `desiredSize == 0`인 상태에서 재실행된 경우에는 기존 저장 파일을 유지하여 원래 값 유실을 방지한다.)
    - 현재 `desiredSize == 0`이고 `minSize == 0`이면 API 호출을 건너뛴다 (멱등).
-   - 그렇지 않으면 `aws eks update-nodegroup-config --cluster-name "$EKS_CLUSTER_NAME" --nodegroup-name "$ng" --scaling-config "minSize=0,desiredSize=0,maxSize=${maxSize}"`를 호출하고, 두 노드그룹 모두 `aws eks wait nodegroup-active`로 완료를 확인한다.
+   - 그렇지 않으면 `aws eks update-nodegroup-config --cluster-name "$EKS_CLUSTER_NAME" --nodegroup-name "$ng" --scaling-config "minSize=0,desiredSize=0,maxSize=${maxSize}"`를 호출하고(`--query update.id`), 두 노드그룹 모두 `aws eks describe-update`로 해당 update가 `Successful`이 될 때까지 확인한다. `Failed`/`Cancelled`이거나 15분 안에 끝나지 않으면 오류로 종료한다. `nodegroup-active` 대기는 노드그룹 상태만 보고 update 실패를 알려주지 않으므로 쓰지 않는다 (GitHub Codex PR #7 P2).
 5. **Step 4 — 잔여 비용 안내 출력**:
    - §3.4의 표준 안내 블록을 출력한다.
 
@@ -150,7 +150,7 @@ sequenceDiagram
 
     Op->>RDS: 1. describe-db-instances 확인 → stopped이면 start-db-instance 비동기 호출
     Op->>EKS: 2. .daily-nodegroup-state.json(없으면 기본값 2/2/4) 읽어 ng-critical, ng-platform 복원
-    Op->>EKS: 3. aws eks wait nodegroup-active (ng-critical, ng-platform)
+    Op->>EKS: 3. update ID별 describe-update Successful 대기 (ng-critical, ng-platform)
     Op->>K8s: 4. 핵심 컨트롤러(coredns, karpenter, lbc, eso, keda) rollout status 대기
     Op->>RDS: 5. aws rds wait db-instance-available 대기
     Op->>Karp: 6. infra/karpenter/nodepool-app.yaml 재적용으로 np-app, np-app-spot 원래 한도 복원
@@ -169,7 +169,7 @@ sequenceDiagram
      1. `$ROOT/.daily-nodegroup-state.json`에 해당 노드그룹 기록이 있으면 그 `{minSize, desiredSize, maxSize}` 사용. 파일을 파싱할 수 없거나 값이 §5.5 검증을 통과하지 못하면 기본값으로 대체하지 않고 변경 전에 중단한다 (review R1 M2)
      2. 상태 파일이 없거나 해당 노드그룹 기록이 없으면 환경변수 기본값(`NG_CRITICAL_MIN_SIZE=2`, `NG_CRITICAL_DESIRED_SIZE=2`, `NG_CRITICAL_MAX_SIZE=4` / `NG_PLATFORM_MIN_SIZE=2`, `NG_PLATFORM_DESIRED_SIZE=2`, `NG_PLATFORM_MAX_SIZE=4` — `infra/eksctl/cluster.yaml`과 동일) 사용
    - 현재 노드그룹의 `minSize`, `desiredSize`, `maxSize` 세 값이 모두 목표값과 일치하면 `update-nodegroup-config` 호출을 생략한다 (멱등, review R1 M3).
-   - 일치하지 않으면 `aws eks update-nodegroup-config`로 복원하고 두 노드그룹 모두 `aws eks wait nodegroup-active`를 대기한다.
+   - 일치하지 않으면 `aws eks update-nodegroup-config`로 복원하고 두 노드그룹 모두 §3.2 Step 3과 같은 방식으로 `describe-update` 결과가 `Successful`인지 확인한다.
    - `kube-system`, `external-secrets`, `keda` 네임스페이스의 필수 컨트롤러(`coredns`, `karpenter`, `aws-load-balancer-controller`, `external-secrets`, `keda-operator`)가 `rollout status` Ready가 될 때까지 대기한다.
 3. **Step 3 — RDS `available` 상태 확인**:
    - `aws rds wait db-instance-available --db-instance-identifier "$RDS_INSTANCE_ID"`를 실행하여 WAS Pod 기동 전에 DB 연결이 가능한 상태임을 보장한다.
@@ -231,7 +231,7 @@ sequenceDiagram
    - `daily-stop.sh`와 `daily-start.sh`는 AWS 컨트롤 플레인 API(`eks`, `rds`)와 Kubernetes 스케일링 API만 호출하며, Secrets Manager의 DB 비밀번호나 Kubernetes `Secret` 값을 읽거나 출력하지 않는다.
 3. **최소 권한 IAM (실행 주체 권한 범위)**:
    - 스크립트를 실행하는 운영자(또는 자동화 Role)는 다음 최소 권한만 필요로 한다:
-     - EKS: `eks:DescribeCluster`, `eks:DescribeNodegroup`, `eks:UpdateNodegroupConfig` (대상 클러스터 `${EKS_CLUSTER_NAME}` 및 노드그룹 `ng-critical`, `ng-platform`으로 범위 제한)
+     - EKS: `eks:DescribeCluster`, `eks:DescribeNodegroup`, `eks:UpdateNodegroupConfig`, `eks:DescribeUpdate` (대상 클러스터 `${EKS_CLUSTER_NAME}` 및 노드그룹 `ng-critical`, `ng-platform`으로 범위 제한)
      - RDS: `rds:DescribeDBInstances`, `rds:StopDBInstance`, `rds:StartDBInstance` (대상 DB 인스턴스 `${EKS_CLUSTER_NAME}-mysql`로 범위 제한)
      - Kubernetes RBAC: `petclinic`·`nginx-gateway` 네임스페이스의 `deployments`, `deployments/scale`, `horizontalpodautoscalers`, `cronjobs`, `scaledobjects.keda.sh` 및 클러스터 범위의 `nodepools.karpenter.sh`, `nodeclaims.karpenter.sh` 제어 권한, 그리고 기동 시 컨트롤러 Ready 확인용 `kube-system`(`coredns`, `karpenter`, `aws-load-balancer-controller`)·`external-secrets`·`keda` 네임스페이스 `deployments` 조회(`get`, `list`, `watch`) 권한 (security R1 M2)
 4. **안전한 `--dry-run` 격리**:
