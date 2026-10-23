@@ -37,6 +37,8 @@ iam:
       attachPolicyARNs: ["arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${EKS_CLUSTER_NAME}-fluent-bit"]
     - metadata: { name: db-backup, namespace: petclinic }
       attachPolicyARNs: ["arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${EKS_CLUSTER_NAME}-db-backup"]
+    - metadata: { name: tempo, namespace: monitoring }
+      attachPolicyARNs: ["arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${EKS_CLUSTER_NAME}-tempo"]
 
 # Nodes launched by Karpenter (np-app) join with this role.
 iamIdentityMappings:

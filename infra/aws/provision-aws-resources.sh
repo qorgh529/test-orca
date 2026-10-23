@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Provision AWS resources around the EKS cluster. The VPC and its subnets are inputs (.env).
 #
-#   ./infra/aws/provision-aws-resources.sh pre-cluster   # IAM, ECR, log group, backup bucket, WAF, ACM
+#   ./infra/aws/provision-aws-resources.sh pre-cluster   # IAM, ECR, log group, backup/Tempo buckets, WAF, ACM
 #   ./infra/aws/provision-aws-resources.sh cluster       # eksctl create cluster + Karpenter discovery tags
 #   ./infra/aws/provision-aws-resources.sh post-cluster  # RDS MySQL Multi-AZ + Secrets Manager secrets
 #
@@ -55,11 +55,15 @@ upsert_db_secret() {
 export AWS_DEFAULT_REGION="${AWS_REGION:-}"
 
 pre_cluster() {
-  require AWS_REGION AWS_ACCOUNT_ID EKS_CLUSTER_NAME CW_LOG_GROUP_NAME BACKUP_S3_BUCKET_NAME DOMAIN_NAME ROUTE53_HOSTED_ZONE_ID
+  require AWS_REGION AWS_ACCOUNT_ID EKS_CLUSTER_NAME CW_LOG_GROUP_NAME BACKUP_S3_BUCKET_NAME TEMPO_S3_BUCKET_NAME DOMAIN_NAME ROUTE53_HOSTED_ZONE_ID
+  # The Tempo lifecycle deletes objects: it must never land on the backup bucket.
+  [ "$TEMPO_S3_BUCKET_NAME" != "$BACKUP_S3_BUCKET_NAME" ]     || { echo "TEMPO_S3_BUCKET_NAME must differ from BACKUP_S3_BUCKET_NAME" >&2; exit 1; }
+  local retention="${TEMPO_RETENTION_DAYS:-14}"
+  [[ "$retention" =~ ^[1-9][0-9]*$ ]] || { echo "TEMPO_RETENTION_DAYS must be a positive integer" >&2; exit 1; }
   local dir="$ROOT/infra/aws/iam-policies" name arn doc v
 
   echo "== IAM policies (IRSA): create, or publish the current document as the default version"
-  for name in lbc karpenter-controller eso fluent-bit db-backup; do
+  for name in lbc karpenter-controller eso fluent-bit db-backup tempo; do
     arn="arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${EKS_CLUSTER_NAME}-${name}"
     doc=$(envsubst < "$dir/${name}-policy.json")
     if aws iam get-policy --policy-arn "$arn" >/dev/null 2>&1; then
@@ -109,6 +113,16 @@ pre_cluster() {
   aws s3api put-bucket-encryption --bucket "$BACKUP_S3_BUCKET_NAME" \
     --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"aws:kms"},"BucketKeyEnabled":true}]}'
   aws s3api put-bucket-versioning --bucket "$BACKUP_S3_BUCKET_NAME" --versioning-configuration Status=Enabled
+
+  # Not versioned: the Tempo compactor deletes blocks, and noncurrent versions would pile up.
+  echo "== Tempo trace bucket (private, encrypted, expires after $retention days)"
+  if ! aws s3api head-bucket --bucket "$TEMPO_S3_BUCKET_NAME" 2>/dev/null; then
+    aws s3api create-bucket --bucket "$TEMPO_S3_BUCKET_NAME"       --create-bucket-configuration "LocationConstraint=$AWS_REGION" >/dev/null
+  fi
+  aws s3api put-public-access-block --bucket "$TEMPO_S3_BUCKET_NAME"     --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+  aws s3api put-bucket-encryption --bucket "$TEMPO_S3_BUCKET_NAME"     --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"aws:kms"},"BucketKeyEnabled":true}]}'
+  aws s3api put-bucket-lifecycle-configuration --bucket "$TEMPO_S3_BUCKET_NAME" --lifecycle-configuration     "$(jq -n --argjson days "$retention" '{Rules: [{ID: "tempo-retention", Status: "Enabled", Filter: {},
+        Expiration: {Days: $days}, AbortIncompleteMultipartUpload: {DaysAfterInitiation: 1}}]}')"
 
   echo "== WAFv2 WebACL (regional, AWS managed rules; an existing ACL is reused as-is)"
   local acl_name="${EKS_CLUSTER_NAME}-web-acl" acl_arn rules
