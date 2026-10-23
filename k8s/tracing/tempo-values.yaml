@@ -26,17 +26,20 @@ persistence:
 tempo:
   repository: grafana/tempo
   tag: "2.9.0"
+  # The chart passes -mem-ballast-size-mbs (default 1024), which alone would fill the 1Gi limit.
+  memBallastSizeMbs: 0
   resources:
     requests: { cpu: 250m, memory: 512Mi }
     limits: { memory: 1Gi }
   securityContext:
     allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
     capabilities:
       drop: [ALL]
   # No usage reports to Grafana Labs (egress 443 is open for S3/STS only by intent).
   reportingEnabled: false
-  # 14 days; keep in line with TEMPO_RETENTION_DAYS (S3 lifecycle, provision-aws-resources.sh).
-  retention: 336h
+  # TEMPO_RETENTION_DAYS * 24h (scripts/deploy-all.sh), same days as the S3 lifecycle.
+  retention: ${TEMPO_RETENTION_HOURS}
   storage:
     trace:
       backend: s3
@@ -47,10 +50,9 @@ tempo:
         insecure: false
       wal:
         path: /var/tempo/wal
-  # OTLP from the collector only.
+  # OTLP from the collector. The chart's default jaeger/opencensus receivers stay (its port templates
+  # require them) but networkpolicy-tracing.yaml admits only 4317/4318 from the collector.
   receivers:
-    jaeger: null
-    opencensus: null
     otlp:
       protocols:
         grpc:
