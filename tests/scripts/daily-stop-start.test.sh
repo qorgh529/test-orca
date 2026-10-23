@@ -134,5 +134,11 @@ t "stop refuses to overwrite a corrupt state file" eval '
   check stop-corrupt daily-stop "cannot update" NG_SCALING="2 2 4" KUBECTL_GET_ERROR="$NOTFOUND" &&
   ! called update-nodegroup-config'
 
+# apm-tracing: the injection webhook is fail-open, so the operator must be up before was is scaled.
+t "start waits for the OTel operator before scaling was" eval '
+  rm -f "$STATE" && check otel-order daily-start ok RDS_STATUS=available NG_SCALING="0 0 4" &&
+  op=$(grep -n "opentelemetry-operator-system rollout status deploy/opentelemetry-operator" "$LOG" | cut -d: -f1) &&
+  was=$(grep -n "scale deploy/was-stable" "$LOG" | head -1 | cut -d: -f1) && [ -n "$op" ] && [ "$op" -lt "$was" ]'
+
 (( fails == 0 )) || { echo "$fails case(s) failed"; exit 1; }
 echo "OK: daily stop/start offline tests"
