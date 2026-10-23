@@ -1,0 +1,47 @@
+# opentelemetry-operator chart 0.105.0 (operator 0.144.0) on ng-critical. Injects the Java agent into
+# pods annotated instrumentation.opentelemetry.io/inject-java (k8s/was/instrumentation.yaml).
+nodeSelector:
+  workload-tier: critical
+tolerations:
+  - { key: node-role, operator: Equal, value: critical, effect: NoSchedule }
+
+manager:
+  image:
+    repository: ghcr.io/open-telemetry/opentelemetry-operator/opentelemetry-operator
+    tag: "0.144.0"
+  # Only used if an OpenTelemetryCollector CR is created (the collector itself is a Helm release).
+  collectorImage:
+    repository: otel/opentelemetry-collector-contrib
+    tag: "0.120.0"
+  autoInstrumentationImage:
+    java:
+      repository: ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-java
+      tag: "2.12.0"
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { memory: 256Mi }
+
+kubeRBACProxy:
+  image:
+    repository: quay.io/brancz/kube-rbac-proxy
+    tag: v0.20.0
+
+# Pod-level seccomp so the restricted PSS holds for every container.
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+admissionWebhooks:
+  # No cert-manager in this cluster: Helm generates the webhook certificate.
+  certManager:
+    enabled: false
+  autoGenerateCert:
+    enabled: true
+    recreate: true
+  # Fail-open for pods: if the operator is down, was still starts (without the agent).
+  pods:
+    failurePolicy: Ignore

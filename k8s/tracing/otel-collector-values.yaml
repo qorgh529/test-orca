@@ -1,0 +1,103 @@
+# opentelemetry-collector chart 0.116.0 on ng-platform (monitoring). Rendered with envsubst by scripts/deploy-all.sh.
+# Traces arrive already head-sampled by the Java agent (Instrumentation sampler); the collector does not sample.
+# Release name otel-collector -> Service otel-collector-opentelemetry-collector.
+mode: deployment
+replicaCount: 2
+
+image:
+  repository: otel/opentelemetry-collector-contrib
+  tag: "0.120.0"
+command:
+  name: otelcol-contrib
+
+nodeSelector:
+  workload-tier: platform
+tolerations:
+  - { key: node-role, operator: Equal, value: platform, effect: NoSchedule }
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: opentelemetry-collector
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+resources:
+  requests: { cpu: 200m, memory: 256Mi }
+  limits: { memory: 512Mi }
+
+ports:
+  otlp:
+    enabled: true
+  otlp-http:
+    enabled: true
+  jaeger-compact:
+    enabled: false
+  jaeger-thrift:
+    enabled: false
+  jaeger-grpc:
+    enabled: false
+  zipkin:
+    enabled: false
+  # Prometheus exporter (OpenMetrics + exemplars), scraped via servicemonitor-petclinic.yaml.
+  prometheus:
+    enabled: true
+    containerPort: 8889
+    servicePort: 8889
+    protocol: TCP
+
+config:
+  receivers:
+    jaeger: null
+    zipkin: null
+    prometheus: null
+    otlp:
+      protocols:
+        grpc:
+          endpoint: ${env:MY_POD_IP}:4317
+        http:
+          endpoint: ${env:MY_POD_IP}:4318
+  processors:
+    memory_limiter:
+      check_interval: 1s
+      limit_percentage: 75
+      spike_limit_percentage: 15
+    batch:
+      send_batch_size: 1024
+      timeout: 5s
+  exporters:
+    debug: null
+    otlp/tempo:
+      endpoint: tempo.monitoring.svc.cluster.local:4317
+      # In-cluster only (ng-platform to ng-platform), restricted by networkpolicy-tracing.yaml.
+      tls:
+        insecure: true
+    prometheus:
+      endpoint: ${env:MY_POD_IP}:8889
+      enable_open_metrics: true
+      # service.name / service.version / deployment.environment become labels (stable vs canary panels).
+      resource_to_telemetry_conversion:
+        enabled: true
+  service:
+    pipelines:
+      logs: null
+      traces:
+        receivers: [otlp]
+        processors: [memory_limiter, batch]
+        exporters: [otlp/tempo]
+      metrics:
+        receivers: [otlp]
+        processors: [memory_limiter, batch]
+        exporters: [prometheus]

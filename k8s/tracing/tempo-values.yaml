@@ -1,0 +1,59 @@
+# tempo chart 1.24.4 (Tempo 2.9.0, single binary) on ng-platform (monitoring). Rendered with envsubst by scripts/deploy-all.sh.
+# S3 access via IRSA only: SA monitoring/tempo is created by eksctl (infra/eksctl/cluster.yaml); no static keys.
+nodeSelector:
+  workload-tier: platform
+tolerations:
+  - { key: node-role, operator: Equal, value: platform, effect: NoSchedule }
+
+serviceAccount:
+  create: false
+  name: tempo
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+# Local WAL; completed blocks go to S3.
+persistence:
+  enabled: true
+  storageClassName: gp3
+  size: 10Gi
+
+tempo:
+  repository: grafana/tempo
+  tag: "2.9.0"
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits: { memory: 1Gi }
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: [ALL]
+  # No usage reports to Grafana Labs (egress 443 is open for S3/STS only by intent).
+  reportingEnabled: false
+  # 14 days; keep in line with TEMPO_RETENTION_DAYS (S3 lifecycle, provision-aws-resources.sh).
+  retention: 336h
+  storage:
+    trace:
+      backend: s3
+      s3:
+        bucket: ${TEMPO_S3_BUCKET_NAME}
+        endpoint: s3.${AWS_REGION}.amazonaws.com
+        region: ${AWS_REGION}
+        insecure: false
+      wal:
+        path: /var/tempo/wal
+  # OTLP from the collector only.
+  receivers:
+    jaeger: null
+    opencensus: null
+    otlp:
+      protocols:
+        grpc:
+          endpoint: "0.0.0.0:4317"
+        http:
+          endpoint: "0.0.0.0:4318"
