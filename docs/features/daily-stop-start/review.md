@@ -43,7 +43,7 @@
 - 지적 사항 없음.
 
 ### Medium / Low
-- [ ] `scripts/daily-start.sh:65` — **Medium: 상태 파일 오류를 확인하기 전에 RDS를 기동함.** `target_size`의 JSON 파싱·용량 검증은 85~91행에서 수행되므로, RDS가 `stopped`일 때 손상된 `.daily-nodegroup-state.json`이나 잘못된 `NG_*` 값을 가진 채 실행하면 78행에서 `start-db-instance`를 호출한 뒤 종료한다. Round 1 M2의 “변경 전에 중단” 조건이 완전히 충족되지 않고 DB만 기동된 상태로 남는다. 두 노드그룹의 목표 용량을 먼저 읽고 검증한 후 RDS 시작을 요청하되, 실제 RDS·노드그룹 복원 순서는 유지한다. 상태 파일 오류와 `RDS_STATUS=stopped`를 함께 주입한 회귀 테스트를 추가한다.
+- [x] (`6a90754`) `scripts/daily-start.sh:65` — **Medium: 상태 파일 오류를 확인하기 전에 RDS를 기동함.** `target_size`의 JSON 파싱·용량 검증은 85~91행에서 수행되므로, RDS가 `stopped`일 때 손상된 `.daily-nodegroup-state.json`이나 잘못된 `NG_*` 값을 가진 채 실행하면 78행에서 `start-db-instance`를 호출한 뒤 종료한다. Round 1 M2의 “변경 전에 중단” 조건이 완전히 충족되지 않고 DB만 기동된 상태로 남는다. 두 노드그룹의 목표 용량을 먼저 읽고 검증한 후 RDS 시작을 요청하되, 실제 RDS·노드그룹 복원 순서는 유지한다. 상태 파일 오류와 `RDS_STATUS=stopped`를 함께 주입한 회귀 테스트를 추가한다.
 
 ### 기존 아키텍처와의 불일치
 - 지적 사항 없음. 앱·컨테이너·Kubernetes 매니페스트와 기존 계층 구성은 바뀌지 않았으며, 관리형 노드그룹과 Karpenter 앱 노드의 일시적 축소는 기능 설계에 명시되어 있다.

@@ -50,6 +50,6 @@
 지적 사항 없음.
 
 ### Low
-- [ ] `scripts/daily-start.sh:65`, `scripts/daily-start.sh:86` — 로컬 상태 파일(`.daily-nodegroup-state.json`) 및 `NG_*` 환경변수의 파싱·범위 검증(`target_size`)이 Step 2(86~91행)에서 수행되어, RDS가 `stopped` 상태일 때 손상된 상태 파일이나 잘못된 `NG_*` 값으로 실행하면 Step 1(78행)의 `aws rds start-db-instance` 호출이 먼저 실행된 뒤에 중단된다(`design.md` §3.3의 "변경 전에 중단" 원칙 대비 사전 검증 순서 미흡). / 해결책: Step 1의 RDS 시작 요청 전에 `ng-critical`, `ng-platform`의 `target_size` 파싱 및 정수·범위 검증을 먼저 수행하여 입력·상태 파일 오류 시 AWS 리소스 상태 변경 없이 즉시 중단할 것.
+- [x] (`6a90754`) `scripts/daily-start.sh:65`, `scripts/daily-start.sh:86` — 로컬 상태 파일(`.daily-nodegroup-state.json`) 및 `NG_*` 환경변수의 파싱·범위 검증(`target_size`)이 Step 2(86~91행)에서 수행되어, RDS가 `stopped` 상태일 때 손상된 상태 파일이나 잘못된 `NG_*` 값으로 실행하면 Step 1(78행)의 `aws rds start-db-instance` 호출이 먼저 실행된 뒤에 중단된다(`design.md` §3.3의 "변경 전에 중단" 원칙 대비 사전 검증 순서 미흡). / 해결책: Step 1의 RDS 시작 요청 전에 `ng-critical`, `ng-platform`의 `target_size` 파싱 및 정수·범위 검증을 먼저 수행하여 입력·상태 파일 오류 시 AWS 리소스 상태 변경 없이 즉시 중단할 것.
 
 배포 가능 여부: Yes

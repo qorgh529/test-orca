@@ -160,6 +160,7 @@ sequenceDiagram
     Op-->>Op: 10. 복원 요약 및 상시 과금 리소스 안내 출력
 ```
 
+0. **사전 검증**: 어떤 변경보다 먼저 `ng-critical`, `ng-platform`의 목표 스케일 값(Step 2의 우선순위)을 읽고 §5.5로 검증한다. 실패하면 RDS 시작 요청 없이 중단한다 (review R2 / security R2).
 1. **Step 1 — RDS MySQL 시작 요청 (병렬 기동으로 대기 시간 단축)**:
    - RDS Multi-AZ 기동(약 5~10분)과 EKS 관리형 노드그룹 기동(약 3~5분)을 병렬로 진행하기 위해 가장 먼저 RDS 상태를 확인한다.
    - `DBInstanceStatus`가 `stopped`이면 `aws rds start-db-instance --db-instance-identifier "$RDS_INSTANCE_ID"`를 호출한다. `stopping`이면 `aws rds wait db-instance-stopped` 후 시작을 요청한다(중지 직후 기동 대비, review R1 M1). `starting` 또는 `available`이면 호출을 생략한다 (멱등).
