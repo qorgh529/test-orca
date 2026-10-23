@@ -135,7 +135,8 @@ for u in "${updates[@]}"; do
 done
 run aws eks update-kubeconfig --region "$AWS_REGION" --name "$EKS_CLUSTER_NAME"
 for c in kube-system/coredns kube-system/karpenter kube-system/aws-load-balancer-controller \
-         external-secrets/external-secrets keda/keda-operator; do
+         external-secrets/external-secrets keda/keda-operator \
+         opentelemetry-operator-system/opentelemetry-operator; do
   run kubectl -n "${c%/*}" rollout status "deploy/${c#*/}" --timeout=600s
 done
 

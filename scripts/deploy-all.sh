@@ -8,7 +8,16 @@ require AWS_REGION AWS_ACCOUNT_ID EKS_CLUSTER_NAME VPC_ID PUBLIC_SUBNET_A_ID PUB
   DOMAIN_NAME ROUTE53_HOSTED_ZONE_ID ACM_CERTIFICATE_ARN WAF_WEB_ACL_ARN \
   ECR_WEB_REPOSITORY_URI ECR_WAS_REPOSITORY_URI STABLE_IMAGE_TAG CANARY_IMAGE_TAG \
   RDS_SECRET_NAME RDS_APP_SECRET_NAME RDS_BACKUP_SECRET_NAME GRAFANA_ADMIN_SECRET_NAME PROMETHEUS_SERVER_URL CW_LOG_GROUP_NAME BACKUP_S3_BUCKET_NAME \
-  ALERTMANAGER_WEBHOOK_SECRET_NAME
+  ALERTMANAGER_WEBHOOK_SECRET_NAME TEMPO_S3_BUCKET_NAME
+export OTEL_TRACES_SAMPLER_ARG="${OTEL_TRACES_SAMPLER_ARG:-0.1}" OTEL_DEPLOYMENT_ENVIRONMENT="${OTEL_DEPLOYMENT_ENVIRONMENT:-production}"
+# Rendered into manifests: a sampler ratio in [0, 1], an attribute value without ',' '=' or spaces,
+# and the same retention days as the S3 lifecycle (provision-aws-resources.sh).
+[[ "$OTEL_TRACES_SAMPLER_ARG" =~ ^(0(\.[0-9]+)?|1(\.0+)?)$ ]] \
+  || { echo "OTEL_TRACES_SAMPLER_ARG must be a number from 0 to 1 (got $OTEL_TRACES_SAMPLER_ARG)" >&2; exit 1; }
+[[ "$OTEL_DEPLOYMENT_ENVIRONMENT" =~ ^[A-Za-z0-9._-]+$ ]] \
+  || { echo "OTEL_DEPLOYMENT_ENVIRONMENT may only contain letters, digits, . _ -" >&2; exit 1; }
+[[ "${TEMPO_RETENTION_DAYS:-14}" =~ ^[1-9][0-9]*$ ]] || { echo "TEMPO_RETENTION_DAYS must be a positive integer" >&2; exit 1; }
+export TEMPO_RETENTION_HOURS="$(( ${TEMPO_RETENTION_DAYS:-14} * 24 ))h"
 
 # Split opened after the canary check (Q8: chosen per release risk). Checked before anything changes.
 OPEN_STABLE="${STABLE_WEIGHT:-90}" OPEN_CANARY="${CANARY_WEIGHT:-10}"
@@ -41,6 +50,8 @@ helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server
 helm repo add kedacore https://kedacore.github.io/charts
 helm repo add external-secrets https://charts.external-secrets.io
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
+helm repo add grafana https://grafana.github.io/helm-charts
 helm repo update
 
 echo "== Controllers on ng-critical (SAs with IRSA are created by eksctl)"
@@ -70,6 +81,10 @@ helm upgrade --install external-secrets external-secrets/external-secrets \
   --set-json 'certController.tolerations=[{"key":"node-role","operator":"Equal","value":"critical","effect":"NoSchedule"}]' \
   --set serviceAccount.create=false --set serviceAccount.name=external-secrets --wait
 
+# Installs the Instrumentation CRD and the injection webhook; must be up before the was pods are created.
+helm upgrade --install opentelemetry-operator open-telemetry/opentelemetry-operator \
+  --version 0.105.0 -n opentelemetry-operator-system -f "$K/tracing/otel-operator-values.yaml" --wait
+
 echo "== Karpenter np-app NodePool"
 render_all "$ROOT/infra/karpenter" | kubectl apply -f -
 
@@ -96,6 +111,13 @@ helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheu
   --version 92.11.0 -n monitoring -f <(render "$K/monitoring/kube-prometheus-values.yaml") --wait
 kubectl apply -f "$K/monitoring/servicemonitor-petclinic.yaml" -f "$K/monitoring/networkpolicy-prometheus.yaml" \
   -f "$K/monitoring/networkpolicy-alertmanager.yaml" -f "$K/monitoring/prometheusrule-petclinic.yaml"
+
+echo "== Tracing (ng-platform): Tempo (S3 via IRSA SA monitoring/tempo) + OTel collector"
+kubectl apply -f "$K/tracing/networkpolicy-tracing.yaml" -f "$K/monitoring/dashboard-apm-tracing.yaml"
+helm upgrade --install tempo grafana/tempo \
+  --version 1.24.4 -n monitoring -f <(render "$K/tracing/tempo-values.yaml") --wait
+helm upgrade --install otel-collector open-telemetry/opentelemetry-collector \
+  --version 0.116.0 -n monitoring -f <(render "$K/tracing/otel-collector-values.yaml") --wait
 # After the monitoring stack: the operator-metrics ServiceMonitor needs its CRD (PetClinicKedaMetricsError).
 helm upgrade --install keda kedacore/keda --version 2.21.0 -n keda -f "$CRITICAL" \
   --set prometheus.operator.enabled=true --set prometheus.operator.serviceMonitor.enabled=true
@@ -117,6 +139,8 @@ STABLE_WEIGHT=100 CANARY_WEIGHT=0 render_all "$K/gateway" | kubectl apply -f -
 wait_route_accepted
 
 echo "== Workloads (canary held at 0% until it passes the check below)"
+# Instrumentation first: pods created before it exists start without the agent.
+render "$K/was/instrumentation.yaml" | kubectl apply -f -
 render_all "$K/was" | kubectl apply -f -
 render_all "$K/web" | kubectl apply -f -
 kubectl -n petclinic rollout status deploy/was-stable --timeout=600s

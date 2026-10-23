@@ -1,6 +1,6 @@
 # AWS EKS 기반 Spring Framework PetClinic 클라우드 네이티브 아키텍처
 
-전통적인 `spring-framework-petclinic`(Spring Framework 7.x / Jakarta EE 11 WAR 패키징)을 AWS 서울 리전(`ap-northeast-2`)의 **Amazon EKS (`1.36`)** 위에 **Multi-AZ 고가용성**, **Gateway API 기반 카나리(Canary) 배포**, **3-Tier 노드 격리(Karpenter + Managed NodeGroups)**, **최소 권한 보안(Zero Hardcoded Secrets & Least Privilege)**, **통합 관측성(Prometheus / Grafana / Alertmanager / CloudWatch Logs)** 구조로 구축한 프로젝트입니다.
+전통적인 `spring-framework-petclinic`(Spring Framework 7.x / Jakarta EE 11 WAR 패키징)을 AWS 서울 리전(`ap-northeast-2`)의 **Amazon EKS (`1.36`)** 위에 **Multi-AZ 고가용성**, **Gateway API 기반 카나리(Canary) 배포**, **3-Tier 노드 격리(Karpenter + Managed NodeGroups)**, **최소 권한 보안(Zero Hardcoded Secrets & Least Privilege)**, **통합 관측성(Prometheus / Grafana / Alertmanager / CloudWatch Logs / OpenTelemetry + Tempo 분산 트레이싱)** 구조로 구축한 프로젝트입니다.
 
 ![AWS EKS 기반 Spring Framework PetClinic 아키텍처](./docs/architecture.drawio.svg)
 
@@ -21,8 +21,20 @@
   - **DB 커넥션 풀 예산 관리**: Pod당 Tomcat JDBC Pool 상한(`maxActive=10`)을 적용하여 최대 스케일 아웃 및 롤링 업데이트 중에도 RDS `db.t3.medium`의 `max_connections` 고갈을 방지합니다.
 - **3-Tier 노드 역할 분리**:
   - `np-app` + `np-app-spot` (**Karpenter `NodePool`**): 애플리케이션(`NGF`, `web`, `was`) 전용. 기본 용량은 On-Demand(`np-app`, weight 100)에 보장하고 초과 부하만 Spot(`np-app-spot`)으로 확장.
-  - `ng-critical` (**EKS 관리형 노드 그룹**, Taint `node-role=critical:NoSchedule`): 클러스터 핵심 컨트롤러(`CoreDNS`, `LBC`, `Metrics Server`, `Karpenter`, `KEDA`, `ESO`, `EBS CSI`) 및 DB 초기화 `Job` / 백업 `CronJob` 전용.
-  - `ng-platform` (**EKS 관리형 노드 그룹**, Taint `node-role=platform:NoSchedule`): 모니터링 스택(`Prometheus` 2 Replicas Multi-AZ, `Grafana`, `Alertmanager`) 및 암호화 EBS `gp3` PVC(`WaitForFirstConsumer`) 전용.
+  - `ng-critical` (**EKS 관리형 노드 그룹**, Taint `node-role=critical:NoSchedule`): 클러스터 핵심 컨트롤러(`CoreDNS`, `LBC`, `Metrics Server`, `Karpenter`, `KEDA`, `ESO`, `EBS CSI`, `OpenTelemetry Operator`) 및 DB 초기화 `Job` / 백업 `CronJob` 전용.
+  - `ng-platform` (**EKS 관리형 노드 그룹**, Taint `node-role=platform:NoSchedule`): 모니터링 스택(`Prometheus` 2 Replicas Multi-AZ, `Grafana`, `Alertmanager`, `OTel Collector`, `Tempo`) 및 암호화 EBS `gp3` PVC(`WaitForFirstConsumer`) 전용.
+- **분산 트레이싱 (APM, `docs/features/apm-tracing/design.md`)**:
+  - **OpenTelemetry Operator**가 `was-stable`/`was-canary`에 Java agent를 init container로 주입합니다(이미지 재빌드 없음). 리소스 속성 `service.name=petclinic-was`, `service.version=stable|canary`로 카나리를 구분하고, 로그에는 MDC로 `trace_id`/`span_id`가 남습니다.
+  - 헤드 샘플링은 agent(SDK)에서 `parentbased_traceidratio`(`OTEL_TRACES_SAMPLER_ARG`, 기본 `0.1`)로 하고, RED 메트릭(`http_server_request_duration_seconds`)은 샘플링 없이 100% 집계됩니다. exemplar는 샘플링된 트레이스에만 붙어 Grafana 패널에서 Tempo 트레이스로 바로 이동합니다.
+  - 데이터 흐름과 포트:
+
+    | 구간 | 포트 | 내용 |
+    |---|---|---|
+    | `was` → OTel Collector | `4317` gRPC / `4318` HTTP | OTLP 트레이스(10%) + 메트릭(100%, exemplar) |
+    | Collector → Tempo | `4317` | OTLP gRPC (`memory_limiter` → `batch`) |
+    | Prometheus → Collector | `8889` | OpenMetrics scrape (exemplar 포함) |
+    | Grafana → Tempo | `3200` | TraceQL / trace 조회 |
+    | Tempo → S3 | `443` | 전용 버킷 `TEMPO_S3_BUCKET_NAME` (SSE-KMS, 퍼블릭 차단, `TEMPO_RETENTION_DAYS` 만료), IRSA `monitoring/tempo` |
 - **최소 권한 DB 계정 분리 및 시크릿 외부화**:
   - **RDS MySQL 8.0 Multi-AZ**(Primary/Standby 동기 복제, `require_secure_transport=ON`)를 프라이빗 DB 서브넷에 격리합니다.
   - DB 계정을 역할별로 3분리하여 각각 **AWS Secrets Manager**와 **External Secrets Operator(ESO)** 로 동기화합니다:
@@ -46,6 +58,7 @@
 | **Autoscaling** | Karpenter / KEDA / Metrics Server | Karpenter **`1.15.0`**, KEDA **`2.21.0`**, Metrics Server **`3.14.0`** |
 | **Secrets / Storage** | ESO / EBS CSI Driver | `external-secrets` **`2.13.0`** (`v1` API), `aws-ebs-csi-driver` (`${EBS_CSI_ADDON_VERSION}`) |
 | **Observability** | Prometheus Stack / Fluent Bit | `kube-prometheus-stack` **`92.11.0`** (Prometheus `v3.15.0`), `aws-for-fluent-bit` **`0.2.0`** (`3.2.1`) |
+| **Tracing** | OTel Operator / Collector / Java agent / Tempo | `opentelemetry-operator` **`0.105.0`** (`0.144.0`), `opentelemetry-collector` **`0.116.0`** (`otel/opentelemetry-collector-contrib:0.120.0`), `autoinstrumentation-java:2.12.0`, `tempo` **`1.24.4`** (`grafana/tempo:2.9.0`) |
 | **Database / Backup** | Amazon RDS for MySQL / S3 | MySQL **`8.0.39`** (`db.t3.medium` Multi-AZ), `mysql:8.0.39`, `amazon/aws-cli:2.18.0` |
 
 ---
@@ -76,7 +89,7 @@ cp .env.example .env
 ### Step 2. AWS 주변 인프라 및 EKS 클러스터 프로비저닝
 각 단계는 멱등(Idempotent)하게 동작하므로 중간에 중단되더라도 안전하게 재실행할 수 있습니다.
 ```bash
-# 1) IAM Policy/Role, ECR 리포지토리, CloudWatch Log Group, 백업용 S3 버킷, WAFv2 WebACL, ACM 인증서 생성
+# 1) IAM Policy/Role, ECR 리포지토리, CloudWatch Log Group, 백업용·Tempo용 S3 버킷, WAFv2 WebACL, ACM 인증서 생성
 ./infra/aws/provision-aws-resources.sh pre-cluster
 # 출력된 ECR_*_REPOSITORY_URI, WAF_WEB_ACL_ARN, ACM_CERTIFICATE_ARN을 .env에 반영
 
@@ -96,7 +109,7 @@ IMAGE_TAG=v1.0.0 ./scripts/build-and-push.sh
 ```bash
 STABLE_IMAGE_TAG=v1.0.0 CANARY_IMAGE_TAG=v1.0.0 ./scripts/deploy-all.sh
 ```
-> `deploy-all.sh`는 매니페스트 정적 검증(`validate-manifests.sh`) → 네임스페이스/StorageClass/Gateway API CRD 설치 → 클러스터 컨트롤러(LBC, Metrics Server, Karpenter, ESO) 설치 → Karpenter `np-app` 및 NGF 배포 → ESO 시크릿 동기화 대기 → 모니터링(Prometheus/Grafana/Alertmanager) 및 KEDA/Fluent Bit 설치 → `db-init` Job 및 `db-backup` CronJob 배포 → `HTTPRoute` `100:0` 격리 후 `was`/`web` 롤아웃 → Route 53 연결 → `X-Canary: always` 동적 경로 검증 → 통과 시 `STABLE_WEIGHT:CANARY_WEIGHT`(기본 `90:10`) 개방까지 순서대로 수행합니다.
+> `deploy-all.sh`는 매니페스트 정적 검증(`validate-manifests.sh`) → 네임스페이스/StorageClass/Gateway API CRD 설치 → 클러스터 컨트롤러(LBC, Metrics Server, Karpenter, ESO) 설치 → Karpenter `np-app` 및 NGF 배포 → ESO 시크릿 동기화 대기 → 모니터링(Prometheus/Grafana/Alertmanager)·트레이싱(Tempo/OTel Collector, Operator는 컨트롤러 단계) 및 KEDA/Fluent Bit 설치 → `db-init` Job 및 `db-backup` CronJob 배포 → `HTTPRoute` `100:0` 격리 후 `was`/`web` 롤아웃 → Route 53 연결 → `X-Canary: always` 동적 경로 검증 → 통과 시 `STABLE_WEIGHT:CANARY_WEIGHT`(기본 `90:10`) 개방까지 순서대로 수행합니다.
 
 ---
 
@@ -161,7 +174,7 @@ AWS Secrets Manager에서 `petclinic_app` 또는 `petclinic_backup` 비밀번호
 ├── app/                                  # spring-framework-petclinic 소스 코드 (WAR 빌드)
 ├── docker/                               # web (Nginx 1.27) 및 was (Tomcat 11 + JMX Exporter) Dockerfile
 ├── infra/                                # AWS 프로비저닝 스크립트, IAM 최소 권한 정책, eksctl, Karpenter
-├── k8s/                                  # Kubernetes 매니페스트 (base, secrets, jobs, web, was, gateway, monitoring, logging)
+├── k8s/                                  # Kubernetes 매니페스트 (base, secrets, jobs, web, was, gateway, monitoring, logging, tracing)
 ├── tests/                                # PrometheusRule 단위 테스트 (promtool)
 └── scripts/                              # 빌드·배포·시크릿 회전·정적 검증 자동화 스크립트
 ```

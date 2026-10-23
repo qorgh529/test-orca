@@ -12,6 +12,8 @@ spec:
   template:
     metadata:
       labels: { app: was, track: stable }
+      annotations:
+        instrumentation.opentelemetry.io/inject-java: petclinic-java
     spec:
       automountServiceAccountToken: false
       nodeSelector:
@@ -37,7 +39,10 @@ spec:
             - { name: metrics, containerPort: 9404 }
           env:
             - { name: SPRING_PROFILES_ACTIVE, value: jpa }
-            - { name: JAVA_OPTS, value: "-XX:MaxRAMPercentage=75.0" }
+            # 65% heap: leaves ~700Mi of the 2Gi limit for non-heap (JMX exporter + OTel agent).
+            - { name: JAVA_OPTS, value: "-XX:MaxRAMPercentage=65.0 -Dlogback.configurationFile=/etc/petclinic-logging/logback.xml" }
+            - { name: OTEL_SERVICE_NAME, value: petclinic-was }
+            - { name: OTEL_RESOURCE_ATTRIBUTES, value: "service.version=stable,deployment.environment=${OTEL_DEPLOYMENT_ENVIRONMENT}" }
             - name: JDBC_URL
               valueFrom: { secretKeyRef: { name: petclinic-rds-secret, key: JDBC_URL } }
             - name: JDBC_USERNAME
@@ -50,13 +55,15 @@ spec:
             failureThreshold: 30
           readinessProbe:
             httpGet: { path: /, port: http }
+            # Agent bytecode instrumentation adds ~10-15s to JVM start.
+            initialDelaySeconds: 20
             periodSeconds: 10
           livenessProbe:
             tcpSocket: { port: http }
             periodSeconds: 20
           resources:
-            requests: { cpu: 500m, memory: 1Gi }
-            limits: { cpu: "2", memory: 1536Mi }
+            requests: { cpu: 500m, memory: 1280Mi }
+            limits: { cpu: "2", memory: 2Gi }
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
@@ -69,9 +76,11 @@ spec:
             - { name: logs, mountPath: /usr/local/tomcat/logs }
             - { name: catalina-conf, mountPath: /usr/local/tomcat/conf/Catalina }
             - { name: tmp, mountPath: /tmp }
+            - { name: logback, mountPath: /etc/petclinic-logging, readOnly: true }
       volumes:
         - { name: work, emptyDir: {} }
         - { name: temp, emptyDir: {} }
         - { name: logs, emptyDir: {} }
         - { name: catalina-conf, emptyDir: {} }
         - { name: tmp, emptyDir: {} }
+        - { name: logback, configMap: { name: petclinic-was-logback } }

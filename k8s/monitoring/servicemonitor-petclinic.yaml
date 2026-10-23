@@ -29,3 +29,21 @@ spec:
     - port: metrics
       path: /metrics
       interval: 15s
+---
+# OTel collector Prometheus exporter: RED metrics from the Java agent, with trace_id exemplars.
+# OpenMetrics is required for exemplars to be scraped.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: otel-collector
+  namespace: monitoring
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: opentelemetry-collector
+      app.kubernetes.io/instance: otel-collector
+  scrapeProtocols: [OpenMetricsText1.0.0]
+  endpoints:
+    - port: prometheus
+      path: /metrics
+      interval: 15s

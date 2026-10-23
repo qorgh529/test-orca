@@ -4,6 +4,7 @@
 #   3. no plaintext secrets  4. node-tier placement + non-root securityContext
 #   5. stable/canary tags, DB secret per role, JDBC pool cap, KEDA fallback, Prometheus HA, PDBs
 #   6. scripts/daily-{stop,start}.sh syntax, offline --dry-run, tests/scripts/daily-stop-start.test.sh (needs jq)
+#   7. tracing: placement, IRSA-only Tempo, was agent injection / service.version / resources
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
@@ -20,6 +21,9 @@ for s in daily-stop daily-start; do
      || ! grep -q "Non-stoppable resources" <<<"$out"; then
     echo "FAIL scripts/$s.sh --dry-run"; echo "$out"; exit 1
   fi
+done
+for s in infra/aws/provision-aws-resources.sh scripts/deploy-all.sh; do
+  bash -n "$ROOT/$s" || { echo "FAIL $s: bash syntax"; exit 1; }
 done
 # Real-mode branches (lookup errors, RDS stopping, state file, maxSize) against fake aws/kubectl.
 bash "$ROOT/tests/scripts/daily-stop-start.test.sh" || { echo "FAIL tests/scripts/daily-stop-start.test.sh"; exit 1; }
@@ -234,6 +238,60 @@ for r in kps.get("alertmanager", {}).get("config", {}).get("receivers") or []:
     for w in r.get("webhook_configs") or []:
         if "url" in w or not w.get("url_file"):
             err(f"kube-prometheus-values: receiver {r.get('name')} must use url_file, not url")
+
+# 7. Tracing (docs/features/apm-tracing/design.md)
+def values(path):
+    return docs.get(root / path, [{}])[0]
+expect_tier("otel-operator-values", values("k8s/tracing/otel-operator-values.yaml"), "critical")
+expect_tier("otel-collector-values", values("k8s/tracing/otel-collector-values.yaml"), "platform")
+tempo = values("k8s/tracing/tempo-values.yaml")
+expect_tier("tempo-values", tempo, "platform")
+s3 = (((tempo.get("tempo") or {}).get("storage") or {}).get("trace") or {}).get("s3") or {}
+if any(k in s3 for k in ("access_key", "secret_key")):
+    err("tempo-values: S3 must use IRSA, not access_key/secret_key")
+if (tempo.get("serviceAccount") or {}).get("name") != "tempo" or not any(
+        (sa.get("metadata") or {}) == {"name": "tempo", "namespace": "monitoring"}
+        for sa in (eks.get("iam") or {}).get("serviceAccounts") or []):
+    err("tempo-values: serviceAccount tempo must be the IRSA SA monitoring/tempo in infra/eksctl/cluster.yaml")
+# Tracing pods run non-root without privilege escalation; collector and Tempo also on a read-only root.
+collector = values("k8s/tracing/otel-collector-values.yaml")
+operator = values("k8s/tracing/otel-operator-values.yaml")
+for where, pod, containers, ro in (
+        ("otel-operator-values", operator.get("securityContext"),
+         [(operator.get("manager") or {}).get("securityContext"), (operator.get("kubeRBACProxy") or {}).get("securityContext")], False),
+        ("otel-collector-values", collector.get("podSecurityContext"), [collector.get("securityContext")], True),
+        ("tempo-values", tempo.get("securityContext"), [(tempo.get("tempo") or {}).get("securityContext")], True)):
+    if (pod or {}).get("runAsNonRoot") is not True:
+        err(f"{where}: pod securityContext must set runAsNonRoot: true")
+    for sc in containers:
+        sc = sc or {}
+        if sc.get("allowPrivilegeEscalation") is not False or "ALL" not in ((sc.get("capabilities") or {}).get("drop") or []):
+            err(f"{where}: container securityContext must set allowPrivilegeEscalation: false and drop ALL")
+        if ro and sc.get("readOnlyRootFilesystem") is not True:
+            err(f"{where}: container securityContext must set readOnlyRootFilesystem: true")
+# Block retention follows TEMPO_RETENTION_DAYS like the S3 lifecycle.
+if (tempo.get("tempo") or {}).get("retention") != "${TEMPO_RETENTION_HOURS}":
+    err("tempo-values: tempo.retention must be ${TEMPO_RETENTION_HOURS} (rendered from TEMPO_RETENTION_DAYS)")
+inst = find("Instrumentation", "petclinic-java")
+if not inst or (inst["spec"].get("sampler") or {}).get("argument") != "${OTEL_TRACES_SAMPLER_ARG}":
+    err("Instrumentation/petclinic-java: sampler.argument must be ${OTEL_TRACES_SAMPLER_ARG}")
+def mib(q):
+    q = str(q)
+    return int(q[:-2]) * (1024 if q.endswith("Gi") else 1) if q[-2:] in ("Mi", "Gi") else 0
+for track in ("stable", "canary"):
+    d = find("Deployment", f"was-{track}")
+    tmpl = d["spec"]["template"]
+    if (tmpl["metadata"].get("annotations") or {}).get("instrumentation.opentelemetry.io/inject-java") != "petclinic-java":
+        err(f"Deployment/was-{track}: missing inject-java: petclinic-java annotation")
+    c = tmpl["spec"]["containers"][0]
+    env = {e["name"]: e.get("value") for e in c.get("env") or []}
+    if f"service.version={track}" not in (env.get("OTEL_RESOURCE_ATTRIBUTES") or "").split(","):
+        err(f"Deployment/was-{track}: OTEL_RESOURCE_ATTRIBUTES must carry service.version={track}")
+    res = c.get("resources") or {}
+    if mib((res.get("requests") or {}).get("memory")) < 1280 or mib((res.get("limits") or {}).get("memory")) < 2048:
+        err(f"Deployment/was-{track}: memory must be >= 1280Mi request / 2Gi limit (Java agent overhead)")
+    if not (c.get("readinessProbe") or {}).get("initialDelaySeconds"):
+        err(f"Deployment/was-{track}: readinessProbe.initialDelaySeconds must be set")
 
 if errors:
     print("\n".join("FAIL " + e for e in errors))
