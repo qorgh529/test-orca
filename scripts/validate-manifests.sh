@@ -4,7 +4,7 @@
 #   3. no plaintext secrets  4. node-tier placement + non-root securityContext
 #   5. stable/canary tags, DB secret per role, JDBC pool cap, KEDA fallback, Prometheus HA, PDBs
 #   6. scripts/daily-{stop,start}.sh syntax, offline --dry-run, tests/scripts/daily-stop-start.test.sh (needs jq)
-#   7. tracing: placement, IRSA-only Tempo, was agent injection / service.version / resources
+#   7. tracing: placement, IRSA-only Tempo (grafana-community chart, pinned image), was agent injection / service.version / resources
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
@@ -272,6 +272,18 @@ for where, pod, containers, ro in (
 # Block retention follows TEMPO_RETENTION_DAYS like the S3 lifecycle.
 if (tempo.get("tempo") or {}).get("retention") != "${TEMPO_RETENTION_HOURS}":
     err("tempo-values: tempo.retention must be ${TEMPO_RETENTION_HOURS} (rendered from TEMPO_RETENTION_DAYS)")
+# Tempo image sits under tempo.repository/tag, outside the image: keys checked in section 2.
+tempo_image = tempo.get("tempo") or {}
+check_image("k8s/tracing/tempo-values.yaml", f"{tempo_image.get('repository', '')}:{tempo_image.get('tag', '')}".rstrip(":"))
+# Tempo 3 has no -mem-ballast-size-mbs flag (docs/features/tempo-chart-migration/design.md).
+if "memBallastSizeMbs" in tempo_image:
+    err("tempo-values: tempo.memBallastSizeMbs was removed in Tempo 3; drop it")
+# grafana/tempo is deprecated upstream; the single-binary chart lives in grafana-community.
+deploy = (root / "scripts/deploy-all.sh").read_text(encoding="utf-8")
+if "grafana.github.io/helm-charts" in deploy or re.search(r"\bgrafana/tempo\b", deploy):
+    err("scripts/deploy-all.sh: use grafana-community/tempo, not the deprecated grafana/tempo chart")
+if not re.search(r"helm upgrade --install tempo grafana-community/tempo \\\n\s+--version \d+\.\d+\.\d+", deploy):
+    err("scripts/deploy-all.sh: tempo must be installed from grafana-community/tempo with a pinned --version")
 inst = find("Instrumentation", "petclinic-java")
 if not inst or (inst["spec"].get("sampler") or {}).get("argument") != "${OTEL_TRACES_SAMPLER_ARG}":
     err("Instrumentation/petclinic-java: sampler.argument must be ${OTEL_TRACES_SAMPLER_ARG}")

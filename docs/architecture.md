@@ -18,7 +18,7 @@
   - 기존 EKS 1.31 클러스터의 제자리 업그레이드 절차 (현재 구성은 1.36 새 클러스터 생성 기준, `docs/features/production-hardening/design.md` §1.3)
   - 비즈니스 도메인 모델 변경 (단, 외부 RDS 환경변수 바인딩 및 flatpickr `yyyy/MM/dd` 날짜 형식 호환 패치는 반영)
   - 일일 중지 시 EKS 컨트롤 플레인, NAT Gateway, ALB(`Ingress`), `gp3` EBS PVC 삭제·재생성 및 EventBridge/Lambda 기반 자동 스케줄러 구축 (`docs/features/daily-stop-start/design.md` §1.4)
-  - Grafana Loki 도입, Tail-based Sampling, NGF·`web`(Nginx) 계층 트레이싱 및 상용 APM 도입 (`docs/features/apm-tracing/design.md` §1.4)
+  - Grafana Loki 도입, Tail-based Sampling, NGF·`web`(Nginx) 계층 트레이싱, `tempo-distributed`(마이크로서비스 모드 + Kafka) 전환 및 상용 APM 도입 (`docs/features/apm-tracing/design.md` §1.4, `docs/features/tempo-chart-migration/design.md` §1.4)
 
 ---
 
@@ -60,7 +60,8 @@
 │   └── features/                         # 기능 브랜치별 설계·리뷰·보안 점검 기록
 │       ├── production-hardening/{design,review,security}.md
 │       ├── daily-stop-start/{design,review,security}.md
-│       └── apm-tracing/{design,review,security}.md
+│       ├── apm-tracing/{design,review,security}.md
+│       └── tempo-chart-migration/{design,review,security}.md
 ├── app/                                  # spring-framework-petclinic 소스 코드
 │   ├── pom.xml                           # Maven WAR 빌드, MySQL/PostgreSQL/H2/HSQLDB 프로필
 │   └── src/
@@ -131,7 +132,7 @@
 │   ├── tracing/
 │   │   ├── otel-operator-values.yaml     # OpenTelemetry Operator Helm values (ng-critical, 자체 서명 인증서, Pod webhook failurePolicy: Ignore)
 │   │   ├── otel-collector-values.yaml    # OpenTelemetry Collector Helm values (ng-platform, Deployment 2 Replicas AZ 분산, OTLP→Tempo / Prometheus :8889 OpenMetrics)
-│   │   ├── tempo-values.yaml             # Grafana Tempo Helm values (ng-platform, S3 IRSA SA monitoring/tempo, memBallastSizeMbs: 0, gp3 10Gi WAL)
+│   │   ├── tempo-values.yaml             # Grafana Tempo Helm values (grafana-community/tempo 3.2.1 단일 바이너리, ng-platform, S3 IRSA SA monitoring/tempo, gp3 10Gi WAL)
 │   │   └── networkpolicy-tracing.yaml    # otel-collector 및 tempo Ingress/Egress 최소 권한 NetworkPolicy
 │   └── logging/
 │       └── fluent-bit-values.yaml        # aws-for-fluent-bit DaemonSet 설정 (전 노드 Toleration → CloudWatch Logs)
@@ -147,7 +148,7 @@
     ├── daily-stop.sh                     # 퇴근 전 앱/Karpenter 노드·RDS·관리형 노드그룹 일괄 중지 및 잔여 비용 안내 (--dry-run 지원)
     ├── daily-start.sh                    # 출근 시 RDS·관리형 노드그룹·컨트롤러(opentelemetry-operator 포함)·Karpenter·워크로드/오토스케일러/CronJob 일괄 복원 (--dry-run 지원)
     ├── test-prometheus-rules.sh          # promtool로 PrometheusRule 단위 테스트 실행
-    └── validate-manifests.sh             # YAML 문법, 고정 이미지/애드온 버전, 평문 시크릿 부재, 노드 티어/비루트, 역할별 DB 시크릿·PDB·KEDA fallback, 트레이싱(IRSA·보안 컨텍스트·WAS 주입·보존기간), daily-stop/start 회귀 테스트 검증기
+    └── validate-manifests.sh             # YAML 문법, 고정 이미지/애드온 버전(tempo.repository/tag 및 grafana-community/tempo 차트 포함), 평문 시크릿 부재, 노드 티어/비루트, 역할별 DB 시크릿·PDB·KEDA fallback, 트레이싱(IRSA·보안 컨텍스트·WAS 주입·보존기간), daily-stop/start 회귀 테스트 검증기
 ```
 
 ---
@@ -172,7 +173,7 @@
    - `ng-critical`의 **OpenTelemetry Operator**(`:9443` Mutating Webhook)가 `was-stable`/`was-canary` Pod 생성 시 `Instrumentation` CR(`petclinic-java`)에 따라 `autoinstrumentation-java:2.12.0` init container와 `JAVA_TOOL_OPTIONS`를 무코드·무재빌드로 주입한다.
    - Java Agent는 `parentbased_traceidratio`(`${OTEL_TRACES_SAMPLER_ARG}`, 기본 `0.1` = 10%)로 헤드 샘플링된 HTTP·Spring MVC·Hibernate/JDBC 트레이스 스팬과, 샘플링 없이 **100% 전수 집계된 RED 메트릭**(`http.server.request.duration` + 샘플링된 트레이스에 한해 부착되는 `trace_based` Exemplar `trace_id`)을 OTLP HTTP(`:4318`)로 `ng-platform`의 **OpenTelemetry Collector**(2 Replicas AZ 분산)에 전송한다.
    - **OpenTelemetry Collector**는 `memory_limiter` → `batch` 처리 후 트레이스를 **Grafana Tempo**(`:4317` OTLP gRPC)로 전달하고, RED 메트릭과 Exemplar는 Prometheus Exporter(`:8889/metrics`, `enable_open_metrics: true`, `resource_to_telemetry_conversion.enabled: true`)로 노출하여 **Prometheus**(`enableFeatures: [exemplar-storage]`, `OpenMetricsText1.0.0`)가 스크래핑한다.
-   - **Grafana Tempo**는 로컬 WAL(`gp3` 10Gi PVC)을 거쳐 IRSA(`monitoring/tempo`)로 전용 **Amazon S3** 버킷(`${TEMPO_S3_BUCKET_NAME}`)에 트레이스 블록을 적재하며, **Grafana**의 `PetClinic APM - Service & Canary Tracing` 대시보드(`service_version="stable|canary"`별 요청량·5xx 에러율·p95/p99 지연)에서 Exemplar 점(Dot)을 클릭하면 `trace_id`로 Tempo(`:3200`)의 해당 트레이스 워터폴로 즉시 이동한다.
+   - **Grafana Tempo**(단일 바이너리)는 Live-Store 로컬 WAL(`gp3` 10Gi PVC `/var/tempo`)을 거쳐 IRSA(`monitoring/tempo`)로 전용 **Amazon S3** 버킷(`${TEMPO_S3_BUCKET_NAME}`)에 트레이스 블록을 적재하고 `backend_scheduler`·`backend_worker`로 보존 기간(`${TEMPO_RETENTION_HOURS}`)을 관리하며, **Grafana**의 `PetClinic APM - Service & Canary Tracing` 대시보드(`service_version="stable|canary"`별 요청량·5xx 에러율·p95/p99 지연)에서 Exemplar 점(Dot)을 클릭하면 `trace_id`로 Tempo(`:3200`)의 해당 트레이스 워터폴로 즉시 이동한다.
 6. **⑥ `was` 및 DB 관리 워크로드 → RDS MySQL 8.0 (`:3306` TLS)**:
    - `was`는 **ESO**가 **AWS Secrets Manager**에서 동기화한 app 계정 시크릿 `petclinic-rds-secret`(SELECT/INSERT/UPDATE/DELETE 권한)을 주입받아 프라이빗 DB 서브넷의 **RDS MySQL Primary**에 TLS(`require_secure_transport=ON`, `sslMode=REQUIRED`)로 연결한다.
    - `ng-critical`의 `db-init` Job은 admin 계정 시크릿(`petclinic-rds-admin-secret`)으로 스키마·초기 데이터를 적재하고 app/backup 계정을 생성하며, `db-backup` CronJob은 읽기 전용 backup 계정 시크릿(`petclinic-rds-backup-secret`)으로 일일 `mysqldump` 후 **Amazon S3** 백업 버킷(`BACKUP_S3_BUCKET_NAME`, `SSE-KMS`)에 업로드한다. 모두 TLS로만 연결한다.
@@ -206,7 +207,7 @@
 | **Autoscaling** | Karpenter / KEDA / Metrics Server | Karpenter `1.15.0` (+ `karpenter-crd`), KEDA `2.21.0`, Metrics Server Helm `3.14.0` (`v0.9.0`) |
 | **Ingress / Storage / Secrets** | LBC / EBS CSI / ESO | `aws-load-balancer-controller` Helm `3.6.1` (`v3.6.1`), `aws-ebs-csi-driver` `${EBS_CSI_ADDON_VERSION}`(환경별 고정), `external-secrets` `2.13.0` (API `v1`) |
 | **Observability** | kube-prometheus-stack / Fluent Bit | `kube-prometheus-stack` `92.11.0` (Prometheus `v3.15.0` `exemplar-storage`, Grafana 차트 `14.0.1`), `aws-for-fluent-bit` Helm `0.2.0` (이미지 `3.2.1`) |
-| **APM Tracing** | OpenTelemetry Operator / Collector / Grafana Tempo | `opentelemetry-operator` Helm `0.105.0` (`0.144.0`, `kube-rbac-proxy:v0.20.0`), `opentelemetry-collector` Helm `0.116.0` (`otel/opentelemetry-collector-contrib:0.120.0`), `tempo` Helm `1.24.4` (`grafana/tempo:2.9.0`) |
+| **APM Tracing** | OpenTelemetry Operator / Collector / Grafana Tempo | `opentelemetry-operator` Helm `0.105.0` (`0.144.0`, `kube-rbac-proxy:v0.20.0`), `opentelemetry-collector` Helm `0.116.0` (`otel/opentelemetry-collector-contrib:0.120.0`), `grafana-community/tempo` Helm `3.2.1` (`grafana/tempo:3.1.1`) |
 | **Database** | Amazon RDS for MySQL | `8.0.39` (`db.t3.medium`, Multi-AZ, `gp3` 20GB 암호화) |
 
 ### 5.2 클러스터 노드 그룹 및 NodePool 구성
@@ -249,7 +250,7 @@
 - **외부 아티팩트 / Helm 차트 레지스트리 (빌드·배포 시점)**:
   - Maven Central (`com.mysql:mysql-connector-j:8.1.0`, `io.prometheus.jmx:jmx_prometheus_javaagent:1.0.1` SHA256 검증 포함, WebJars)
   - GitHub Releases / GHCR (`gateway-api` `v1.6.3` `standard-install.yaml`, `ghcr.io/open-telemetry/opentelemetry-operator/{opentelemetry-operator:0.144.0,autoinstrumentation-java:2.12.0}`)
-  - Helm / OCI 레지스트리 (`eks-charts`, `metrics-server`, `kedacore`, `external-secrets`, `prometheus-community`, `open-telemetry`, `grafana`, `oci://public.ecr.aws/karpenter/karpenter`, `oci://ghcr.io/nginx/charts/nginx-gateway-fabric`)
+  - Helm / OCI 레지스트리 (`eks-charts`, `metrics-server`, `kedacore`, `external-secrets`, `prometheus-community`, `open-telemetry`, `grafana-community`, `oci://public.ecr.aws/karpenter/karpenter`, `oci://ghcr.io/nginx/charts/nginx-gateway-fabric`)
 
 ---
 
@@ -306,4 +307,6 @@
 - `apm-tracing`: ECR `IMMUTABLE` 이미지를 재빌드하지 않고 `ng-critical`의 OpenTelemetry Operator(`Instrumentation/petclinic-java`)로 `was-stable`/`was-canary`에 Java Agent init container(`JAVA_TOOL_OPTIONS`)를 주입하며 `petclinic-was-logback` ConfigMap을 `-Dlogback.configurationFile`로 마운트함 / 기존 `CATALINA_OPTS`의 JMX Exporter(`:9404`, KEDA 스케일링용)와 충돌 없이 무코드 자동 계측과 MDC(`trace_id`/`span_id`) 로그 출력을 달성하고, Pod 주입 Webhook은 `failurePolicy: Ignore`(fail-open)로 설정하되 `deploy-all.sh`와 `daily-start.sh`에서 Operator 준비 완료 후 `was`를 기동하도록 순서를 보장함
 - `apm-tracing`: 트레이스 헤드 샘플링(`parentbased_traceidratio`, 기본 `0.1`)은 SDK(Java Agent)에서 수행하고, 버전(`service.version=stable|canary`)별 RED 메트릭(`http_server_request_duration_seconds`)은 샘플링 없이 100% 전수 집계하되 `trace_based` 필터로 샘플링된 트레이스에만 Exemplar(`trace_id`)를 부착하여 Collector(`:8889`, `OpenMetricsText1.0.0`) → Prometheus(`exemplar-storage`)로 수집함 / Collector `spanmetrics` + 사후 샘플링이나 Tempo `metrics-generator`를 쓰면 Exemplar의 90%가 Tempo에 없는 트레이스(404 Dead Link)를 가리키거나 카나리 트래픽(10% × 10% = 1%)의 RED 통계가 왜곡되는 문제를 방지하기 위함
 - `apm-tracing`: Grafana Tempo 블록 스토리지로 기존 `BACKUP_S3_BUCKET_NAME`을 공유하지 않고 비버전 관리·만료 Lifecycle(`${TEMPO_RETENTION_DAYS}`일, Tempo `retention: ${TEMPO_RETENTION_HOURS}`와 동일 변수에서 파생)이 적용된 전용 S3 버킷(`${TEMPO_S3_BUCKET_NAME}`)과 전용 IRSA(`monitoring/tempo`)를 분리함 / DB 백업 버킷은 덮어쓰기·삭제 방지를 위해 `s3:PutObject`만 허용하고 Versioning을 켜 둔 반면 Tempo Compactor는 `s3:DeleteObject`/`s3:ListBucket`이 필수라 버킷 공유 시 최소 권한 원칙이 깨지고 Noncurrent Version 누적으로 S3 비용이 급증하기 때문
-- `apm-tracing`: 듀얼 Java Agent(JMX Exporter + OTel Java Agent) 주입에 맞춰 `was-stable`/`was-canary`의 메모리를 `1280Mi`(Request) / `2Gi`(Limit), `-XX:MaxRAMPercentage=65.0`, `readinessProbe.initialDelaySeconds: 20`으로 조정하고 Tempo 컨테이너의 `memBallastSizeMbs: 0`을 명시함 / OTel Agent의 Non-Heap(Metaspace·CodeCache·OTLP 배치 버퍼) 증가와 Tempo 차트 기본 `1024MiB` 밸러스트로 인한 cgroup `OOMKilled` 및 바이트코드 변환 중 조기 Readiness 실패를 방지하기 위함
+- `apm-tracing`: 듀얼 Java Agent(JMX Exporter + OTel Java Agent) 주입에 맞춰 `was-stable`/`was-canary`의 메모리를 `1280Mi`(Request) / `2Gi`(Limit), `-XX:MaxRAMPercentage=65.0`, `readinessProbe.initialDelaySeconds: 20`으로 조정함 / OTel Agent의 Non-Heap(Metaspace·CodeCache·OTLP 배치 버퍼) 증가로 인한 cgroup `OOMKilled` 및 바이트코드 변환 중 조기 Readiness 실패를 방지하기 위함
+- `tempo-chart-migration`: deprecated 처리된 `grafana/tempo` `1.24.4`(`grafana/tempo:2.9.0`)를 업스트림 이관 저장소의 `grafana-community/tempo` `3.2.1`(`grafana/tempo:3.1.1`)로 교체하고 Tempo 3.0에서 삭제된 `-mem-ballast-size-mbs` 플래그 오버라이드(`memBallastSizeMbs: 0`)를 제거함 / 업스트림 지원이 중단된 차트 경고를 해소하고, `backend_scheduler`와 `backend_worker` 양쪽에 `block_retention`(`${TEMPO_RETENTION_HOURS}`)이 동시에 반영되는 차트 `3.2.1`로 S3 Lifecycle 보존 기간 정합성을 유지하기 위함
+- `tempo-chart-migration`: Tempo 3.x 전환 시 마이크로서비스 차트(`tempo-distributed`)로 분리하지 않고 단일 바이너리(`grafana-community/tempo`, `replicas: 1`) 구성을 유지함 / SDK 10% 헤드 샘플링 기준 유입량이 초당 수십~수백 스팬 수준으로 단일 프로세스 처리 용량 내에 충분하며, `tempo-distributed`가 필수로 요구하는 외부 Kafka 클러스터 및 6종 이상의 컴포넌트 분리로 인한 `ng-platform` 노드 증설·운영 복잡도를 방지하기 위함

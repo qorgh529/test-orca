@@ -1,4 +1,4 @@
-# tempo chart 1.24.4 (Tempo 2.9.0, single binary) on ng-platform (monitoring). Rendered with envsubst by scripts/deploy-all.sh.
+# grafana-community/tempo chart 3.2.1 (Tempo 3.1.1, single binary) on ng-platform (monitoring). Rendered with envsubst by scripts/deploy-all.sh.
 # S3 access via IRSA only: SA monitoring/tempo is created by eksctl (infra/eksctl/cluster.yaml); no static keys.
 nodeSelector:
   workload-tier: platform
@@ -25,9 +25,7 @@ persistence:
 
 tempo:
   repository: grafana/tempo
-  tag: "2.9.0"
-  # The chart passes -mem-ballast-size-mbs (default 1024), which alone would fill the 1Gi limit.
-  memBallastSizeMbs: 0
+  tag: "3.1.1"
   resources:
     requests: { cpu: 250m, memory: 512Mi }
     limits: { memory: 1Gi }
@@ -39,6 +37,7 @@ tempo:
   # No usage reports to Grafana Labs (egress 443 is open for S3/STS only by intent).
   reportingEnabled: false
   # TEMPO_RETENTION_DAYS * 24h (scripts/deploy-all.sh), same days as the S3 lifecycle.
+  # Chart 3.2.1 renders this into both backend_scheduler and backend_worker block_retention.
   retention: ${TEMPO_RETENTION_HOURS}
   storage:
     trace:
@@ -50,7 +49,7 @@ tempo:
         insecure: false
       wal:
         path: /var/tempo/wal
-  # OTLP from the collector. The chart's default jaeger/opencensus receivers stay (its port templates
+  # OTLP from the collector. The chart's default jaeger receivers stay (its port templates
   # require them) but networkpolicy-tracing.yaml admits only 4317/4318 from the collector.
   receivers:
     otlp:
