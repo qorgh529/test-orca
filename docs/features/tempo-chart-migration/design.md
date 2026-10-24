@@ -267,7 +267,7 @@ tempo:
 
 Claude는 아래 순서대로 구현하고 각 단계마다 커밋한다. `[위험]` 표시가 있는 단계는 이번 작업에서는 실행하지 않으며, 향후 실행 시 반드시 사용자 컨펌을 먼저 받는다.
 
-- [ ] **Step 1: `k8s/tracing/tempo-values.yaml` 및 `scripts/deploy-all.sh` 차트 전환**
+- [x] **Step 1: `k8s/tracing/tempo-values.yaml` 및 `scripts/deploy-all.sh` 차트 전환** (`79ff409`)
   - `k8s/tracing/tempo-values.yaml`:
     - 상단 주석을 `grafana-community/tempo chart 3.2.1 (Tempo 3.1.1, single binary)` 기준으로 갱신한다.
     - `tempo.tag`를 `"2.9.0"`에서 `"3.1.1"`로 변경한다.
@@ -277,7 +277,7 @@ Claude는 아래 순서대로 구현하고 각 단계마다 커밋한다. `[위�
     - `helm repo add grafana https://grafana.github.io/helm-charts`를 `helm repo add grafana-community https://grafana-community.github.io/helm-charts`로 변경한다.
     - `helm upgrade --install tempo grafana/tempo --version 1.24.4 ...`를 `helm upgrade --install tempo grafana-community/tempo --version 3.2.1 ...`로 변경한다.
 
-- [ ] **Step 2: `scripts/validate-manifests.sh` 정적 검증 규칙 보강 및 `README.md` 업데이트**
+- [x] **Step 2: `scripts/validate-manifests.sh` 정적 검증 규칙 보강 및 `README.md` 업데이트** (`dacd604`)
   - `scripts/validate-manifests.sh`:
     - `tempo-values.yaml`의 `tempo.repository`와 `tempo.tag`가 고정된 이미지 태그 규칙(`check_image`)으로 검증되도록 추가한다(기존 `check_image`는 최상위 `image:` 키만 확인하므로 `tempo.repository` + `tempo.tag`도 검사).
     - `tempo-values.yaml`의 `tempo` 하위에 제거된 `memBallastSizeMbs` 키가 남아 있지 않은지 검증한다.
