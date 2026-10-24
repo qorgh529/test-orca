@@ -51,7 +51,7 @@ helm repo add kedacore https://kedacore.github.io/charts
 helm repo add external-secrets https://charts.external-secrets.io
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
 helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
-helm repo add grafana https://grafana.github.io/helm-charts
+helm repo add grafana-community https://grafana-community.github.io/helm-charts
 helm repo update
 
 echo "== Controllers on ng-critical (SAs with IRSA are created by eksctl)"
@@ -114,8 +114,8 @@ kubectl apply -f "$K/monitoring/servicemonitor-petclinic.yaml" -f "$K/monitoring
 
 echo "== Tracing (ng-platform): Tempo (S3 via IRSA SA monitoring/tempo) + OTel collector"
 kubectl apply -f "$K/tracing/networkpolicy-tracing.yaml" -f "$K/monitoring/dashboard-apm-tracing.yaml"
-helm upgrade --install tempo grafana/tempo \
-  --version 1.24.4 -n monitoring -f <(render "$K/tracing/tempo-values.yaml") --wait
+helm upgrade --install tempo grafana-community/tempo \
+  --version 3.2.1 -n monitoring -f <(render "$K/tracing/tempo-values.yaml") --wait
 helm upgrade --install otel-collector open-telemetry/opentelemetry-collector \
   --version 0.116.0 -n monitoring -f <(render "$K/tracing/otel-collector-values.yaml") --wait
 # After the monitoring stack: the operator-metrics ServiceMonitor needs its CRD (PetClinicKedaMetricsError).
