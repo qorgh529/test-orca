@@ -28,7 +28,7 @@
   - 현재 `scripts/deploy-all.sh`에서 `grafana` Helm 저장소(`https://grafana.github.io/helm-charts`)를 사용하는 컴포넌트는 `tempo` 하나뿐이다(Grafana 대시보드 UI는 `prometheus-community/kube-prometheus-stack`에 포함).
 - **버전 선택 근거 (`3.2.1` / Tempo `3.1.1`)**:
   1. **EKS `1.36` 기준 최신 안정 메이저 라인 유지**: `production-hardening`에서 수립한 원칙(서비스 오픈 전 업스트림 지원 버전으로 고정)에 따라 구 `2.x` 차트(`2.4.0`, Tempo `2.10.8`)에 머무르지 않고 현행 안정 릴리스인 차트 **`3.2.1`**(Tempo **`3.1.1`**)을 채택한다.
-  2. **Tempo 3.x 단일 바이너리(Monolithic) 호환성**: 차트 `3.0.0`부터 Tempo 3.x의 단일 프로세스 구성(`live_store`가 구 `ingester`를 대체하고, `backend_scheduler` + `backend_worker`가 구 `compactor`를 대체)으로 `ConfigMap`을 렌더링한다. 단일 바이너리 모드에서는 프로세스 내부 메모리로 데이터를 전달하므로 **외부 Kafka가 전혀 필요하지 않으며**, WAL 경로도 기존 `/var/tempo/wal` PVC를 그대로 사용한다.
+  2. **Tempo 3.x 단일 바이너리(Monolithic) 호환성**: 차트 `3.0.0`부터 Tempo 3.x의 단일 프로세스 구성(`live_store`가 구 `ingester`를 대체하고, `backend_scheduler` + `backend_worker`가 구 `compactor`를 대체)으로 `ConfigMap`을 렌더링한다. 단일 바이너리 모드에서는 프로세스 내부 메모리로 데이터를 전달하므로 **외부 Kafka가 전혀 필요하지 않다**. 차트 3.2.1은 `live_store` 블록을 렌더링하지 않으므로 Live-Store WAL은 Tempo 3.1.1 기본값 `/var/tempo/live-store/traces`(`live_store.wal.path`)를 쓴다. 이 경로도 같은 `storage` PVC(`/var/tempo`) 안이지만, 2.x ingester가 쓰던 `/var/tempo/wal`을 재사용·재생(replay)하지는 않는다(업그레이드 시 처리는 Step 3 참조).
   3. **`memBallastSizeMbs` 플래그 제거 해소**: Tempo 2.x 차트(`1.24.4`)는 기본값 `tempo.memBallastSizeMbs: 1024`로 인해 `-mem-ballast-size-mbs=1024` 인자를 주입하여 `1Gi` 메모리 한도에서 OOM 위험을 유발했기 때문에 `memBallastSizeMbs: 0` 오버라이드가 필요했다. Tempo 3.0부터 `-mem-ballast-size-mbs` CLI 플래그 자체가 삭제되었고 차트 `3.0.0`+의 `statefulset.yaml`에서도 해당 인자가 제거되었으므로, `k8s/tracing/tempo-values.yaml`에서 `memBallastSizeMbs: 0`을 깔끔하게 제거할 수 있다.
   4. **블록 보존 기간(`tempo.retention`) 적용 버그 수정 포함 (`3.2.0`+)**: 차트 `3.0.0`~`3.1.0`에서는 `tempo.retention`이 `backend_scheduler`에만 들어가고 실제 삭제를 수행하는 `backend_worker.compaction.block_retention`에는 기본값(`336h`)이 남는 버그(`grafana-community/helm-charts#855`)가 있었으나, **`3.2.0` / `3.2.1`에서 `tempo.retention` 값이 `backend_scheduler`와 `backend_worker` 양쪽의 `block_retention`으로 동시에 복사되도록 수정**되었다. 따라서 기존 `tempo.retention: ${TEMPO_RETENTION_HOURS}` 설정 한 줄로 S3 Lifecycle(`TEMPO_RETENTION_DAYS`)과의 보존 기간 정합성이 완벽히 유지된다.
   5. **불필요 레거시 포트 정리 및 Headless Service 보완**: 차트 `2.0.0`+(`3.2.1` 포함)에서 폐기된 OpenCensus(`:55678`) 포트가 제거되었고, `StatefulSet.spec.serviceName: tempo-headless`가 참조하는 `tempo-headless` Service(`prometheus.io/service-monitor: "false"` 포함)가 정식 템플릿으로 추가되어 Pod DNS 해석 무결성이 개선되었다.
@@ -123,7 +123,7 @@
 ```mermaid
 flowchart LR
     COL["OTel Collector"] -->|"OTLP gRPC :4317"| DIST["Distributor<br/>(in-process)"]
-    DIST --> LIVE["Live-Store<br/>(in-memory + /var/tempo/wal)"]
+    DIST --> LIVE["Live-Store<br/>(in-memory + /var/tempo/live-store/traces)"]
     LIVE -->|"Block Flush (HTTPS :443, IRSA)"| S3[("Amazon S3<br/>${TEMPO_S3_BUCKET_NAME}")]
     SCHED["Backend Scheduler<br/>(block_retention: ${TEMPO_RETENTION_HOURS})"] --> WORKER["Backend Worker<br/>(block_retention: ${TEMPO_RETENTION_HOURS})"]
     WORKER <-->|"Compaction & Retention Delete"| S3
@@ -257,7 +257,7 @@ tempo:
    - Egress는 `kube-dns`(`:53`)와 외부 S3/STS용 `:443`(단, EC2 IMDS `169.254.169.254/32`는 명시적 제외)만 허용하며, `tempo.reportingEnabled: false`로 설정하여 Grafana Labs로의 익명 사용량 전송을 차단한다.
 4. **컨테이너 및 파일시스템 하드닝**:
    - Pod 수준에서 `runAsNonRoot: true`, `runAsUser: 10001`, `runAsGroup: 10001`, `fsGroup: 10001`, `seccompProfile.type: RuntimeDefault`를 적용한다.
-   - 컨테이너 수준에서 `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true`, `capabilities.drop: [ALL]`을 강제한다. Tempo 3.1.1의 `live_store` WAL 및 로컬 블록 경로는 `/var/tempo`(`storage` PVC 마운트) 하위(`/var/tempo/wal`, `/var/tempo/traces`)만을 사용하므로 읽기 전용 루트 파일시스템에서 정상 동작한다.
+   - 컨테이너 수준에서 `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true`, `capabilities.drop: [ALL]`을 강제한다. Tempo 3.1.1의 Live-Store WAL(`/var/tempo/live-store/traces`, 기본값)과 로컬 블록 경로(`/var/tempo/traces`), `storage.trace.wal.path`(`/var/tempo/wal`)는 모두 `/var/tempo`(`storage` PVC 마운트) 하위이므로 읽기 전용 루트 파일시스템에서 동작할 것으로 본다. 실제 기동 확인은 Step 3 TC-1에서 한다(구현 단계에서 로컬 컨테이너 기동 검증은 rootless podman 제약으로 하지 못함).
 5. **차트 및 이미지 버전 고정 (Supply Chain Security)**:
    - `scripts/deploy-all.sh`에서 `--version 3.2.1`로 Helm 차트 버전을 고정하고, `k8s/tracing/tempo-values.yaml`에서 `tempo.repository: grafana/tempo`, `tempo.tag: "3.1.1"`로 컨테이너 이미지 태그를 명시적으로 고정한다(`:latest` 또는 빈 태그 금지).
 
@@ -291,6 +291,7 @@ Claude는 아래 순서대로 구현하고 각 단계마다 커밋한다. `[위�
 - [ ] **Step 3: [위험] 실클러스터 배포 및 E2E 트레이싱 검증 (이번 작업에서는 실행하지 않음)**
   - **주의**: 실제 AWS EKS 클러스터가 프로비저닝된 이후에만 사용자 컨펌을 받아 실행한다.
   - 기존 클러스터에 `grafana/tempo` `1.24.4`로 배포된 `StatefulSet/tempo`가 존재하는 경우, 차트 `1.24.4` → `3.2.1` 업그레이드 시 `StatefulSet.spec.VolumeClaimTemplates` 또는 `serviceName` 변경 여부를 사전 확인하고 필요 시 `helm upgrade --install tempo grafana-community/tempo --version 3.2.1 -n monitoring -f <(render k8s/tracing/tempo-values.yaml) --wait` (또는 `./scripts/deploy-all.sh`)를 실행한다.
+  - 기존 2.x 배포를 업그레이드하는 경우: Tempo 3.x Live-Store는 2.x ingester WAL(`/var/tempo/wal`)을 재생하지 않으므로, 업그레이드 직전 S3로 flush되지 않은 최근 트레이스는 유실될 수 있다. 업그레이드 전에 2.x Pod에 `POST /flush`(`:3200`)를 보내 flush하거나 그 구간 유실을 감수한다. 업그레이드 후 `/var/tempo/wal` 잔여 파일은 PVC 용량만 차지하므로 정리 여부를 확인한다. 현재 계정에는 클러스터가 없어 신규 설치면 해당 없음.
   - 배포 후 `docs/features/apm-tracing/design.md` §7의 TC-1 ~ TC-5(Tempo Pod `Ready`, IRSA S3 블록 업로드, OTLP 트레이스 수신, Grafana `:3200` 데이터소스 및 Exemplar 점프)를 검증한다.
 
 ---
