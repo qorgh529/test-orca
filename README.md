@@ -58,7 +58,7 @@
 | **Autoscaling** | Karpenter / KEDA / Metrics Server | Karpenter **`1.15.0`**, KEDA **`2.21.0`**, Metrics Server **`3.14.0`** |
 | **Secrets / Storage** | ESO / EBS CSI Driver | `external-secrets` **`2.13.0`** (`v1` API), `aws-ebs-csi-driver` (`${EBS_CSI_ADDON_VERSION}`) |
 | **Observability** | Prometheus Stack / Fluent Bit | `kube-prometheus-stack` **`92.11.0`** (Prometheus `v3.15.0`), `aws-for-fluent-bit` **`0.2.0`** (`3.2.1`) |
-| **Tracing** | OTel Operator / Collector / Java agent / Tempo | `opentelemetry-operator` **`0.105.0`** (`0.144.0`), `opentelemetry-collector` **`0.116.0`** (`otel/opentelemetry-collector-contrib:0.120.0`), `autoinstrumentation-java:2.12.0`, `tempo` **`1.24.4`** (`grafana/tempo:2.9.0`) |
+| **Tracing** | OTel Operator / Collector / Java agent / Tempo | `opentelemetry-operator` **`0.105.0`** (`0.144.0`), `opentelemetry-collector` **`0.116.0`** (`otel/opentelemetry-collector-contrib:0.120.0`), `autoinstrumentation-java:2.12.0`, `grafana-community/tempo` **`3.2.1`** (`grafana/tempo:3.1.1`) |
 | **Database / Backup** | Amazon RDS for MySQL / S3 | MySQL **`8.0.39`** (`db.t3.medium` Multi-AZ), `mysql:8.0.39`, `amazon/aws-cli:2.18.0` |
 
 ---
