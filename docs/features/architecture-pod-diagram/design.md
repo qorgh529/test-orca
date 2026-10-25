@@ -283,3 +283,5 @@ Pod 라벨 형식: **`<Pod/워크로드 이름> ×<레플리카>`** (굵게) + �
 
 ## 구현 중 질문
 
+- (Claude, Step 2 확인 결과 — 질문 아님) 차트 기본값을 공개 values로 대조했고 표와 같음: LBC 3.6.1 `replicaCount: 2`, Karpenter 1.15.0 `replicas: 2`(zone topologySpread 기본), KEDA 2.21.0 operator·metricsServer·webhooks 각 1, ESO 2.13.0 컨트롤러·webhook·certController 각 1, metrics-server 3.14.0 `replicas: 1`, EBS CSI 차트 controller `replicaCount: 2`·node `tolerateAllTaints: true` → `ebs-csi-node` 는 모든 노드 DaemonSet 띠에 그대로 둠. LBC는 zone 분산 제약 없이 레플리카 2라 D3 기준으로는 "AZ 비고정"에 가깝지만 표대로 2a+2c로 그림
+- (Claude, Step 7) 이 서버에는 디스플레이가 없고 Xvfb는 sudo 필요·EL10 저장소에 없음, draw.io 데스크톱 32.3.0 Electron headless는 segfault, podman은 newuidmap 오류 → 사용자 결정으로 **SVG·PNG는 사용자가 draw.io 데스크톱에서 직접 내보낸다**(Embedded XML 포함). Step 8의 SVG 관련 검사와 Step 9 육안 검토는 내보낸 파일을 받은 뒤 진행
