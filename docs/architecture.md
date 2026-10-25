@@ -51,17 +51,19 @@
 ├── README.md                             # 프로젝트 아키텍처 개요, 빠른 시작 가이드 및 Day-2 운영 런북
 ├── docs/
 │   ├── architecture.md                   # 시스템 전체 아키텍처 현황 (본 문서)
-│   ├── architecture.drawio               # 공식 AWS 아이콘 기반 아키텍처 다이어그램 원본
-│   ├── architecture.drawio.{svg,png}     # 내보낸 다이어그램 이미지 (Embedded XML 포함)
+│   ├── architecture.drawio               # AWS·Kubernetes 공식 아이콘 기반 Pod 단위 아키텍처 다이어그램 원본 (AZ × 서브넷 격자, 노드별 Pod 배치, K8s 리소스 행, 범례)
+│   ├── architecture.drawio.{svg,png}     # 내보낸 다이어그램 이미지 (Embedded XML 포함, draw.io 데스크톱에서 내보냄)
 │   ├── design.md                         # 초기 구축 설계서
 │   ├── review.md                         # 코드 리뷰 기록
 │   ├── security.md                       # 보안·인프라 점검 기록
 │   ├── daily/                            # 조율 에이전트 일일 작업 기록 (TEMPLATE.md, YYYY-MM-DD.md)
+│   ├── archive/                          # 이전 다이어그램 백업 (architecture-2026-10-24.drawio{,.svg,.png} — Pod 상세화 이전 개요도)
 │   └── features/                         # 기능 브랜치별 설계·리뷰·보안 점검 기록
 │       ├── production-hardening/{design,review,security}.md
 │       ├── daily-stop-start/{design,review,security}.md
 │       ├── apm-tracing/{design,review,security}.md
-│       └── tempo-chart-migration/{design,review,security}.md
+│       ├── tempo-chart-migration/{design,review,security}.md
+│       └── architecture-pod-diagram/design.md   # 다이어그램 Pod 단위 상세화 설계 (Pod 배치 표, 선 규칙)
 ├── app/                                  # spring-framework-petclinic 소스 코드
 │   ├── pom.xml                           # Maven WAR 빌드, MySQL/PostgreSQL/H2/HSQLDB 프로필
 │   └── src/
@@ -158,6 +160,12 @@
 > 원본 파일: [`docs/architecture.drawio`](./architecture.drawio) · 편집 가능 이미지(Embedded XML): [`docs/architecture.drawio.svg`](./architecture.drawio.svg) / [`docs/architecture.drawio.png`](./architecture.drawio.png)
 
 ![AWS EKS 기반 Spring Framework PetClinic 아키텍처](./architecture.drawio.svg)
+
+**다이어그램 읽는 법**
+- **선 종류**: 실선 = 사용자 요청 경로(①~⑥, 남색 stable / 주황 canary), 자홍 점선 = 관측(메트릭·트레이스·로그), 회색 점선 = 생성·설정·권한(컨트롤, RDS Multi-AZ 동기 복제 포함).
+- **배치**: VPC를 `2a` / `2c` 두 열 × 퍼블릭·앱 프라이빗·DB 프라이빗 서브넷 행으로 나누고, EKS 클러스터 안에 AZ별 노드 박스(`np-app`/`np-app-spot`, `ng-critical`, `ng-platform`)와 그 위의 Pod를 `이름 ×기본 레플리카 (종류)` 로 그린다. 배치는 `k8s/`·`infra/`·`scripts/deploy-all.sh` 기준의 의도된 배치이며 실클러스터 조회 결과가 아니다.
+- **AZ 표기**: 레플리카 2개 이상이면서 zone 분산 제약이 있는 워크로드는 두 AZ에 1개씩 그린다. `AZ 비고정` 이 붙은 Pod(레플리카 1개이거나 AZ 제약 없음)는 그려진 AZ가 예시 위치다.
+- **경로 단순화**: ③→④→⑤는 같은 AZ 안에서 세로로 그렸지만 실제 Service 로드밸런싱은 AZ를 넘을 수 있다. 모든 노드에 뜨는 DaemonSet(`aws-node`, `kube-proxy`, `ebs-csi-node`, `prometheus-node-exporter`, `aws-for-fluent-bit`)은 클러스터 안 띠 하나에 모아 그리고, 클러스터 하단에 주요 K8s 리소스(Ingress·Gateway·HTTPRoute·Service·HPA·ScaledObject·ConfigMap·Secret·ExternalSecret·PVC 등, CRD는 `crd` 아이콘)를 AZ 열별 두 상자로 나눠 둔다. 선이 Pod 라벨을 가로지르지 않도록 NGF 컨트롤 플레인 → 데이터 플레인 설정 배포, ESO → Secret, EBS CSI → PVC, OTel Operator → `was` 주입 경로는 선 대신 Pod 설명(또는 라벨 없는 선)으로 표시한다.
 
 ### 단계별 트래픽, 분산 트레이싱 및 제어 흐름 (① ~ ⑥)
 1. **① DNS 조회**: 사용자 브라우저가 서비스 도메인 질의 시 **Amazon Route 53**에서 ALB의 A(Alias) 레코드를 반환한다.
@@ -310,3 +318,7 @@
 - `apm-tracing`: 듀얼 Java Agent(JMX Exporter + OTel Java Agent) 주입에 맞춰 `was-stable`/`was-canary`의 메모리를 `1280Mi`(Request) / `2Gi`(Limit), `-XX:MaxRAMPercentage=65.0`, `readinessProbe.initialDelaySeconds: 20`으로 조정함 / OTel Agent의 Non-Heap(Metaspace·CodeCache·OTLP 배치 버퍼) 증가로 인한 cgroup `OOMKilled` 및 바이트코드 변환 중 조기 Readiness 실패를 방지하기 위함
 - `tempo-chart-migration`: deprecated 처리된 `grafana/tempo` `1.24.4`(`grafana/tempo:2.9.0`)를 업스트림 이관 저장소의 `grafana-community/tempo` `3.2.1`(`grafana/tempo:3.1.1`)로 교체하고 Tempo 3.0에서 삭제된 `-mem-ballast-size-mbs` 플래그 오버라이드(`memBallastSizeMbs: 0`)를 제거함 / 업스트림 지원이 중단된 차트 경고를 해소하고, `backend_scheduler`와 `backend_worker` 양쪽에 `block_retention`(`${TEMPO_RETENTION_HOURS}`)이 동시에 반영되는 차트 `3.2.1`로 S3 Lifecycle 보존 기간 정합성을 유지하기 위함
 - `tempo-chart-migration`: Tempo 3.x 전환 시 마이크로서비스 차트(`tempo-distributed`)로 분리하지 않고 단일 바이너리(`grafana-community/tempo`, `replicas: 1`) 구성을 유지함 / SDK 10% 헤드 샘플링 기준 유입량이 초당 수십~수백 스팬 수준으로 단일 프로세스 처리 용량 내에 충분하며, `tempo-distributed`가 필수로 요구하는 외부 Kafka 클러스터 및 6종 이상의 컴포넌트 분리로 인한 `ng-platform` 노드 증설·운영 복잡도를 방지하기 위함
+- `architecture-pod-diagram`: 아키텍처 다이어그램을 다중 페이지로 분리하지 않고 단일 페이지(`2400 × 1800`) 내에서 Pod 단위 상세화로 전면 개편하며 기존 다이어그램은 `docs/archive/`에 백업함 (D1) / `docs/architecture.md`는 단일 SVG 임베드 구조이므로 다중 페이지 분리 시 상세 배치가 문서에 보이지 않으며, 백업 보존으로 변경 이력을 온전히 추적할 수 있기 때문
+- `architecture-pod-diagram`: 레플리카 2개 이상이면서 AZ 분산 제약(topologySpreadConstraints/anti-affinity)이 있는 워크로드는 `2a`와 `2c`에 1개씩 배치하고, 레플리카 1개이거나 AZ 제약이 없는 Pod는 특정 노드에 배치하되 `· AZ 비고정` 표기를 명시함 (D3) / 실제 스케줄러 위치가 고정되지 않은 Pod를 특정 AZ에 고정된 것으로 오인하지 않도록 사실에 부합하게 표현하기 위함
+- `architecture-pod-diagram`: ① DNS 조회 및 ④ 카나리 트래픽(10% 및 `X-Canary`)을 포함한 모든 사용자 요청 데이터 경로를 번호(①~⑥)가 부여된 실선으로 통일하고, 점선은 컨트롤(생성·설정·권한) 및 관측(메트릭·트레이스·로그) 전용으로 정립함 (D5, D6) / 이전 다이어그램에서 카나리/DNS가 점선으로 혼용되어 제어·수집 경로와 의미 충돌이 발생하던 문제를 해결하고 데이터 흐름의 시인성을 높이기 위함
+- `architecture-pod-diagram`: 전 노드 DaemonSet 5종은 노드 박스마다 반복하지 않고 클러스터 공통 가로 띠로 일원화하고, K8s 리소스 행은 통로 확보를 위해 AZ 열별 두 상자로 분리 배치함 (D4) / 6개 노드에 30개 이상의 중복 아이콘 배치를 피해 다이어그램 가독성을 유지하고, 선이 Pod 라벨을 가로지르지 않는 정돈된 라우팅 경로를 확보하기 위함
