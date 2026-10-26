@@ -7,6 +7,7 @@
 #   7. tracing: placement, IRSA-only Tempo (grafana-community chart, pinned image), was agent injection / service.version / resources
 #   8. codebuild: buildspec tag guards + linux/amd64, least-privilege service role policy, .env.example variables,
 #      source/backup/Tempo bucket isolation guard, tests/scripts/build-and-push.test.sh
+#   9. MySQL 8.4: RDS engine + mysql8.4 parameter group, db job client images, Connector/J (docs/features/rds-mysql-84)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
@@ -355,6 +356,19 @@ env_example = (root / ".env.example").read_text(encoding="utf-8")
 for v in ("CODEBUILD_PROJECT_NAME", "CODEBUILD_S3_BUCKET_NAME"):
     if not re.search(rf"^{v}=", env_example, re.M):
         err(f".env.example: missing {v}")
+
+# 9. MySQL 8.4 LTS everywhere (docs/features/rds-mysql-84/design.md): 8.0 is past standard support.
+MYSQL = "8.4.11"
+if f"--engine-version {MYSQL}" not in prov or "--db-parameter-group-family mysql8.4" not in prov:
+    err(f"provision-aws-resources.sh: RDS must use --engine-version {MYSQL} and parameter group family mysql8.4")
+if "require_secure_transport,ParameterValue=ON" not in prov:
+    err("provision-aws-resources.sh: RDS parameter group must keep require_secure_transport=ON")
+for job in ("k8s/jobs/job-db-init.yaml", "k8s/jobs/cronjob-db-backup.yaml"):
+    imgs = re.findall(r"image:\s*(mysql:\S+)", (root / job).read_text(encoding="utf-8"))
+    if not imgs or any(i != f"mysql:{MYSQL}" for i in imgs):
+        err(f"{job}: mysql client image must be mysql:{MYSQL} (got {imgs})")
+if not re.search(r"<mysql-driver\.version>8\.4\.\d+</mysql-driver\.version>", pom):
+    err("app/pom.xml: mysql-driver.version must be Connector/J 8.4.x")
 
 if errors:
     print("\n".join("FAIL " + e for e in errors))
