@@ -9,7 +9,7 @@
   - NGINX Gateway Fabric(NGF) `Gateway` 및 `HTTPRoute`를 이용한 L7 라우팅과 헤더(`X-Canary: always`) 검증 통과 후 100:0 → 90:10으로 여는 가중치 기반 카나리(Canary) 트래픽 분할
   - `web`(Nginx 1.27 정적 서빙 + 리버스 프록시)과 `was`(Tomcat 11 언패킹 WAR + JMX Exporter + OpenTelemetry Java Agent 무코드 자동 주입) 2-Tier 분리 및 각각 CPU 기반 HPA / Prometheus 요청률 기반 KEDA 오토스케일링
   - 3-Tier 노드 분리: `np-app`(Karpenter On-Demand 기본 풀 + `np-app-spot` Spot 확장 풀), `ng-critical`(클러스터 컨트롤러·OpenTelemetry Operator 및 DB 초기화/백업 Job 전용 관리형 노드 그룹), `ng-platform`(모니터링·분산 트레이싱 스택 및 `gp3` PVC 전용 관리형 노드 그룹)
-  - 프라이빗 DB 서브넷의 RDS MySQL 8.0 Multi-AZ(Primary/Standby 동기 복제), S3 암호화 백업(`CronJob`), 역할별 DB 계정(admin/app/backup) 분리, AWS Secrets Manager + External Secrets Operator(ESO) 기반 시크릿 동기화
+  - 프라이빗 DB 서브넷의 RDS MySQL 8.4 LTS Multi-AZ(Primary/Standby 동기 복제), S3 암호화 백업(`CronJob`), 역할별 DB 계정(admin/app/backup) 분리, AWS Secrets Manager + External Secrets Operator(ESO) 기반 시크릿 동기화
   - OpenTelemetry(Operator · Java Agent · Collector) + Grafana Tempo(전용 S3 버킷 IRSA 연동) 기반 분산 트레이싱(SDK 10% 헤드 샘플링), 100% 전수 RED 메트릭(`http_server_request_duration_seconds`) 및 Trace-based Exemplar(`trace_id`) 점프, Logback MDC(`trace_id`/`span_id`) 로그 상관분석
   - 업무 외 시간 비용 절감을 위한 일일 리소스 중지·기동 스크립트(`scripts/daily-stop.sh`, `scripts/daily-start.sh` — Karpenter 앱 노드, EKS 관리형 노드 그룹, RDS MySQL 일괄 제어 및 잔여 비용 안내)
   - AWS CodeBuild 기반 컨테이너 이미지 온디맨드 빌드 및 ECR 푸시 파이프라인(`scripts/build-and-push.sh`, `buildspec.yml` — 작업 서버의 rootless 컨테이너 제약을 격리하고 표준 클라우드 환경에서 `web`/`was` 멀티스테이지 이미지를 `linux/amd64`로 빌드·푸시, 전용 S3 소스 버킷 1일 만료, 최소 권한 IAM Role, 불변 태그 중복 차단 및 `latest` 금지)
@@ -37,7 +37,7 @@
 | **DB Jobs** | `db-init` (Job), `db-backup` (CronJob) | 배포 시 admin 계정으로 멱등 스키마/초기 데이터 적재(`schema.sql`, `data.sql`) 및 app/backup 계정 생성·권한 부여, 매일 03:00 KST `mysqldump` 압축본을 S3(`SSE-KMS`)에 업로드 | `petclinic` / `ng-critical` (Taint: `node-role=critical:NoSchedule`) |
 | **Observability & Tracing** | Prometheus, Grafana, Alertmanager, OTel Collector, Grafana Tempo, kube-state-metrics, node-exporter, Fluent Bit | `ServiceMonitor` 기반 `web`(`:9113`)·`was`(`:9404`)·`otel-collector`(`:8889`, OpenMetrics Exemplar) 스크래핑, KEDA 스케일링 쿼리 제공, `gp3` 암호화 볼륨 영속화, Prometheus 2 Replicas(`exemplar-storage` 활성화) AZ 분산, `PrometheusRule` → Alertmanager Webhook. OTel Collector(2 Replicas AZ 분산, `:4317`/`:4318` 수신)는 트레이스를 Tempo(`:4317` 수신, `:3200` 쿼리, `gp3` 10Gi WAL + 전용 S3 IRSA)로 전달하고 RED 메트릭+Exemplar를 `:8889`로 노출. `node-exporter` 및 Fluent Bit DaemonSet은 전 노드에서 메트릭·컨테이너 로그(→ CloudWatch Logs) 수집 | `monitoring` (`ng-platform`, Taint: `node-role=platform:NoSchedule`; `node-exporter`는 전 노드 Toleration) / `amazon-cloudwatch` (Fluent Bit 전 노드 Toleration) |
 | **Build & CI/CD** | AWS CodeBuild Project (`${CODEBUILD_PROJECT_NAME}`), S3 소스 버킷(`${CODEBUILD_S3_BUCKET_NAME}`), Service Role (`CodeBuildServiceRole-${EKS_CLUSTER_NAME}`) | 작업 서버(LXC)의 rootless podman 제약 없이 AWS 관리형 x86_64(`BUILD_GENERAL1_MEDIUM`, `privilegedMode: true`) 환경에서 Docker in Docker로 `web`/`was` 멀티스테이지 컨테이너 이미지를 `linux/amd64`로 빌드하여 ECR에 푸시. 불변 태그 중복 사전 검증, `latest` 차단, 실행별 고유 S3 소스 키 및 1일 만료 수명주기 적용 | AWS 관리형 (`ap-northeast-2`) |
-| **Data / Storage / Registry** | RDS MySQL 8.0, Secrets Manager, S3 (백업·Tempo·CodeBuild 소스 3개 버킷), ECR | Multi-AZ Primary/Standby RDB(`require_secure_transport=ON`), RDS(admin/app/backup)·Grafana·Alertmanager Webhook 시크릿 보관, DB 백업 버킷(`BACKUP_S3_BUCKET_NAME`, 버전 관리), Tempo 트레이스 전용 버킷(`TEMPO_S3_BUCKET_NAME`, 만료 Lifecycle), CodeBuild 소스 아카이브 버킷(`CODEBUILD_S3_BUCKET_NAME`, 1일 만료 Lifecycle; 3개 버킷 상호 이름 격리 검증), 불변 태그(`IMMUTABLE`) 및 KMS 암호화 컨테이너 레지스트리 | 프라이빗 DB 서브넷 (`2a`, `2c`) 및 AWS 관리형 서비스 |
+| **Data / Storage / Registry** | RDS MySQL 8.4 LTS, Secrets Manager, S3 (백업·Tempo·CodeBuild 소스 3개 버킷), ECR | Multi-AZ Primary/Standby RDB(`8.4.11`, `mysql8.4` 파라미터 그룹, `require_secure_transport=ON`), RDS(admin/app/backup)·Grafana·Alertmanager Webhook 시크릿 보관, DB 백업 버킷(`BACKUP_S3_BUCKET_NAME`, 버전 관리), Tempo 트레이스 전용 버킷(`TEMPO_S3_BUCKET_NAME`, 만료 Lifecycle), CodeBuild 소스 아카이브 버킷(`CODEBUILD_S3_BUCKET_NAME`, 1일 만료 Lifecycle; 3개 버킷 상호 이름 격리 검증), 불변 태그(`IMMUTABLE`) 및 KMS 암호화 컨테이너 레지스트리 | 프라이빗 DB 서브넷 (`2a`, `2c`) 및 AWS 관리형 서비스 |
 
 ---
 
@@ -68,7 +68,8 @@
 │       ├── apm-tracing/{design,review,security}.md
 │       ├── tempo-chart-migration/{design,review,security}.md
 │       ├── architecture-pod-diagram/design.md   # 다이어그램 Pod 단위 상세화 설계 (Pod 배치 표, 선 규칙)
-│       └── codebuild-image-build/{design,review,security}.md  # CodeBuild 기반 컨테이너 이미지 빌드·푸시 설계·리뷰·보안 점검
+│       ├── codebuild-image-build/{design,review,security}.md  # CodeBuild 기반 컨테이너 이미지 빌드·푸시 설계·리뷰·보안 점검
+│       └── rds-mysql-84/{design,review,security}.md           # RDS MySQL 8.4 LTS 전환 설계·리뷰·보안 점검
 ├── app/                                  # spring-framework-petclinic 소스 코드
 │   ├── pom.xml                           # Maven WAR 빌드, MySQL/PostgreSQL/H2/HSQLDB 프로필
 │   └── src/
@@ -89,7 +90,7 @@
 │       └── setenv.sh                     # JMX Exporter -javaagent:9404 및 JDBC 드라이버 프로퍼티 설정
 ├── infra/
 │   ├── aws/
-│   │   ├── provision-aws-resources.sh    # pre-cluster(IAM/ECR/Logs/백업·Tempo·CodeBuild S3 [버킷 이름 격리 검증]/CodeBuild 프로젝트/WAF/ACM), cluster(eksctl + 누락 IRSA SA 보충), post-cluster(RDS/Secrets) 멱등 프로비저닝
+│   │   ├── provision-aws-resources.sh    # pre-cluster(IAM/ECR/Logs/백업·Tempo·CodeBuild S3 [버킷 이름 격리 검증]/CodeBuild 프로젝트/WAF/ACM), cluster(eksctl + 누락 IRSA SA 보충), post-cluster(RDS MySQL 8.4.11 Multi-AZ [mysql8.4 파라미터 그룹]/Secrets) 멱등 프로비저닝
 │   │   └── iam-policies/                 # lbc, karpenter-controller, karpenter-node-trust, eso, fluent-bit, db-backup, tempo, codebuild 최소 권한 JSON 및 codebuild-trust.json
 │   ├── eksctl/
 │   │   └── cluster.yaml                  # EKS 1.36 ClusterConfig (VPC 서브넷, IRSA [monitoring/tempo 포함], vpc-cni NetworkPolicy, EBS CSI 버전 고정, ng-critical, ng-platform)
@@ -105,8 +106,8 @@
 │   │   ├── secretstore.yaml              # ESO SecretStore (AWS Secrets Manager 연동)
 │   │   └── externalsecret-rds.yaml       # Secrets Manager → admin/app/backup 역할별 3개 시크릿 동기화 (sslMode=REQUIRED 포함)
 │   ├── jobs/
-│   │   ├── job-db-init.yaml              # admin 계정으로 schema/data 적재 + app/backup 계정 생성·최소 권한 부여 Job (ng-critical, REQUIRE SSL)
-│   │   └── cronjob-db-backup.yaml        # 일일 mysqldump(backup 계정) → S3(SSE-KMS) 업로드 CronJob (ng-critical, IRSA db-backup)
+│   │   ├── job-db-init.yaml              # admin 계정으로 schema/data 적재 + app/backup 계정 생성·최소 권한 부여 Job (ng-critical, mysql:8.4.11, REQUIRE SSL)
+│   │   └── cronjob-db-backup.yaml        # 일일 mysqldump(backup 계정) → S3(SSE-KMS) 업로드 CronJob (ng-critical, mysql:8.4.11, IRSA db-backup)
 │   ├── web/
 │   │   ├── deployment.yaml               # web(→was-stable) 및 web-canary(→was-canary) Deployment + nginx-exporter 사이드카
 │   │   ├── service.yaml                  # web, web-canary Service (:80→:8080, :9113)
@@ -188,9 +189,9 @@
    - Java Agent는 `parentbased_traceidratio`(`${OTEL_TRACES_SAMPLER_ARG}`, 기본 `0.1` = 10%)로 헤드 샘플링된 HTTP·Spring MVC·Hibernate/JDBC 트레이스 스팬과, 샘플링 없이 **100% 전수 집계된 RED 메트릭**(`http.server.request.duration` + 샘플링된 트레이스에 한해 부착되는 `trace_based` Exemplar `trace_id`)을 OTLP HTTP(`:4318`)로 `ng-platform`의 **OpenTelemetry Collector**(2 Replicas AZ 분산)에 전송한다.
    - **OpenTelemetry Collector**는 `memory_limiter` → `batch` 처리 후 트레이스를 **Grafana Tempo**(`:4317` OTLP gRPC)로 전달하고, RED 메트릭과 Exemplar는 Prometheus Exporter(`:8889/metrics`, `enable_open_metrics: true`, `resource_to_telemetry_conversion.enabled: true`)로 노출하여 **Prometheus**(`enableFeatures: [exemplar-storage]`, `OpenMetricsText1.0.0`)가 스크래핑한다.
    - **Grafana Tempo**(단일 바이너리)는 Live-Store 로컬 WAL(`gp3` 10Gi PVC `/var/tempo`)을 거쳐 IRSA(`monitoring/tempo`)로 전용 **Amazon S3** 버킷(`${TEMPO_S3_BUCKET_NAME}`)에 트레이스 블록을 적재하고 `backend_scheduler`·`backend_worker`로 보존 기간(`${TEMPO_RETENTION_HOURS}`)을 관리하며, **Grafana**의 `PetClinic APM - Service & Canary Tracing` 대시보드(`service_version="stable|canary"`별 요청량·5xx 에러율·p95/p99 지연)에서 Exemplar 점(Dot)을 클릭하면 `trace_id`로 Tempo(`:3200`)의 해당 트레이스 워터폴로 즉시 이동한다.
-6. **⑥ `was` 및 DB 관리 워크로드 → RDS MySQL 8.0 (`:3306` TLS)**:
-   - `was`는 **ESO**가 **AWS Secrets Manager**에서 동기화한 app 계정 시크릿 `petclinic-rds-secret`(SELECT/INSERT/UPDATE/DELETE 권한)을 주입받아 프라이빗 DB 서브넷의 **RDS MySQL Primary**에 TLS(`require_secure_transport=ON`, `sslMode=REQUIRED`)로 연결한다.
-   - `ng-critical`의 `db-init` Job은 admin 계정 시크릿(`petclinic-rds-admin-secret`)으로 스키마·초기 데이터를 적재하고 app/backup 계정을 생성하며, `db-backup` CronJob은 읽기 전용 backup 계정 시크릿(`petclinic-rds-backup-secret`)으로 일일 `mysqldump` 후 **Amazon S3** 백업 버킷(`BACKUP_S3_BUCKET_NAME`, `SSE-KMS`)에 업로드한다. 모두 TLS로만 연결한다.
+6. **⑥ `was` 및 DB 관리 워크로드 → RDS MySQL 8.4 LTS (`:3306` TLS)**:
+   - `was`는 **ESO**가 **AWS Secrets Manager**에서 동기화한 app 계정 시크릿 `petclinic-rds-secret`(SELECT/INSERT/UPDATE/DELETE 권한)을 주입받아 프라이빗 DB 서브넷의 **RDS MySQL Primary**에 TLS(`require_secure_transport=ON`, `sslMode=REQUIRED`)로 연결한다 (`caching_sha2_password` 기본 인증, Connector/J `8.4.0`).
+   - `ng-critical`의 `db-init` Job(`mysql:8.4.11`)은 admin 계정 시크릿(`petclinic-rds-admin-secret`)으로 스키마·초기 데이터를 적재하고 app/backup 계정을 생성(`caching_sha2_password` 및 `REQUIRE SSL`)하며, `db-backup` CronJob(`mysql:8.4.11`)은 읽기 전용 backup 계정 시크릿(`petclinic-rds-backup-secret`)으로 일일 `mysqldump` 후 **Amazon S3** 백업 버킷(`BACKUP_S3_BUCKET_NAME`, `SSE-KMS`)에 업로드한다. 모두 TLS로만 연결한다.
    - `was`는 ConfigMap(`petclinic-was-logback`)을 `/etc/petclinic-logging/logback.xml`로 마운트하여 컨테이너 표준 출력 로그에 `[trace_id=... span_id=...]`를 함께 기록하며, 모든 노드의 컨테이너 로그와 RDS 에러/슬로우쿼리 로그는 **Fluent Bit DaemonSet** 및 RDS 로그 내보내기를 통해 **Amazon CloudWatch Logs**로 수집된다.
 
 ### 일일 리소스 중지·기동 제어 흐름 (`scripts/daily-stop.sh` · `scripts/daily-start.sh`)
@@ -260,14 +261,14 @@ sequenceDiagram
 | **Build Target Architecture** | Docker Platform | `linux/amd64` (x86_64) |
 | **Web Container** | Nginx + Exporter Sidecar | `nginx:1.27.2-alpine`, `nginx/nginx-prometheus-exporter:1.3.0` |
 | **WAS Container** | Apache Tomcat 11 + JMX Exporter + OTel Java Agent | `tomcat:11.0.2-jre21-temurin-noble`, `jmx_prometheus_javaagent:1.0.1`, `autoinstrumentation-java:2.12.0` (init container 주입) |
-| **DB Jobs** | MySQL Client / AWS CLI | `mysql:8.0.39`, `amazon/aws-cli:2.18.0` |
+| **DB Jobs** | MySQL Client / AWS CLI | `mysql:8.4.11`, `amazon/aws-cli:2.18.0` |
 | **Kubernetes** | Amazon EKS | `1.36` (AL2023 AMI `al2023@v20260930`, 새 클러스터 생성 기준) |
 | **Gateway API** | Gateway API CRDs / NGF | CRDs `v1.6.3` (standard), `nginx-gateway-fabric` Helm `2.8.0` |
 | **Autoscaling** | Karpenter / KEDA / Metrics Server | Karpenter `1.15.0` (+ `karpenter-crd`), KEDA `2.21.0`, Metrics Server Helm `3.14.0` (`v0.9.0`) |
 | **Ingress / Storage / Secrets** | LBC / EBS CSI / ESO | `aws-load-balancer-controller` Helm `3.6.1` (`v3.6.1`), `aws-ebs-csi-driver` `${EBS_CSI_ADDON_VERSION}`(환경별 고정), `external-secrets` `2.13.0` (API `v1`) |
 | **Observability** | kube-prometheus-stack / Fluent Bit | `kube-prometheus-stack` `92.11.0` (Prometheus `v3.15.0` `exemplar-storage`, Grafana 차트 `14.0.1`), `aws-for-fluent-bit` Helm `0.2.0` (이미지 `3.2.1`) |
 | **APM Tracing** | OpenTelemetry Operator / Collector / Grafana Tempo | `opentelemetry-operator` Helm `0.105.0` (`0.144.0`, `kube-rbac-proxy:v0.20.0`), `opentelemetry-collector` Helm `0.116.0` (`otel/opentelemetry-collector-contrib:0.120.0`), `grafana-community/tempo` Helm `3.2.1` (`grafana/tempo:3.1.1`) |
-| **Database** | Amazon RDS for MySQL | `8.0.39` (`db.t3.medium`, Multi-AZ, `gp3` 20GB 암호화) |
+| **Database** | Amazon RDS for MySQL | `8.4.11` LTS (`db.t3.medium`, Multi-AZ, `gp3` 20GB 암호화, `mysql8.4` 파라미터 그룹) |
 
 ### 5.2 클러스터 노드 그룹 및 NodePool 구성
 
@@ -299,7 +300,7 @@ sequenceDiagram
 
 - **AWS 관리형 서비스**:
   - **AWS CodeBuild (`${CODEBUILD_PROJECT_NAME}`)**: 온디맨드 컨테이너 이미지 빌드 서비스 (`BUILD_GENERAL1_MEDIUM`, Docker in Docker, AL2023/x86_64 표준 컨테이너 환경, 전용 CloudWatch Logs 그룹 `/aws/codebuild/${CODEBUILD_PROJECT_NAME}` 보존 기간 30일)
-  - **Amazon RDS for MySQL (`8.0.39`)**: 애플리케이션 영속 데이터 저장소 (`:3306`, Multi-AZ, `require_secure_transport=ON`, `error`/`slowquery` CloudWatch 로그 내보내기, 삭제 보호 활성화, 일일 중지 후 7일 경과 시 AWS 정책에 따라 자동 재시작)
+  - **Amazon RDS for MySQL (`8.4.11` LTS)**: 애플리케이션 영속 데이터 저장소 (`:3306`, Multi-AZ, `mysql8.4` 파라미터 그룹, `require_secure_transport=ON`, `error`/`slowquery` CloudWatch 로그 내보내기, 삭제 보호 활성화, 일일 중지 후 7일 경과 시 AWS 정책에 따라 자동 재시작)
   - **AWS Secrets Manager**: RDS 계정별 접속 정보(`$RDS_SECRET_NAME` admin, `$RDS_APP_SECRET_NAME` app, `$RDS_BACKUP_SECRET_NAME` backup), Grafana 관리자 자격증명(`$GRAFANA_ADMIN_SECRET_NAME`), Alertmanager Webhook URL(`$ALERTMANAGER_WEBHOOK_SECRET_NAME`) 보관
   - **Amazon S3**:
     - **DB 백업 버킷 (`$BACKUP_S3_BUCKET_NAME`)**: `db-backup` CronJob의 `mysqldump` 백업 파일 저장소 (퍼블릭 액세스 완전 차단, SSE-KMS 기본 암호화, 버전 관리 활성화)
@@ -310,7 +311,7 @@ sequenceDiagram
   - **알림 수신처 (Webhook)**: Alertmanager가 HTTPS(`443`)로 알림을 전송하는 Slack/PagerDuty 등 외부 Webhook
   - **Amazon Route 53 / AWS Certificate Manager (ACM) / AWS WAFv2**: DNS 관리, DNS 검증 기반 TLS 인증서, 리전 WebACL(`AWSManagedRulesCommonRuleSet`, `AWSManagedRulesSQLiRuleSet`, `AWSManagedRulesKnownBadInputsRuleSet`)
 - **외부 아티팩트 / Helm 차트 레지스트리 (빌드·배포 시점)**:
-  - Maven Central (`com.mysql:mysql-connector-j:8.1.0`, `io.prometheus.jmx:jmx_prometheus_javaagent:1.0.1` SHA256 검증 포함, WebJars)
+  - Maven Central (`com.mysql:mysql-connector-j:8.4.0`, `io.prometheus.jmx:jmx_prometheus_javaagent:1.0.1` SHA256 검증 포함, WebJars)
   - GitHub Releases / GHCR (`gateway-api` `v1.6.3` `standard-install.yaml`, `ghcr.io/open-telemetry/opentelemetry-operator/{opentelemetry-operator:0.144.0,autoinstrumentation-java:2.12.0}`)
   - Helm / OCI 레지스트리 (`eks-charts`, `metrics-server`, `kedacore`, `external-secrets`, `prometheus-community`, `open-telemetry`, `grafana-community`, `oci://public.ecr.aws/karpenter/karpenter`, `oci://ghcr.io/nginx/charts/nginx-gateway-fabric`)
 
@@ -321,7 +322,7 @@ sequenceDiagram
 1. **엣지 및 전송 구간 암호화 (TLS Everywhere)**:
    - 외부 트래픽은 ALB에서 ACM 인증서(`ELBSecurityPolicy-TLS13-1-2-2021-06`)로 TLS 종단하며 HTTP(`80`)는 HTTPS(`443`)로 강제 리다이렉트한다.
    - ALB에 `routing.http.drop_invalid_header_fields.enabled=true` 및 AWS WAFv2 WebACL을 적용하고, Nginx(`web`)에서 `server_tokens off`와 보안 응답 헤더(`X-Content-Type-Options: nosniff`, `X-Frame-Options: SAMEORIGIN`, `Referrer-Policy: strict-origin-when-cross-origin`)를 일관되게 반환한다.
-   - RDS MySQL은 파라미터 그룹에서 `require_secure_transport=ON`을 강제하고, `was`(`sslMode=REQUIRED`), `db-init`(`--ssl-mode=REQUIRED`), `db-backup`(`--ssl-mode=REQUIRED`) 모두 암호화 연결만 사용한다. Tempo → S3 구간도 HTTPS(`insecure: false`)와 `SSE-KMS` 암호화를 강제하며, CodeBuild 소스 버킷도 SSE-S3(`AES256`) 암호화 및 HTTPS 전송을 강제한다.
+   - RDS MySQL은 `mysql8.4` 파라미터 그룹에서 `require_secure_transport=ON`을 강제하고, `was`(`sslMode=REQUIRED`), `db-init`(`--ssl-mode=REQUIRED`), `db-backup`(`--ssl-mode=REQUIRED`) 모두 암호화 연결만 사용한다. Tempo → S3 구간도 HTTPS(`insecure: false`)와 `SSE-KMS` 암호화를 강제하며, CodeBuild 소스 버킷도 SSE-S3(`AES256`) 암호화 및 HTTPS 전송을 강제한다.
 2. **네트워크 격리 (VPC SG & Kubernetes NetworkPolicy)**:
    - RDS 보안 그룹은 오직 EKS 클러스터 보안 그룹에서 오는 `TCP 3306`만 허용하며 퍼블릭 접근(`--no-publicly-accessible`)을 차단한다.
    - Amazon VPC CNI의 `enableNetworkPolicy: "true"` 및 `enablePolicyEventLogs: "true"`를 활성화한다.
@@ -338,7 +339,7 @@ sequenceDiagram
    - `provision-aws-resources.sh` 및 `deploy-all.sh`는 `TEMPO_S3_BUCKET_NAME != BACKUP_S3_BUCKET_NAME`, `TEMPO_RETENTION_DAYS` 양의 정수, `OTEL_TRACES_SAMPLER_ARG`(`0`~`1` 소수), `OTEL_DEPLOYMENT_ENVIRONMENT`(`^[A-Za-z0-9._-]+$`)를 사전에 검증하여 백업 버킷 오염이나 매니페스트/속성 인젝션을 차단한다. 또한 `provision-aws-resources.sh` 및 `build-and-push.sh`는 `CODEBUILD_S3_BUCKET_NAME`이 백업 및 Tempo 버킷과 상이한지 사전에 강제 검증하여 소스 버킷의 1일 만료 Lifecycle 및 SSE-S3 암호화가 백업/트레이스 데이터를 조기 삭제하거나 암호화 설정을 덮어쓰는 위험을 원천 차단한다.
    - `buildspec.yml`과 `build-and-push.sh`는 `IMAGE_TAG` 정규식(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`) 및 `latest` 차단을 이중 검증하며, `build`와 `post_build` 단계에 `on-failure: ABORT`를 적용하여 단일 이미지 빌드/푸시 실패 시 부분 릴리스를 방지한다. 소스 패키징 시에도 `.env*`, `*.secret`, `*.key`, `*.pem`, `id_*`, `*.pfx`, `*.p12` 등 모든 자격증명·개인키 파일을 배제한다.
    - ESO가 AWS Secrets Manager의 시크릿을 주기적으로 동기화하여 `petclinic-rds-admin-secret`(db-init 전용), `petclinic-rds-secret`(was), `petclinic-rds-backup-secret`(db-backup), `grafana-admin`, `alertmanager-webhook`을 생성한다. Alertmanager Webhook URL은 Helm values나 Alertmanager 설정에 들어가지 않고 Secret 파일(`url_file`)로만 읽는다.
-   - DB 계정은 역할별로 분리한다: admin(스키마 관리, db-init만 사용), app(`SELECT/INSERT/UPDATE/DELETE`), backup(`SELECT, SHOW VIEW, TRIGGER, LOCK TABLES, PROCESS`). 모든 계정은 `REQUIRE SSL`이며, 비밀번호 변경은 `scripts/rotate-db-secrets.sh`로 반영한다(ESO 동기화가 확인되지 않으면 db-init 전에 중단).
+   - DB 계정은 역할별로 분리한다: admin(스키마 관리, db-init만 사용), app(`SELECT/INSERT/UPDATE/DELETE`), backup(`SELECT, SHOW VIEW, TRIGGER, LOCK TABLES, PROCESS`). 모든 계정은 MySQL 8.4 기본 규격인 `caching_sha2_password` 인증 및 `REQUIRE SSL`이 적용되며(TLS 터널 상에서 동작하므로 별도 RSA 공개키 교환 불필요), 비밀번호 변경은 `scripts/rotate-db-secrets.sh`로 반영한다(ESO 동기화가 확인되지 않으면 db-init 전에 중단).
    - 운영 로그(CloudWatch Logs)에 고객 개인정보(Owner 이름·주소·전화번호)가 포함된 SQL문이 유출되지 않도록 `jpa.showSql=false`를 기본값으로 유지하고, OTel Java Agent의 JDBC 스팬도 파라미터화된 쿼리(`?`)만 기록하며 DB 비밀번호는 별도 `JDBC_PASSWORD` 환경변수로 분리한다.
 5. **컨테이너 및 네임스페이스 하드닝**:
    - 모든 네임스페이스에 워크로드 특성에 맞는 Pod Security Standards(`petclinic`·`opentelemetry-operator-system`: `enforce: restricted`, `nginx-gateway`/`external-secrets`/`keda`: `enforce: baseline`, `monitoring`/`amazon-cloudwatch`: `enforce: privileged`) 레이블을 적용한다.
@@ -385,3 +386,6 @@ sequenceDiagram
 - `codebuild-image-build`: S3 소스 아카이브 객체 키에 고유 식별자(`source/${IMAGE_TAG}-<UTC시각>-<UUID>.zip`)를 부여하고 `start-build`에 전달함 / 동일한 `IMAGE_TAG`로 여러 작업 트리에서 빌드를 동시 실행하거나 재시도할 때 첫 빌드가 다운로드하기 전 소스가 덮어써져 의도와 다른 코드가 빌드되는 경합 조건(TOCTOU)을 방지하기 위함
 - `codebuild-image-build`: `buildspec.yml`의 `pre_build`·`build`·`post_build` 전 단계에 `on-failure: ABORT`를 설정하고 `IMAGE_TAG` 정규식 검증 및 ECR 불변 태그 사전 조회를 적용함 / 빌드 실패 후 빈 이미지가 푸시되거나 was 푸시 실패 후 web만 푸시되는 부분 배포(half-release)를 방지하고 이미 존재하는 태그로 인한 불필요한 빌드 시간 낭비를 차단하기 위함
 - `codebuild-image-build`: `build-and-push.sh` 및 `lib.sh`에서 호출 시점에 지정된 `IMAGE_TAG`와 `BUILD_TARGET`을 `.env`의 빈 기본값보다 우선 보존하도록 처리함 / 사용자가 단일 대상(`BUILD_TARGET=web` 등)을 명시적으로 빌드하려 할 때 `.env`의 빈 값으로 덮어써져 전체 이미지가 빌드·푸시되거나 기존 태그 충돌로 작업이 중단되는 결함을 방지하기 위함
+- `rds-mysql-84`: 서울 리전(`ap-northeast-2`)에서 8.0.39 신규 생성이 불가능하고 MySQL 8.0 표준 지원이 2026-07 종료됨에 따라, RDS MySQL 엔진 버전을 5년간 표준 지원이 보장되는 최신 8.4 LTS(`8.4.11`)로 고정하고 DB 파라미터 그룹 패밀리를 `mysql8.4`로 전환함 / Extended Support 추가 과금을 방지하고 2029년 7월까지 장기적인 운영 안정성을 확보하기 위함
+- `rds-mysql-84`: MySQL 8.4에서 `mysql_native_password`가 기본 비활성화됨에 따라 기본 인증 방식인 `caching_sha2_password`를 적용하고, 애플리케이션 JDBC 드라이버를 `mysql-connector-j` `8.4.0`으로 상향함 / 전 구간 TLS(`require_secure_transport=ON`, `sslMode=REQUIRED`, `REQUIRE SSL`)가 강제되므로 추가 RSA 공개키 교환(`allowPublicKeyRetrieval=true`) 없이 안전하고 호환성 높은 인증을 달성하기 위함
+- `rds-mysql-84`: `db-init` Job 및 `db-backup` CronJob의 클라이언트 컨테이너 이미지를 RDS 엔진과 일치하는 `mysql:8.4.11`로 변경하고 `scripts/validate-manifests.sh`에 엔진·파라미터 그룹·이미지·드라이버 정적 검증을 추가함 / 클라이언트-서버 간 메이저 버전 불일치로 인한 프로토콜 경고 및 mysqldump 호환성 문제를 방지하고 버전 드리프트를 배포 전 차단하기 위함
