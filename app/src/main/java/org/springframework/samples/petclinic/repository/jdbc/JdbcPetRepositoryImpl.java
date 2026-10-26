@@ -105,6 +105,11 @@ public class JdbcPetRepositoryImpl implements PetRepository {
     /**
      * Creates a {@link MapSqlParameterSource} based on data values from the supplied {@link Pet} instance.
      */
+    @Override
+    public long countPets() {
+        return this.jdbcClient.sql("SELECT count(*) FROM pets").query(Long.class).single();
+    }
+
     private MapSqlParameterSource createPetParameterSource(Pet pet) {
         return new MapSqlParameterSource()
             .addValue("id", pet.getId())

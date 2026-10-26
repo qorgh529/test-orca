@@ -135,6 +135,11 @@ public class JdbcOwnerRepositoryImpl implements OwnerRepository {
         }
     }
 
+    @Override
+    public long countOwners() {
+        return this.jdbcClient.sql("SELECT count(*) FROM owners").query(Long.class).single();
+    }
+
     public Collection<PetType> getPetTypes() {
         return this.jdbcClient.sql("SELECT id, name FROM types ORDER BY name")
             .query(BeanPropertyRowMapper.newInstance(PetType.class))

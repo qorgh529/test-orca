@@ -62,4 +62,19 @@ public class JpaVisitRepositoryImpl implements VisitRepository {
         return query.getResultList();
     }
 
+    @Override
+    public long countVisits() {
+        return this.em.createQuery("SELECT count(v) FROM Visit v", Long.class).getSingleResult();
+    }
+
+    @Override
+    public List<Visit> findRecentVisits(int limit) {
+        // one query for the visit, its pet, type and owner; setMaxResults becomes a SQL LIMIT (no collection fetch)
+        return this.em.createQuery(
+                "SELECT v FROM Visit v JOIN FETCH v.pet p JOIN FETCH p.type JOIN FETCH p.owner ORDER BY v.date DESC, v.id DESC",
+                Visit.class)
+            .setMaxResults(limit)
+            .getResultList();
+    }
+
 }

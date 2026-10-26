@@ -41,4 +41,13 @@ public interface VisitRepository {
 
     List<Visit> findByPetId(Integer petId);
 
+    long countVisits();
+
+    /**
+     * Newest visits first, with pet, pet type and owner loaded.
+     *
+     * @param limit maximum number of visits returned
+     */
+    List<Visit> findRecentVisits(int limit);
+
 }

@@ -59,5 +59,7 @@ public interface OwnerRepository {
      */
     void save(Owner owner);
 
+    long countOwners();
+
 
 }
