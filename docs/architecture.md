@@ -8,6 +8,7 @@
   - Route 53, ACM, AWS WAFv2, LBC 기반 internet-facing ALB(`target-type: ip`)를 통한 엣지 보안 및 TLS 종단
   - NGINX Gateway Fabric(NGF) `Gateway` 및 `HTTPRoute`를 이용한 L7 라우팅과 헤더(`X-Canary: always`) 검증 통과 후 100:0 → 90:10으로 여는 가중치 기반 카나리(Canary) 트래픽 분할
   - `web`(Nginx 1.27 정적 서빙 + 리버스 프록시)과 `was`(Tomcat 11 언패킹 WAR + JMX Exporter + OpenTelemetry Java Agent 무코드 자동 주입) 2-Tier 분리(롤링 배포 시 구버전 Pod 간섭을 차단하는 `matchLabelKeys: [pod-template-hash]` 기반 Multi-AZ 균등 분산 및 stable PDB `minAvailable: 1`) 및 각각 CPU 기반 HPA / Prometheus 요청률 기반 KEDA 오토스케일링
+  - 롤링 업데이트 및 Pod 삭제 시 비동기 EndpointSlice 전파 시차(1~3초)로 인한 HTTP 502/504(Connection refused) 요청 단절을 방지하는 무중단 그레이스풀 셧다운(`lifecycle.preStop.sleep: 15s` 선언형 훅 및 `terminationGracePeriodSeconds` `web` 35초 / `was` 45초 적정 유예 시간 적용, `scripts/validate-manifests.sh` 회귀 방지 정적 검증)
   - 3-Tier 노드 분리: `np-app`(Karpenter On-Demand 기본 풀 + `np-app-spot` Spot 확장 풀), `ng-critical`(클러스터 컨트롤러·OpenTelemetry Operator 및 DB 초기화/백업 Job 전용 관리형 노드 그룹), `ng-platform`(모니터링·분산 트레이싱 스택 및 `gp3` PVC 전용 관리형 노드 그룹)
   - 프라이빗 DB 서브넷의 RDS MySQL 8.4 LTS Multi-AZ(Primary/Standby 동기 복제), S3 암호화 백업(`CronJob`), 역할별 DB 계정(admin/app/backup) 분리, AWS Secrets Manager + External Secrets Operator(ESO) 기반 시크릿 동기화
   - OpenTelemetry(Operator · Java Agent · Collector) + Grafana Tempo(전용 S3 버킷 IRSA 연동) 기반 분산 트레이싱(SDK 10% 헤드 샘플링), 100% 전수 RED 메트릭(`http_server_request_duration_seconds`) 및 Trace-based Exemplar(`trace_id`) 점프, Logback MDC(`trace_id`/`span_id`) 로그 상관분석
@@ -18,6 +19,9 @@
   - 멀티 리전 액티브-액티브 구성 (`ap-northeast-2` 단일 리전 Multi-AZ에 집중)
   - 기존 EKS 1.31 클러스터의 제자리 업그레이드 절차 (현재 구성은 1.36 새 클러스터 생성 기준, `docs/features/production-hardening/design.md` §1.3)
   - 비즈니스 도메인 엔티티 스키마 및 DB 테이블(DDL) 변경 (단, 외부 RDS 환경변수 바인딩, flatpickr `yyyy/MM/dd` 날짜 형식 호환 패치, 대시보드 전용 읽기 전용 `VisitSummary` 프로젝션 DTO 도입은 반영)
+  - NGINX Gateway Fabric(NGF) 데이터 플레인 자체에 별도 `preStop` 주입 (AWS ALB의 `deregistration_delay` 및 워크로드 계층 `preStop`으로 충분)
+  - `docker/web/nginx.conf`의 `proxy_next_upstream` 확장 및 `web` 컨테이너 이미지 재빌드(`v1.0.3`) 제외 (ClusterIP 가상 IP 환경에서 Service IP 재시도 한계 및 비멱등 POST 요청 중복 실행 위험 방지, WAS 계층의 `preStop`으로 상류 연결 거부 원천 차단)
+  - CoreDNS TTL 강제 변경 또는 별도의 커스텀 셧다운 컨트롤러 도입 제외
   - 일일 중지 시 EKS 컨트롤 플레인, NAT Gateway, ALB(`Ingress`), `gp3` EBS PVC 삭제·재생성 및 EventBridge/Lambda 기반 자동 스케줄러 구축 (`docs/features/daily-stop-start/design.md` §1.4)
   - Grafana Loki 도입, Tail-based Sampling, NGF·`web`(Nginx) 계층 트레이싱, `tempo-distributed`(마이크로서비스 모드 + Kafka) 전환 및 상용 APM 도입 (`docs/features/apm-tracing/design.md` §1.4, `docs/features/tempo-chart-migration/design.md` §1.4)
   - GitHub Webhook 및 AWS CodePipeline 자동 트리거 연동 (운영자/개발자가 검증된 태그로 필요 시 트리거하는 온디맨드 CLI 빌드 워크플로 유지, `docs/features/codebuild-image-build/design.md` §1.4)
@@ -31,8 +35,8 @@
 | **Edge / DNS** | Route 53, ACM, AWS WAFv2 | 도메인 A(Alias) 라우팅, 공인 TLS 인증서 발급·갱신, OWASP/SQLi/KnownBadInputs 관리형 규칙 필터링 | AWS 관리형 (`ap-northeast-2`) |
 | **Ingress LB** | AWS ALB (AWS Load Balancer Controller) | HTTP(`80`)→HTTPS(`443`) 리다이렉트, TLS 1.3/1.2 종단, 비정상 헤더 드롭, `target-type: ip`로 NGF Pod에 직접 라우팅 | 퍼블릭 서브넷 (`2a`, `2c`) |
 | **L7 Gateway** | NGINX Gateway Fabric 2.x (`nginx-gateway`) | Gateway API(`v1.6.3`). 컨트롤 플레인(2 Replicas)이 Gateway마다 데이터 플레인 `petclinic-gateway-nginx`(2 Replicas, AZ 분산, 차트 PDB `minAvailable: 1`, `ClusterIP`)를 생성. `HTTPRoute`로 `web` / `web-canary` 트래픽 분할(배포 중 100:0, 카나리 검증 후 90:10, `X-Canary: always`는 항상 `web-canary`) | `nginx-gateway` / `np-app` (`workload-tier=app`) |
-| **Web Tier** | `web`, `web-canary` (Nginx + Exporter) | `/resources/*`, `/webjars/*` 정적 에셋 직접 서빙 및 보안 헤더 부여, 동적 요청을 각각 `was-stable:8080`, `was-canary:8080`으로 프록시. 사이드카 `nginx-prometheus-exporter`(`:9113`) 내장. `topologySpreadConstraints` 기반 AZ 균등 분산(`topologyKey: topology.kubernetes.io/zone`, `maxSkew: 1`, `matchLabelKeys: [pod-template-hash]` — stable `DoNotSchedule`, canary `ScheduleAnyway`). CPU 60% 기준 HPA(`web` 2~10, `web-canary` 1~4), stable PDB(`minAvailable: 1`) | `petclinic` / `np-app` (`workload-tier=app`) |
-| **WAS Tier** | `was-stable`, `was-canary` (Tomcat 11 + JMX Exporter + OTel Java Agent) | 사전 언패킹된 `webapps/ROOT` 구동(`jpa` 프로필, 읽기 전용 루트 파일시스템), `WelcomeController` 기반 메인 대시보드(`/`, `/welcome` — 운영 통계 3종 및 `VisitSummary` 플랫 프로젝션 기반 최근 방문 5건 조회) 및 PetClinic 비즈니스 서블릿 처리, JMX Exporter(`:9404/metrics`) 노출 및 OpenTelemetry Operator가 주입하는 Java Agent(`autoinstrumentation-java:2.12.0`)로 HTTP·Spring MVC·Hibernate/JDBC 자동 계측(`service.version=stable\|canary`), Logback ConfigMap 마운트로 MDC `trace_id`/`span_id` 출력. `topologySpreadConstraints` 기반 AZ 균등 분산(`topologyKey: topology.kubernetes.io/zone`, `maxSkew: 1`, `matchLabelKeys: [pod-template-hash]` — stable `DoNotSchedule`, canary `ScheduleAnyway`). Prometheus 요청률 기반 KEDA `ScaledObject`(`was-stable` 2~10·fallback 4, `was-canary` 1~3·fallback 2), stable PDB(`minAvailable: 1`), Tomcat JDBC 풀 최대 10 | `petclinic` / `np-app` (`workload-tier=app`) |
+| **Web Tier** | `web`, `web-canary` (Nginx + Exporter) | `/resources/*`, `/webjars/*` 정적 에셋 직접 서빙 및 보안 헤더 부여, 동적 요청을 각각 `was-stable:8080`, `was-canary:8080`으로 프록시. 사이드카 `nginx-prometheus-exporter`(`:9113`) 내장. `topologySpreadConstraints` 기반 AZ 균등 분산(`topologyKey: topology.kubernetes.io/zone`, `maxSkew: 1`, `matchLabelKeys: [pod-template-hash]` — stable `DoNotSchedule`, canary `ScheduleAnyway`). CPU 60% 기준 HPA(`web` 2~10, `web-canary` 1~4), stable PDB(`minAvailable: 1`). `terminationGracePeriodSeconds: 35` 및 메인 `nginx`·사이드카 `nginx-exporter` 공통 `lifecycle.preStop.sleep: 15s` 적용으로 롤링 배포 시 엔드포인트 등록 해제 지연을 흡수하여 HTTP 502 방지 및 메트릭 수집 연속성 보장 | `petclinic` / `np-app` (`workload-tier=app`) |
+| **WAS Tier** | `was-stable`, `was-canary` (Tomcat 11 + JMX Exporter + OTel Java Agent) | 사전 언패킹된 `webapps/ROOT` 구동(`jpa` 프로필, 읽기 전용 루트 파일시스템), `WelcomeController` 기반 메인 대시보드(`/`, `/welcome` — 운영 통계 3종 및 `VisitSummary` 플랫 프로젝션 기반 최근 방문 5건 조회) 및 PetClinic 비즈니스 서블릿 처리, JMX Exporter(`:9404/metrics`) 노출 및 OpenTelemetry Operator가 주입하는 Java Agent(`autoinstrumentation-java:2.12.0`)로 HTTP·Spring MVC·Hibernate/JDBC 자동 계측(`service.version=stable\|canary`), Logback ConfigMap 마운트로 MDC `trace_id`/`span_id` 출력. `topologySpreadConstraints` 기반 AZ 균등 분산(`topologyKey: topology.kubernetes.io/zone`, `maxSkew: 1`, `matchLabelKeys: [pod-template-hash]` — stable `DoNotSchedule`, canary `ScheduleAnyway`). Prometheus 요청률 기반 KEDA `ScaledObject`(`was-stable` 2~10·fallback 4, `was-canary` 1~3·fallback 2), stable PDB(`minAvailable: 1`), Tomcat JDBC 풀 최대 10. `terminationGracePeriodSeconds: 45` 및 `lifecycle.preStop.sleep: 15s` 적용으로 롤링 배포 시 엔드포인트 등록 해제 대기 후 Catalina 종료 훅 → Spring 웹 컨텍스트 종료 → Tomcat JDBC Pool 해제 → OTel 트레이스 플러시 순차적 정상 종료 보장 | `petclinic` / `np-app` (`workload-tier=app`) |
 | **Cluster Controllers** | CoreDNS, LBC, Metrics Server, Karpenter, KEDA, ESO, EBS CSI, OpenTelemetry Operator | 클러스터 핵심 제어부, 오토스케일러·시크릿·스토리지 드라이버 및 `Instrumentation` CR 기반 Java Agent Mutating Webhook(`:9443`, `failurePolicy: Ignore`) | `kube-system`, `keda`, `external-secrets`, `opentelemetry-operator-system` / `ng-critical` (Taint: `node-role=critical:NoSchedule`) |
 | **DB Jobs** | `db-init` (Job), `db-backup` (CronJob) | 배포 시 admin 계정으로 멱등 스키마/초기 데이터 적재(`schema.sql`, `data.sql`) 및 app/backup 계정 생성·권한 부여, 매일 03:00 KST `mysqldump` 압축본을 S3(`SSE-KMS`)에 업로드 | `petclinic` / `ng-critical` (Taint: `node-role=critical:NoSchedule`) |
 | **Observability & Tracing** | Prometheus, Grafana, Alertmanager, OTel Collector, Grafana Tempo, kube-state-metrics, node-exporter, Fluent Bit | `ServiceMonitor` 기반 `web`(`:9113`)·`was`(`:9404`)·`otel-collector`(`:8889`, OpenMetrics Exemplar) 스크래핑, KEDA 스케일링 쿼리 제공, `gp3` 암호화 볼륨 영속화, Prometheus 2 Replicas(`exemplar-storage` 활성화) AZ 분산, `PrometheusRule` → Alertmanager Webhook. OTel Collector(2 Replicas AZ 분산, `:4317`/`:4318` 수신)는 트레이스를 Tempo(`:4317` 수신, `:3200` 쿼리, `gp3` 10Gi WAL + 전용 S3 IRSA)로 전달하고 RED 메트릭+Exemplar를 `:8889`로 노출. `node-exporter` 및 Fluent Bit DaemonSet은 전 노드에서 메트릭·컨테이너 로그(→ CloudWatch Logs) 수집 | `monitoring` (`ng-platform`, Taint: `node-role=platform:NoSchedule`; `node-exporter`는 전 노드 Toleration) / `amazon-cloudwatch` (Fluent Bit 전 노드 Toleration) |
@@ -73,7 +77,9 @@
 │       ├── staff-dashboard/                  # 스태프 운영 대시보드(WelcomeController, VisitSummary) 설계·목업·리뷰·보안 점검
 │       │   ├── mockup/main.html              # UI 프로토타입 원본
 │       │   └── {design,review,security}.md
-│       └── spread-on-rollout/                # 롤링 업데이트 시 AZ 균등 분산 보장(matchLabelKeys) 설계·리뷰·보안 점검
+│       ├── spread-on-rollout/                # 롤링 업데이트 시 AZ 균등 분산 보장(matchLabelKeys) 설계·리뷰·보안 점검
+│       │   └── {design,review,security}.md
+│       └── graceful-shutdown/                # 무중단 서비스 및 그레이스풀 셧다운(preStop.sleep, grace period) 설계·리뷰·보안 점검
 │           └── {design,review,security}.md
 ├── app/                                  # spring-framework-petclinic 소스 코드
 │   ├── pom.xml                           # Maven WAR 빌드, MySQL/PostgreSQL/H2/HSQLDB 프로필
@@ -118,15 +124,15 @@
 │   │   ├── job-db-init.yaml              # admin 계정으로 schema/data 적재 + app/backup 계정 생성·최소 권한 부여 Job (ng-critical, mysql:8.4.11, REQUIRE SSL)
 │   │   └── cronjob-db-backup.yaml        # 일일 mysqldump(backup 계정) → S3(SSE-KMS) 업로드 CronJob (ng-critical, mysql:8.4.11, IRSA db-backup)
 │   ├── web/
-│   │   ├── deployment.yaml               # web(→was-stable) 및 web-canary(→was-canary) Deployment + nginx-exporter 사이드카 (리비전별 AZ 토폴로지 분산 matchLabelKeys 적용)
+│   │   ├── deployment.yaml               # web(→was-stable) 및 web-canary(→was-canary) Deployment + nginx-exporter 사이드카 (리비전별 AZ 토폴로지 분산 matchLabelKeys, preStop.sleep 15초 및 terminationGracePeriodSeconds 35초 적용)
 │   │   ├── service.yaml                  # web, web-canary Service (:80→:8080, :9113)
 │   │   ├── hpa.yaml                      # web(2~10), web-canary(1~4) CPU 60% HPA
 │   │   ├── pdb.yaml                      # web stable PodDisruptionBudget (minAvailable: 1)
 │   │   └── networkpolicy.yaml            # web Ingress 허용 (nginx-gateway → 8080, Prometheus → 9113)
 │   ├── was/
 │   │   ├── instrumentation.yaml          # OpenTelemetry Instrumentation CR (petclinic-java) 및 Logback MDC 출력용 ConfigMap (petclinic-was-logback)
-│   │   ├── deployment-stable.yaml        # was-stable Deployment (inject-java, service.version=stable, Logback 마운트, 1280Mi~2Gi, readiness initialDelaySeconds 20, 리비전별 AZ 토폴로지 분산 matchLabelKeys 적용)
-│   │   ├── deployment-canary.yaml        # was-canary Deployment (inject-java, service.version=canary, Logback 마운트, 1280Mi~2Gi, readiness initialDelaySeconds 20, 리비전별 AZ 토폴로지 분산 matchLabelKeys 적용)
+│   │   ├── deployment-stable.yaml        # was-stable Deployment (inject-java, service.version=stable, Logback 마운트, 1280Mi~2Gi, readiness initialDelaySeconds 20, 리비전별 AZ 토폴로지 분산 matchLabelKeys, preStop.sleep 15초 및 terminationGracePeriodSeconds 45초 적용)
+│   │   ├── deployment-canary.yaml        # was-canary Deployment (inject-java, service.version=canary, Logback 마운트, 1280Mi~2Gi, readiness initialDelaySeconds 20, 리비전별 AZ 토폴로지 분산 matchLabelKeys, preStop.sleep 15초 및 terminationGracePeriodSeconds 45초 적용)
 │   │   ├── service-stable.yaml           # was-stable Service (:8080, :9404)
 │   │   ├── service-canary.yaml           # was-canary Service (:8080, :9404)
 │   │   ├── service.yaml                  # was 통합 Service (:8080, :9404)
@@ -166,7 +172,7 @@
     ├── daily-stop.sh                     # 퇴근 전 앱/Karpenter 노드·RDS·관리형 노드그룹 일괄 중지 및 잔여 비용 안내 (--dry-run 지원)
     ├── daily-start.sh                    # 출근 시 RDS·관리형 노드그룹·컨트롤러(opentelemetry-operator 포함)·Karpenter·워크로드/오토스케일러/CronJob 일괄 복원 (--dry-run 지원)
     ├── test-prometheus-rules.sh          # promtool로 PrometheusRule 단위 테스트 실행
-    └── validate-manifests.sh             # YAML 문법, 고정 이미지/애드온 버전, 평문 시크릿 부재, 노드 티어/비루트, 역할별 DB 시크릿·PDB·KEDA fallback, 워크로드 리비전별 AZ 분산(matchLabelKeys: [pod-template-hash], maxSkew 1, zone), 트레이싱, CodeBuild(buildspec fail-fast/태그 검증/amd64, IAM 정책 최소 권한, 소스/백업/Tempo 버킷 이름 상이 검증, .env.example 정합성, build-and-push 오프라인 테스트), daily-stop/start 회귀 테스트 검증기
+    └── validate-manifests.sh             # YAML 문법, 고정 이미지/애드온 버전, 평문 시크릿 부재, 노드 티어/비루트, 역할별 DB 시크릿·PDB·KEDA fallback, 워크로드 리비전별 AZ 분산(matchLabelKeys: [pod-template-hash], maxSkew 1, zone), 그레이스풀 셧다운(preStop.sleep 15초 이상, web 35초 / was 45초 grace period), 트레이싱, CodeBuild(buildspec fail-fast/태그 검증/amd64, IAM 정책 최소 권한, 소스/백업/Tempo 버킷 이름 상이 검증, .env.example 정합성, build-and-push 오프라인 테스트), daily-stop/start 회귀 테스트 검증기
 ```
 
 ---
@@ -257,6 +263,58 @@ sequenceDiagram
 - **CodeBuild 원격 빌드 및 단계별 중단 (Fail-Fast)**: `aws codebuild start-build`로 빌드를 트리거하며, CodeBuild는 `LINUX_CONTAINER`(`BUILD_GENERAL1_MEDIUM`, `privilegedMode: true`) 환경에서 `buildspec.yml`을 실행한다. `pre_build`, `build`, `post_build` 각 단계에 `on-failure: ABORT`가 지정되어 있어 빌드 실패 시 푸시 단계를 건너뛰고, WAS 푸시 실패 시 Web 푸시를 중단하여 부분 배포(half-release)를 방지한다. 타겟 아키텍처는 Karpenter 노드(`np-app`, `np-app-spot`)와 일치하도록 `docker build --platform linux/amd64`로 고정한다.
 - **실시간 폴링 및 디버깅 경로 안내**: 스크립트는 10초 주기로 `aws codebuild batch-get-builds`를 호출하여 빌드 페이즈(`currentPhase`)와 상태를 터미널에 출력하고, 빌드 실패 시 전용 CloudWatch Logs 그룹(`/aws/codebuild/${CODEBUILD_PROJECT_NAME}`) 경로를 안내하여 즉시 원인을 분석할 수 있도록 지원한다.
 
+### 무중단 롤링 배포 및 그레이스풀 셧다운 흐름 (`lifecycle.preStop.sleep`)
+
+롤링 업데이트(`rollout restart`), HPA/KEDA 축소(Scale-in), 또는 Karpenter 노드 통합(Consolidation)에 의해 Pod가 종료될 때, Kubernetes 컨트롤 플레인은 비동기(병렬)로 엔드포인트 등록 해제와 Pod 프로세스 종료를 시작한다:
+1. **엔드포인트 등록 해제**: `kube-apiserver` → EndpointSlice 컨트롤러 → NGF 컨트롤러/데이터 플레인 및 노드별 `kube-proxy`로 전달되어 로드밸런서 업스트림 목록 및 iptables 라우팅 테이블에서 제거된다 (전파 및 리로드에 통상 1~3초 소요).
+2. **컨테이너 종료 시작**: 노드의 `kubelet`이 Pod 내 컨테이너에 즉시 `SIGTERM` 신호를 전송한다.
+
+`lifecycle.preStop` 지연이 없으면 프로세스가 즉시 Listen 소켓을 닫고 종료에 들어가며, 엔드포인트 테이블이 갱신되는 1~3초 동안 인입된 신규 트래픽은 이미 닫힌 소켓으로 전달되어 TCP RST(`111: Connection refused`) 및 HTTP 502/504 에러가 발생한다. 이를 방지하기 위해 네이티브 선언형 `lifecycle.preStop.sleep: { seconds: 15 }` 액션과 계층별 적정 유예 시간(`terminationGracePeriodSeconds`)을 선언하여 엔드포인트 격리와 프로세스 종료 간 순서를 엄격히 제어한다.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Admin as 운영자 / 컨트롤러 (rollout restart / 축소)
+    participant APISrv as Kubernetes API Server
+    participant EPC as EndpointSlice Controller
+    participant NGF as NGF Data Plane / kube-proxy
+    participant Kubelet as Kubelet (Node Worker)
+    participant WebPod as web Pod (Nginx & Exporter)
+    participant WASPod as was Pod (Tomcat 11)
+
+    Admin->>APISrv: Pod 삭제 요청 (Terminating 전환, deletionTimestamp 기록)
+    
+    par [비동기 엔드포인트 격리]
+        APISrv->>EPC: Pod Terminating 이벤트 감지
+        EPC->>NGF: EndpointSlice 갱신 (Terminating Pod IP 제거)
+        NGF->>NGF: 1~3초 내 업스트림 목록 및 iptables 라우팅 갱신<br/>(신규 요청을 Healthy Pod로만 라우팅)
+    and [비동기 Kubelet 생명주기 훅 실행]
+        APISrv->>Kubelet: Pod 삭제 지시 (GracePeriod 타이머 시작: web 35s / was 45s)
+        Kubelet->>WebPod: lifecycle.preStop.sleep (15초 대기 시작)
+        Kubelet->>WASPod: lifecycle.preStop.sleep (15초 대기 시작)
+    end
+
+    Note over NGF,WASPod: 15초 대기 시간 동안:<br/>- 이미 유입 중이던 연결 및 NGF/kube-proxy 전파 중 도착한 요청 정상 수락 및 처리<br/>- Nginx 및 Tomcat 프로세스는 정상 가동 상태 유지
+
+    Kubelet->>WebPod: preStop 15초 만료 → SIGQUIT (Nginx) / SIGTERM (Exporter) 전송
+    WebPod->>WebPod: Nginx 워커: 신규 연결 수신 차단, 활성 연결 완료 후 정상 종료 (SIGQUIT)<br/>nginx-exporter: 메트릭 수집 종료 후 정상 종료 (SIGTERM)
+    WebPod-->>Kubelet: 컨테이너 정상 종료 완료 (Exit 0)
+
+    Kubelet->>WASPod: preStop 15초 만료 → SIGTERM (Tomcat/JVM catalina.sh) 전송
+    WASPod->>WASPod: Catalina 종료 훅 실행 → 커넥터 수신 차단<br/>웹 컨텍스트 종료 (DispatcherServlet / ContextLoaderListener close)<br/>Tomcat JDBC Pool 커넥션 안전 해제 (DataSource.close())<br/>OTel Java Agent JVM 셧다운 훅 잔여 span 플러시
+    WASPod-->>Kubelet: 컨테이너 정상 종료 완료 (Exit 0)
+
+    Kubelet->>APISrv: Pod 리소스 완전 제거 (요청 실패 0건 / 100% 무중단 달성)
+```
+
+- **선언형 `lifecycle.preStop.sleep` 채택**: EKS 1.36(K8s 1.32+ GA)의 네이티브 `sleep` 액션을 사용하여 컨테이너 내부 `exec`(`/bin/sh -c sleep 15`) 방식과 달리 컨테이너 내부 쉘·바이너리 의존성이 없으며, 쉘이 없는 최소 이미지인 `nginx-prometheus-exporter` 사이드카에도 완벽히 동일하게 동작한다. 프로세스 포크 오버헤드 없이 Kubelet 데몬 내부 타이머로 관리된다.
+- **사이드카 생명주기 일치**: `web` Pod 내 메인 `nginx` 컨테이너뿐만 아니라 사이드카인 `nginx-exporter`에도 동일한 15초 sleep을 선언하여, Kubernetes의 컨테이너 병렬 종료 특성으로 인해 exporter가 메인 컨테이너보다 먼저 종료되어 배포 중 Prometheus 스크래핑 실패 및 알림이 발생하는 현상을 방지한다.
+- **유예 시간(`terminationGracePeriodSeconds`) 산정 근거**:
+  - `web` 계층 (**35초**): preStop sleep(15s) + Nginx 워커 활성 연결 드레인 및 정적 리소스 서빙 완료(~2s) + 버퍼(18s)
+  - `was` 계층 (**45초**): preStop sleep(15s) + 활성 서블릿 트랜잭션 처리(최대 5s) + Spring ApplicationContext 종료 및 Tomcat JDBC Pool 반환(~3s) + OTel Collector 트레이스 플러시(~2s) + JVM 안전 종료 버퍼(20s)
+- **외부 Tomcat WAR 및 Tomcat JDBC Pool 수명주기 부합**: Spring Boot 내장 톰캣과 달리 본 애플리케이션은 외부 Tomcat 11에 배포된 Jakarta EE WAR이므로 `registerShutdownHook()`이나 HikariCP가 아닌, Catalina 프로세스 종료 훅 → 서블릿 컨텍스트 언로드(`PetclinicInitializer`의 `DispatcherServlet` 및 Spring 컨텍스트 닫힘) → `org.apache.tomcat.jdbc.pool.DataSource` 빈 `close()` → OTel Java Agent JVM 종료 훅의 실제 런타임 종료 경로에 맞춰 안전하게 자원이 회수된다.
+- **Nginx `proxy_next_upstream` 미사용 원칙**: ClusterIP 환경에서 Nginx 자체 재시도만으로는 iptables 목적지 Pod 전환을 제어하기 어렵고, 비멱등 `POST` 요청(신규 등록 등) 재시도로 인한 데이터 중복 생성 위험이 발생한다. WAS 계층에 `preStop.sleep: 15s`를 적용하여 iptables에서 Pod IP가 먼저 제거된 후 프로세스가 종료되므로 소스 설정 변경(`docker/web/nginx.conf`)이나 이미지 재빌드(`v1.0.3`) 없이 인프라 선언형 매니페스트만으로 상류 연결 거부를 완벽히 차단한다.
+
 ---
 
 ## 5. 실행 환경 — 런타임, 컨테이너/클라우드 리소스, 환경변수 목록
@@ -272,7 +330,7 @@ sequenceDiagram
 | **Web Container** | Nginx + Exporter Sidecar | `nginx:1.27.2-alpine`, `nginx/nginx-prometheus-exporter:1.3.0` |
 | **WAS Container** | Apache Tomcat 11 + JMX Exporter + OTel Java Agent | `tomcat:11.0.2-jre21-temurin-noble`, `jmx_prometheus_javaagent:1.0.1`, `autoinstrumentation-java:2.12.0` (init container 주입) |
 | **DB Jobs** | MySQL Client / AWS CLI | `mysql:8.4.11`, `amazon/aws-cli:2.18.0` |
-| **Kubernetes** | Amazon EKS | `1.36` (AL2023 AMI `al2023@v20260930`, K8s 1.36 PodTopologySpread `matchLabelKeys` GA 활용, 새 클러스터 생성 기준) |
+| **Kubernetes** | Amazon EKS | `1.36` (AL2023 AMI `al2023@v20260930`, K8s 1.36 PodTopologySpread `matchLabelKeys` GA 및 선언형 `lifecycle.preStop.sleep` GA 활용, 새 클러스터 생성 기준) |
 | **Gateway API** | Gateway API CRDs / NGF | CRDs `v1.6.3` (standard), `nginx-gateway-fabric` Helm `2.8.0` |
 | **Autoscaling** | Karpenter / KEDA / Metrics Server | Karpenter `1.15.0` (+ `karpenter-crd`), KEDA `2.21.0`, Metrics Server Helm `3.14.0` (`v0.9.0`) |
 | **Ingress / Storage / Secrets** | LBC / EBS CSI / ESO | `aws-load-balancer-controller` Helm `3.6.1` (`v3.6.1`), `aws-ebs-csi-driver` `${EBS_CSI_ADDON_VERSION}`(환경별 고정), `external-secrets` `2.13.0` (API `v1`) |
@@ -358,6 +416,7 @@ sequenceDiagram
    - `web`, `was`, `db-init`, `db-backup`, `otel-collector`, `tempo`는 비루트 사용자(`UID/GID 10001`, `opentelemetry-operator`는 `65532`), `runAsNonRoot: true`, `allowPrivilegeEscalation: false`, `capabilities: { drop: ["ALL"] }`, `seccompProfile: RuntimeDefault`, `readOnlyRootFilesystem: true`(`otel-operator` 제외)로 실행되며, 런타임 쓰기가 필요한 경로만 `emptyDir` 또는 PVC 볼륨으로 마운트한다.
    - CodeBuild 환경에서 빌드되는 `web` 및 `was` 이미지는 멀티스테이지 빌드를 통해 빌드 도구와 임시 파일을 배제하고, `UID 10001` 비루트 사용자로 구동되며, JMX Exporter JAR은 SHA256 체크섬 고정 검증을 거친다. 빌드 시 `--platform linux/amd64`를 강제하여 Karpenter 노드(`np-app`, `np-app-spot`)의 x86_64 아키텍처와 일치시킨다.
    - `web` 및 `was` 워크로드에 `matchLabelKeys: [pod-template-hash]` 기반 가용영역 토폴로지 분산 제약을 적용하여 롤링 업데이트 중 특정 AZ 편중으로 인한 가용성 침해(단일 AZ 장애 시 서비스 단절)를 방지함으로써 클라우드 인프라의 장애 복원력과 고가용성(HA)을 보장한다. 별도의 특권 컨트롤러(Descheduler 등)나 RBAC 권한 상승 없이 EKS 내장 스케줄러 기능으로 동작하여 공격 표면(Attack Surface) 확장을 차단하고 최소 권한 격리 규격을 유지한다.
+   - 선언형 `lifecycle.preStop.sleep` 액션은 Kubelet 데몬 내부 타이머로 실행되므로 `exec` 방식(`/bin/sh -c sleep 15`)과 달리 컨테이너 내부 쉘 바이너리 실행이나 프로세스 포크, 추가 권한 요구 없이 `Restricted` PSS 및 `readOnlyRootFilesystem: true` 보안 규격을 완벽히 유지한다. 또한 `terminationGracePeriodSeconds`를 `web: 35s`, `was: 45s`로 엄격히 제한하여 15초 안전 대기 후 비정상 프로세스 지연(hang) 상태가 발생하더라도 최대 45초 이내에 SIGKILL로 강제 회수되도록 보장함으로써 노드 드레인 및 Karpenter 통폐합 시 클러스터 리소스 고갈(DoS) 위험을 차단한다.
 6. **일일 중지·기동 스크립트 최소 권한 및 무결성 보호 (`scripts/daily-stop.sh` · `scripts/daily-start.sh`)**:
    - 두 스크립트는 AWS 컨트롤 플레인(`eks:DescribeCluster`, `eks:DescribeNodegroup`, `eks:UpdateNodegroupConfig`, `eks:DescribeUpdate`, `rds:DescribeDBInstances`, `rds:StopDBInstance`, `rds:StartDBInstance`)과 K8s 스케일링·롤아웃 API(`petclinic`·`nginx-gateway` 리소스 제어, 클러스터 범위 `nodepools`/`nodeclaims` 제어, `kube-system`·`external-secrets`·`keda`·`opentelemetry-operator-system` `deployments` 조회)만 사용하며, DB 비밀번호나 K8s `Secret` 값을 읽거나 출력하지 않는다.
    - 관리형 노드 그룹 스케일 백업 파일(`.daily-nodegroup-state.json`)은 `.gitignore`로 추적에서 제외하고 `umask 077`로 생성하며, 기동 시 모든 변경(RDS 시작 포함) 전에 JSON 유효성과 `minSize`/`desiredSize`/`maxSize` 정수·범위(`desiredSize >= 1`, `minSize <= desiredSize <= maxSize`)를 검증해 손상된 상태 파일이나 잘못된 환경변수로 인한 비정상 스케일링·부분 기동을 차단한다.
@@ -410,3 +469,9 @@ sequenceDiagram
 - `spread-on-rollout`: `topologyKey`로 가용영역(`topology.kubernetes.io/zone`) 분산만 적용하고 호스트명(`kubernetes.io/hostname`) 단위 분산은 제외함 / 현재 `np-app` 노드가 AZ별 1대씩 운영되어 AZ 분산만으로 노드 분산이 동시 달성되며, 노드 단위 `DoNotSchedule` 설정 시 HPA/KEDA 스케일아웃마다 Karpenter가 인스턴스를 무조건 신규 생성하여 발생하는 과도한 인프라 비용 낭비 및 빈 패킹 정책과의 경합을 방지하기 위함
 - `spread-on-rollout`: stable 워크로드에는 엄격한 `whenUnsatisfiable: DoNotSchedule`을, canary 워크로드에는 유연한 `whenUnsatisfiable: ScheduleAnyway` 정책을 분리 유지함 / stable은 프로덕션 무중단 HA를 위해 단일 AZ 몰림을 원천 차단하고, canary는 적은 레플리카 수(1개 등) 및 임시 검증 특성상 스케줄링 유연성을 확보하여 단일 노드 환경에서도 롤아웃이 블록되지 않도록 하기 위함
 - `spread-on-rollout`: `topologySpreadConstraints`가 신규 Pod 배치 시점에만 평가되는 Kubernetes 스케줄러 한계(스케일다운 시 ReplicaSet이 AZ 균형을 고려하지 않음)를 명시하고, `scripts/validate-manifests.sh`에 `matchLabelKeys` 리스트 타입(`isinstance(..., list)`) 및 zone 분산 필수 검증을 추가함 / HPA/KEDA 축소 후 2:0 등 편중 발생 시 `rollout restart` 기반 자가 치유 운영 방안을 정립하고, 잘못된 스칼라 문자열 설정이나 분산 누락으로 인한 가용성 회귀를 배포 전 정적 검사로 차단하기 위함 (design.md의 축소 시 대칭 보장 가정을 실제 K8s 한계 기준으로 정정 반영)
+- `graceful-shutdown`: 롤링 업데이트 시 EndpointSlice 비동기 전파 시차(1~3초)로 인한 HTTP 502/504(Connection refused) 에러를 방지하기 위해 `web`·`was` stable/canary 4개 Deployment의 모든 컨테이너에 `lifecycle.preStop.sleep: { seconds: 15 }`와 `terminationGracePeriodSeconds`(`web` 35초, `was` 45초)를 적용함 / Pod 삭제 즉시 엔드포인트 목록에서 제외된 후 네트워크 라우팅(NGF 및 kube-proxy iptables)이 수렴할 때까지 기존 프로세스를 정상 가동 상태로 유지하여 롤링 재시작 중 요청 실패 0건(100% 무중단)을 달성하기 위함
+- `graceful-shutdown`: `preStop` 구현 방식으로 컨테이너 내부 `exec`(`/bin/sh -c sleep 15`) 대신 EKS 1.36(K8s 1.32+ GA) 네이티브 선언형 `lifecycle.preStop.sleep`을 채택함 / 컨테이너 내 쉘·바이너리 의존성이 없어 쉘이 없는 경량 사이드카(`nginx-prometheus-exporter`)에도 동일 적용 가능하며, 프로세스 포크 오버헤드 없이 Kubelet 자체 타이머로 안전하게 동작하기 위함
+- `graceful-shutdown`: `web` Pod 내 메인 `nginx` 컨테이너뿐만 아니라 사이드카인 `nginx-exporter` 컨테이너에도 동일하게 `lifecycle.preStop.sleep: 15`를 적용함 / Kubernetes가 컨테이너별 preStop 및 종료 신호를 병렬 처리하므로 메트릭 수집 사이드카가 조기 종료되어 배포 중 Prometheus 스크래핑 오류가 발생하는 것을 방지하기 위함
+- `graceful-shutdown`: `web` Nginx에 `proxy_next_upstream`을 추가하거나 Nginx 이미지를 재빌드(`v1.0.3`)하지 않고 K8s 워크로드 수명주기 제어만으로 해결함 / Kubernetes ClusterIP 가상 IP 환경에서 Nginx 자체 재시도만으로는 iptables 목적지 Pod 전환을 제어하기 어렵고 비멱등(`POST`) 요청 중복 실행 위험이 있으며, WAS 계층의 `preStop.sleep`으로 Nginx가 종료 중인 Pod로 연결을 시도하는 상황 자체가 원천 차단되기 때문
+- `graceful-shutdown`: WAS 프로세스 종료 시 Spring Boot 및 HikariCP 가정 대신 실제 패키징인 외부 Tomcat 11 WAR 및 Tomcat JDBC Pool(`org.apache.tomcat.jdbc.pool.DataSource`) 수명주기에 맞춰 Catalina 셧다운 훅 → 웹 컨텍스트 `DispatcherServlet` 종료 → `DataSource.close()` 풀 정리 → OTel Java Agent JVM 셧다운 훅 플러시 경로를 기준으로 45초 유예 시간을 산정함 / 실제 런타임 아키텍처(Spring Framework 7.x WAR 배포)에 정확히 부합하는 정상 드레인 순서를 확립하고 남은 유예 시간(30초) 동안 안전한 트랜잭션 완료와 트레이스 플러시를 보장하기 위함 (design.md 초기 기술의 Spring Boot/HikariCP 가정을 실제 구현 기준으로 정정 반영)
+- `graceful-shutdown`: `scripts/validate-manifests.sh`에 `lifecycle.preStop.sleep.seconds` 15초 이상 및 `terminationGracePeriodSeconds`(`web` 35초, `was` 45초) 정적 검증 규칙(§11)을 추가함 / 배포 전 매니페스트 레벨에서 셧다운 지연 누락이나 grace period 역전(grace period <= preStop)으로 인한 조기 SIGKILL 강제 종료 결함을 사전에 차단하기 위함
