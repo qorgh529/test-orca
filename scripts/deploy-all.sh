@@ -116,7 +116,8 @@ echo "== Monitoring (ng-platform) and logging (all nodes)"
 helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
   --version 92.11.0 -n monitoring -f <(render "$K/monitoring/kube-prometheus-values.yaml") --wait
 kubectl apply -f "$K/monitoring/servicemonitor-petclinic.yaml" -f "$K/monitoring/networkpolicy-prometheus.yaml" \
-  -f "$K/monitoring/networkpolicy-alertmanager.yaml" -f "$K/monitoring/prometheusrule-petclinic.yaml"
+  -f "$K/monitoring/networkpolicy-alertmanager.yaml" -f "$K/monitoring/prometheusrule-petclinic.yaml" \
+  -f "$K/monitoring/networkpolicy-grafana.yaml" -f "$K/monitoring/referencegrant-grafana.yaml"
 
 echo "== Tracing (ng-platform): Tempo (S3 via IRSA SA monitoring/tempo) + OTel collector"
 kubectl apply -f "$K/tracing/networkpolicy-tracing.yaml" -f "$K/monitoring/dashboard-apm-tracing.yaml"
