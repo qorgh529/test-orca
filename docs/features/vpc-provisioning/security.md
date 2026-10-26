@@ -30,3 +30,42 @@
 VPC 10.0.0.0/16 및 서브넷 6개, IGW, 라우트 테이블 4개의 프로비저닝 로직은 서울 리전 고정 및 태그 기반 멱등성을 갖추고 있으며, DB 서브넷에 인터넷 경로를 배제하여 Air-Gapped 격리를 준수했다. 그러나 NAT Gateway 삭제 시 서울 리전 내 동일 프로젝트의 모든 미연결 Elastic IP를 무차별 반납하여 타 서비스의 공인 IP 자산 유실 및 DoS를 유발할 수 있는 High 보안/운영 결함과, 라우트 테이블 조회 실패 시 errexit 누락으로 인한 멱등성 훼손 및 IAM 최소 권한 명세 누락이 존재하므로 해당 항목 수정 후 재검토가 필요하다.
 
 배포 가능 여부: No
+
+## Security Round 2 — 2026-10-26 (대상 커밋: 04d9e7c)
+
+점검 범위: `git diff master...HEAD` 전체 변경분, Round 1 지적 사항에 대한 조치 결과(`fc1114e`, `6227f5d`), Review Round 2 지적 사항에 대한 보안 조치(`6e31b6a`), `docs/architecture.md` 보안 구조(§7), `docs/features/vpc-provisioning/design.md` 보안 요구사항(§1.2, §3.3~3.5, §5) 준수 여부.
+
+### 이전 라운드 지적 사항 조치 확인
+- **`scripts/nat-stop.sh:58-62` (R1 High - EIP 무차별 반납)**: 삭제 대상 NAT Gateway에 연결된 `AllocationId`를 사전에 수집하여 반납하도록 수정되었으며, 실패한 실행의 잔여 주소 조회 역시 `Name=petclinic-nat-2a,petclinic-nat-2c` 및 `Project=petclinic` 태그로 엄격히 한정됨. 동일 프로젝트의 비NAT 미연결 EIP가 정상 보존됨을 단위 테스트(`tests/scripts/vpc-provisioning.test.sh`)를 통해 검증 완료함 (`fc1114e`).
+- **`infra/aws/provision-aws-resources.sh:143-152` (R1 Medium - errexit 해제 및 에러 미전파)**: `vpc_route_table` 및 `nat-start.sh`의 `lookup` 서브셸 내 실패 시 `|| return 1`로 명시적 에러 전파 처리되었으며, 빈 라우트 테이블 ID 반환 시 즉시 실패하도록 방어 로직 추가됨 (`fc1114e`).
+- **`docs/features/vpc-provisioning/design.md:327-336` (R1 Medium - IAM 최소 권한 누락)**: §5.1 허용 작업 목록에 `ec2:DescribeInstances`가 반영되어 실제 실행 권한 요구사항과 명세의 일치 확인 (`6227f5d`).
+- **`scripts/daily-stop.sh:148-152` (R1 Low - 노드 종료 시차로 인한 nat-stop 조기 실패)**: `nat-stop.sh` 내에 `NAT_STOP_INSTANCE_WAIT`(기본 300초) 대기 루프가 추가되어 노드 인스턴스 종료를 안전하게 기다린 후 삭제 절차가 진행되도록 보완됨 (`fc1114e`).
+- **`scripts/nat-stop.sh:58` (R1 Low - 주소 조회 실패 은폐 방지)**: `left=$(aws ec2 describe-addresses ...)`로 사전 변수 할당을 분리하여 `set -e` 에러 트래핑 정상화 확인 (`fc1114e`).
+- **`infra/aws/provision-aws-resources.sh:131-133` (Review R2 Medium 보안 연계 - DB 라우트 테이블 재사용 시 인터넷 경로 검증)**: 기존 `petclinic-rt-db` 재사용 시 `0.0.0.0/0` 경로 존재 여부를 조회하여, 인터넷 경로가 있을 경우 DB 서브넷 연결을 거부하고 즉시 실패하도록 방어 로직이 적용됨 (`6e31b6a`).
+
+### 점검 항목별 요약
+- **시크릿/자격증명 하드코딩 및 `.env` 커밋 여부**: 이상 없음 (`git diff master...HEAD` 내 패스워드, AWS 액세스 키, 토큰 하드코딩 없음. `.gitignore`에 `.env` 및 `docs/report/` 안전 등록 유지).
+- **문서(`docs/daily` 포함) 내 계정 ID·ARN·엔드포인트·개인 URL 실값 노출 여부**: 이상 없음 (12자리 계정 ID, IAM ARN 실값, 개인 도메인 노출 없음. `design.md` §5.4 도메인 공개 예외 규칙 준수).
+- **IAM/권한 과다 부여, 최소 권한 원칙 위반**: 이상 없음 (`design.md` §5.1에 EC2 VPC 및 인스턴스 조회 최소 권한만이 정의되어 있으며, 불필요한 와일드카드나 과다 권한 없음).
+- **네트워크 노출 (열린 포트, 0.0.0.0/0, 공개 버킷)**: 이상 없음 (`petclinic-rt-db`의 신규 생성 및 기존 리소스 재사용 시 `0.0.0.0/0` 인터넷 라우트 철저 차단 확인. 앱 프라이빗 서브넷은 AZ별 NAT를 통해서만 아웃바운드 허용. 퍼블릭 서브넷만 IGW 연결).
+- **입력 검증 누락 (인젝션, 경로 조작, SSRF)**: 이상 없음 (`NAT_STOP_INSTANCE_WAIT` 정규식 숫자 검증 및 스크립트 전반 따옴표 처리 완비).
+- **의존성 취약점, 고정되지 않은 버전**: 이상 없음 (외부 신규 패키지 도입 없음, 표준 CLI 도구 활용).
+- **Dockerfile/IaC (root 실행, latest 태그, 암호화 미설정)**: 이상 없음 (신규 도커파일 없음, VPC 프로비저닝 시 DNS hostnames/support 활성화 및 태깅 일관 적용).
+- **design.md 보안 요구사항 및 architecture.md 보안 구조 준수 여부**: 이상 없음 (서울 리전 강제 고정, Air-Gapped DB 서브넷, EIP 오염 방지 등 모든 보안 요구사항 충족).
+
+### Critical
+지적 사항 없음.
+
+### High
+지적 사항 없음.
+
+### Medium
+지적 사항 없음.
+
+### Low
+지적 사항 없음.
+
+### 총평
+Round 1에서 식별되었던 High(무차별 EIP 반납으로 인한 자산 유실 및 DoS 위험), Medium(errexit 해제 및 IAM 명세 누락), Low(노드 종료 대기 및 에러 은폐) 지적 사항들이 모두 완벽히 수정 및 검증되었습니다. 또한 Review Round 2에서 제기되었던 기존 DB 라우트 테이블 재사용 시의 인터넷 경로 검증 로직도 충실히 반영되어 DB 계층의 Air-Gapped 보안 격리가 빈틈없이 보장됩니다. 전체 23개 VPC/NAT 오프라인 단위 테스트 및 YAML 유효성 검사가 통과하였으며 추가적인 보안 결함이 식별되지 않았으므로 안전하게 배포 가능합니다.
+
+배포 가능 여부: Yes
