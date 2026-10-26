@@ -382,3 +382,6 @@ Claude는 아래 단계 순서대로 작업을 진행한다.
 ## 구현 중 질문
 
 <!-- Claude가 구현 단계에서 판단이 필요했던 사항이나 설계 범위 내 세부 결정을 기록하는 빈 섹션 -->
+- (Claude, review R1 Medium·security R1 Low 반영) §3.3의 "스케일다운 시에도 ReplicaSet이 토폴로지 균형을 유지"·"완벽한 대칭성 보장"은 정확하지 않다. `topologySpreadConstraints` 는 **새 Pod를 배치할 때만** 평가되고, ReplicaSet이 줄일 Pod를 고를 때는 AZ 균형을 보지 않는다(Kubernetes 공식 문서 Known limitations). 따라서 이 기능이 보장하는 범위는 "두 AZ에 배치 가능한 노드가 있을 때, 리비전별 신규 배치·롤아웃의 AZ 균형"이다. HPA/KEDA가 4개(2:2)를 2개로 줄이면 2:0이 남을 수 있고, 새 Pod 생성 없이는 바로잡히지 않는다.
+  - 운영 확인: `kubectl -n petclinic get pods -l track=stable -L topology.kubernetes.io/zone` 로 stable `web`·`was` 의 AZ를 본다.
+  - 치유: 한쪽 AZ에 몰려 있으면 `kubectl -n petclinic rollout restart deploy/<web|was-stable>` (무중단, 새 리비전이 이 설정으로 다시 분산된다).
