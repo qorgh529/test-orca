@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Provision AWS resources around the EKS cluster. The VPC and its subnets are inputs (.env).
 #
+#   ./infra/aws/provision-aws-resources.sh vpc           # VPC, 6 subnets, IGW, route tables, NAT x2 (prints the .env lines)
 #   ./infra/aws/provision-aws-resources.sh pre-cluster   # IAM, ECR, log group, backup/Tempo buckets, CodeBuild, WAF, ACM
 #   ./infra/aws/provision-aws-resources.sh cluster       # eksctl create cluster + Karpenter discovery tags
 #   ./infra/aws/provision-aws-resources.sh post-cluster  # RDS MySQL Multi-AZ + Secrets Manager secrets
@@ -54,6 +55,130 @@ upsert_db_secret() {
 }
 
 export AWS_DEFAULT_REGION="${AWS_REGION:-}"
+
+# Network for the cluster (docs/features/vpc-provisioning/design.md). Everything is found by its
+# Name tag inside petclinic-vpc and reused; a resource that exists with other settings (CIDR, AZ,
+# route table association, IGW attachment) stops the run instead of being changed.
+vpc() {
+  # Subnet AZs are fixed to Seoul, so the region is too (a shell AWS_REGION=us-east-1 once built a VPC there).
+  export AWS_REGION=ap-northeast-2 AWS_DEFAULT_REGION=ap-northeast-2
+  local p=petclinic vpc_id cur igw rt_pub rt_db rt key name cidr az n
+  local -A sub
+  echo "== VPC $p-vpc (10.0.0.0/16, $AWS_REGION)"
+  cur=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=$p-vpc" "Name=tag:Project,Values=$p" \
+    --query 'Vpcs[].[VpcId,CidrBlock]' --output text)
+  n=$(grep -c . <<<"$cur" || true)
+  if [ "$n" = 0 ]; then
+    vpc_id=$(aws ec2 create-vpc --cidr-block 10.0.0.0/16 --tag-specifications "$(vpc_tags vpc "$p-vpc")" \
+      --query Vpc.VpcId --output text)
+    aws ec2 wait vpc-available --vpc-ids "$vpc_id"
+  elif [ "$n" = 1 ]; then
+    read -r vpc_id cidr <<<"$cur"
+    [ "$cidr" = 10.0.0.0/16 ] || { echo "$p-vpc $vpc_id is $cidr, not 10.0.0.0/16" >&2; exit 1; }
+    echo "reusing $vpc_id"
+  else
+    echo "more than one VPC tagged $p-vpc: $(tr '\n\t' '  ' <<<"$cur")" >&2; exit 1
+  fi
+  aws ec2 modify-vpc-attribute --vpc-id "$vpc_id" --enable-dns-support '{"Value":true}'
+  aws ec2 modify-vpc-attribute --vpc-id "$vpc_id" --enable-dns-hostnames '{"Value":true}'
+
+  echo "== Subnets"
+  # key name cidr az
+  while read -r key name cidr az; do
+    cur=$(aws ec2 describe-subnets --filters "Name=vpc-id,Values=$vpc_id" "Name=tag:Name,Values=$name" \
+      --query 'Subnets[].[SubnetId,CidrBlock,AvailabilityZone]' --output text)
+    if [ -z "$cur" ]; then
+      sub[$key]=$(aws ec2 create-subnet --vpc-id "$vpc_id" --cidr-block "$cidr" --availability-zone "$az" \
+        --tag-specifications "$(vpc_tags subnet "$name")" --query Subnet.SubnetId --output text)
+    else
+      [ "$(cut -f2,3 <<<"$cur")" = "$cidr"$'\t'"$az" ] \
+        || { echo "$name exists as $(cut -f2,3 <<<"$cur" | tr '\t' ' '), not $cidr $az" >&2; exit 1; }
+      sub[$key]=$(cut -f1 <<<"$cur")
+    fi
+    echo "$name ${sub[$key]}"
+  done <<EOF
+PUBLIC_SUBNET_A_ID $p-public-2a 10.0.0.0/24 ap-northeast-2a
+PUBLIC_SUBNET_C_ID $p-public-2c 10.0.1.0/24 ap-northeast-2c
+APP_PRIVATE_SUBNET_A_ID $p-app-2a 10.0.16.0/20 ap-northeast-2a
+APP_PRIVATE_SUBNET_C_ID $p-app-2c 10.0.32.0/20 ap-northeast-2c
+DB_PRIVATE_SUBNET_A_ID $p-db-2a 10.0.48.0/24 ap-northeast-2a
+DB_PRIVATE_SUBNET_C_ID $p-db-2c 10.0.49.0/24 ap-northeast-2c
+EOF
+
+  echo "== Internet gateway $p-igw"
+  cur=$(aws ec2 describe-internet-gateways --filters "Name=tag:Name,Values=$p-igw" "Name=tag:Project,Values=$p" \
+    --query 'InternetGateways[0].[InternetGatewayId,Attachments[0].VpcId]' --output text)
+  read -r igw cur <<<"$cur"
+  if [ -z "$igw" ] || [ "$igw" = None ]; then
+    igw=$(aws ec2 create-internet-gateway --tag-specifications "$(vpc_tags internet-gateway "$p-igw")" \
+      --query InternetGateway.InternetGatewayId --output text)
+    cur=None
+  fi
+  case "$cur" in
+    "$vpc_id") ;;
+    None|"") aws ec2 attach-internet-gateway --internet-gateway-id "$igw" --vpc-id "$vpc_id" ;;
+    *) echo "$p-igw $igw is attached to $cur, not $vpc_id" >&2; exit 1 ;;
+  esac
+
+  echo "== Route tables (public -> IGW, app -> NAT in the same AZ, db: no internet route)"
+  rt_pub=$(vpc_route_table "$vpc_id" "$p-rt-public")
+  vpc_default_route "$rt_pub" --gateway-id "$igw"
+  vpc_associate "$rt_pub" "${sub[PUBLIC_SUBNET_A_ID]}" "${sub[PUBLIC_SUBNET_C_ID]}"
+  rt=$(vpc_route_table "$vpc_id" "$p-rt-app-2a"); vpc_associate "$rt" "${sub[APP_PRIVATE_SUBNET_A_ID]}"
+  rt=$(vpc_route_table "$vpc_id" "$p-rt-app-2c"); vpc_associate "$rt" "${sub[APP_PRIVATE_SUBNET_C_ID]}"
+  rt_db=$(vpc_route_table "$vpc_id" "$p-rt-db")
+  vpc_associate "$rt_db" "${sub[DB_PRIVATE_SUBNET_A_ID]}" "${sub[DB_PRIVATE_SUBNET_C_ID]}"
+
+  # EIP + NAT per AZ and the app route tables' 0.0.0.0/0, shared with the daily NAT start.
+  "$ROOT/scripts/nat-start.sh"
+
+  echo "== Add to .env:"
+  echo "VPC_ID=$vpc_id"
+  for key in PUBLIC_SUBNET_A_ID PUBLIC_SUBNET_C_ID APP_PRIVATE_SUBNET_A_ID APP_PRIVATE_SUBNET_C_ID \
+             DB_PRIVATE_SUBNET_A_ID DB_PRIVATE_SUBNET_C_ID; do
+    echo "$key=${sub[$key]}"
+  done
+}
+
+vpc_tags() { echo "ResourceType=$1,Tags=[{Key=Name,Value=$2},{Key=Project,Value=petclinic}]"; }
+
+# Route table <name> in <vpc>, created when missing.
+vpc_route_table() {
+  local id
+  id=$(aws ec2 describe-route-tables --filters "Name=vpc-id,Values=$1" "Name=tag:Name,Values=$2" \
+    --query 'RouteTables[0].RouteTableId' --output text)
+  if [ -z "$id" ] || [ "$id" = None ]; then
+    id=$(aws ec2 create-route-table --vpc-id "$1" --tag-specifications "$(vpc_tags route-table "$2")" \
+      --query RouteTable.RouteTableId --output text)
+  fi
+  echo "$id"
+}
+
+# Associate subnets with <rt>. A subnet already tied to another table is left alone and fails the run.
+vpc_associate() {
+  local rt=$1 s cur; shift
+  for s in "$@"; do
+    cur=$(aws ec2 describe-route-tables --filters "Name=association.subnet-id,Values=$s" \
+      --query 'RouteTables[0].RouteTableId' --output text)
+    case "$cur" in
+      "$rt") ;;
+      None|"") aws ec2 associate-route-table --route-table-id "$rt" --subnet-id "$s" >/dev/null ;;
+      *) echo "subnet $s is associated with $cur, not $rt" >&2; exit 1 ;;
+    esac
+  done
+}
+
+# 0.0.0.0/0 in <rt> -> <--gateway-id|--nat-gateway-id> <id>: create, keep, or repoint (e.g. at a deleted NAT).
+vpc_default_route() {
+  local rt=$1 flag=$2 target=$3 cur
+  cur=$(aws ec2 describe-route-tables --route-table-ids "$rt" \
+    --query "RouteTables[0].Routes[?DestinationCidrBlock=='0.0.0.0/0'].[GatewayId,NatGatewayId]" --output text)
+  if [ -z "$cur" ]; then
+    aws ec2 create-route --route-table-id "$rt" --destination-cidr-block 0.0.0.0/0 "$flag" "$target" >/dev/null
+  elif ! grep -qw -- "$target" <<<"$cur"; then
+    aws ec2 replace-route --route-table-id "$rt" --destination-cidr-block 0.0.0.0/0 "$flag" "$target"
+  fi
+}
 
 pre_cluster() {
   require AWS_REGION AWS_ACCOUNT_ID EKS_CLUSTER_NAME CW_LOG_GROUP_NAME BACKUP_S3_BUCKET_NAME TEMPO_S3_BUCKET_NAME DOMAIN_NAME ROUTE53_HOSTED_ZONE_ID
@@ -426,9 +551,10 @@ grafana_waf() {
 }
 
 case "${1:-}" in
+  vpc) vpc ;;
   pre-cluster) pre_cluster ;;
   cluster) cluster ;;
   post-cluster) post_cluster ;;
   grafana-waf) grafana_waf ;;
-  *) echo "usage: $0 {pre-cluster|cluster|post-cluster|grafana-waf}" >&2; exit 1 ;;
+  *) echo "usage: $0 {vpc|pre-cluster|cluster|post-cluster|grafana-waf}" >&2; exit 1 ;;
 esac
