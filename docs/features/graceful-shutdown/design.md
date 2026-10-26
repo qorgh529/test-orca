@@ -385,3 +385,9 @@ spec:
 ## 구현 중 질문
 
 <!-- Claude가 구현 단계에서 판단이 필요했던 사항이나 설계 범위 내 세부 결정을 기록하는 빈 섹션 -->
+
+- (Claude, review R1 Medium·security R1 Low 반영) §1.2·§3.3·§3.4의 WAS 종료 설명 정정. 이 앱은 Spring Boot가 아니라 외부 Tomcat 11에 올린 WAR다(`PetclinicInitializer` = `AbstractDispatcherServletInitializer`, `PetClinicApplication`·`registerShutdownHook()` 없음). 커넥션 풀도 HikariCP가 아니라 Tomcat JDBC Pool(`datasource-config.xml` 의 `org.apache.tomcat.jdbc.pool.DataSource`)이다. 실제 종료 경로:
+  1. preStop sleep 15초 동안 Pod는 엔드포인트에서 빠지고 요청을 계속 처리한다.
+  2. SIGTERM → `catalina.sh run` 의 JVM이 Catalina 종료 훅을 실행 → 커넥터가 새 연결을 받지 않고, 웹 컨텍스트가 내려가면서 `DispatcherServlet`·`ContextLoaderListener` 가 Spring 컨텍스트를 닫는다.
+  3. 컨텍스트 종료 때 `DataSource` 빈의 추론된 `close()` 로 Tomcat JDBC Pool이 정리된다. OTel Java Agent는 JVM 종료 훅에서 남은 span을 내보낸다.
+  - 남은 유예 시간(45 − 15 = 30초)이 충분한지는 실클러스터 Step 7에서 was Pod의 종료 로그(SIGTERM 이후 종료까지 걸린 시간, SIGKILL 여부)로 확인한다.
