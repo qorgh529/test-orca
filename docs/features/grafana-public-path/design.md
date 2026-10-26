@@ -427,3 +427,11 @@ Claude가 작업을 단계별로 완수할 수 있도록 명확히 순서화하�
 ## 7. 구현 중 질문
 
 *(비어 있음)*
+
+- (Claude, ② 구현) 설계와 다르게 한 점 — 모두 같은 의도를 더 정확히 구현하기 위한 것:
+  1. **로그인 시도 제한:** `auth.max_login_attempts` 는 Grafana에 없는 설정이다. Grafana 기본 무차별 대입 방어(`security.disable_brute_force_login_protection = false`, 같은 사용자 5분 내 5회 실패 시 잠금)를 그대로 쓰고 값은 넣지 않았다. `users.auto_assign_org_role` 도 가입이 꺼져 있어 의미가 없어 뺐다.
+  2. **NetworkPolicy:** `nginx-gateway` 네임스페이스 전체 대신 데이터 플레인 Pod만(`gateway.networking.k8s.io/gateway-name: petclinic-gateway`) 허용했다. 같은 네임스페이스의 NGF 컨트롤 플레인은 Grafana에 접근할 이유가 없다.
+  3. **WAF 경로 비교:** `/grafana` 비교 전에 `URL_DECODE` → `NORMALIZE_PATH` → `LOWERCASE` 를 적용했다. NGF(nginx)는 `%67rafana`·`//grafana`·`/./grafana` 를 모두 `/grafana` 로 해석해 Grafana로 보내므로, 대소문자만 무시하면 이런 경로로 IP 제한을 우회할 수 있다.
+  4. **WAF 적용 방식:** `pre-cluster` 안이 아니라 별도 하위 명령 `provision-aws-resources.sh grafana-waf` 로 만들었다. `WAF_WEB_ACL_ARN` 은 `pre-cluster` 가 처음 만든 뒤에야 `.env` 에 들어가고, 허용 IP가 바뀔 때 이것만 다시 실행하면 된다. 기존 규칙 설정은 그대로 두고 우선순위만 한 칸씩 민다(재실행해도 같은 결과).
+  5. **ReferenceGrant:** 클러스터가 `gateway.networking.k8s.io/v1` 을 제공해 v1을 썼다(설계와 같음).
+  - 확인 필요(적용 단계): `serve_from_sub_path = true` 에서 Grafana 차트의 헬스 프로브(`/api/health`)와 Prometheus 스크랩(`/metrics`)이 계속 성공하는지 `helm upgrade --wait` 와 타깃 상태로 확인한다.
