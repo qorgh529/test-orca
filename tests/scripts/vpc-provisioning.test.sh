@@ -123,6 +123,9 @@ t "vpc stops on a subnet tied to another route table" eval '
   fresh && run ok $VPC && echo rtb-other > "$DB/assoc.subnet-petclinic-db-2a" &&
   run "subnet subnet-petclinic-db-2a is associated with rtb-other" $VPC && ! called " associate-route-table "'
 
+t "vpc stops on a reused DB route table with an internet route" eval '
+  fresh && run ok $VPC && echo "igw-1 None" > "$DB/route.rtb-petclinic-rt-db" && rm "$DB/assoc.subnet-petclinic-db-2a" &&
+  run "petclinic-rt-db rtb-petclinic-rt-db has a 0.0.0.0/0 route" $VPC && ! called " associate-route-table "'
 t "nat-stop refuses while instances run" eval '
   fresh && run ok $VPC && echo 3 > "$DB/instances" &&
   NAT_STOP_INSTANCE_WAIT=0 run "3 EC2 instance(s) still running in vpc-1 after 0s" "$T/scripts/nat-stop.sh" &&

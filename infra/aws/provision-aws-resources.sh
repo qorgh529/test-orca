@@ -127,6 +127,10 @@ EOF
   rt=$(vpc_route_table "$vpc_id" "$p-rt-app-2a"); vpc_associate "$rt" "${sub[APP_PRIVATE_SUBNET_A_ID]}"
   rt=$(vpc_route_table "$vpc_id" "$p-rt-app-2c"); vpc_associate "$rt" "${sub[APP_PRIVATE_SUBNET_C_ID]}"
   rt_db=$(vpc_route_table "$vpc_id" "$p-rt-db")
+  # A reused table must still have no way out: the DB subnets are not attached to one that does.
+  cur=$(aws ec2 describe-route-tables --route-table-ids "$rt_db" \
+    --query "RouteTables[0].Routes[?DestinationCidrBlock=='0.0.0.0/0'].[GatewayId,NatGatewayId]" --output text)
+  [ -z "$cur" ] || { echo "$p-rt-db $rt_db has a 0.0.0.0/0 route ($(tr '\t' ' ' <<<"$cur")): DB subnets must have none" >&2; exit 1; }
   vpc_associate "$rt_db" "${sub[DB_PRIVATE_SUBNET_A_ID]}" "${sub[DB_PRIVATE_SUBNET_C_ID]}"
 
   # EIP + NAT per AZ and the app route tables' 0.0.0.0/0, shared with the daily NAT start.
