@@ -7,7 +7,7 @@
 - **포함 범위 (In-Scope)**:
   - Route 53, ACM, AWS WAFv2, LBC 기반 internet-facing ALB(`target-type: ip`)를 통한 엣지 보안 및 TLS 종단
   - NGINX Gateway Fabric(NGF) `Gateway` 및 `HTTPRoute`를 이용한 L7 라우팅과 헤더(`X-Canary: always`) 검증 통과 후 100:0 → 90:10으로 여는 가중치 기반 카나리(Canary) 트래픽 분할
-  - `web`(Nginx 1.27 정적 서빙 + 리버스 프록시)과 `was`(Tomcat 11 언패킹 WAR + JMX Exporter + OpenTelemetry Java Agent 무코드 자동 주입) 2-Tier 분리 및 각각 CPU 기반 HPA / Prometheus 요청률 기반 KEDA 오토스케일링
+  - `web`(Nginx 1.27 정적 서빙 + 리버스 프록시)과 `was`(Tomcat 11 언패킹 WAR + JMX Exporter + OpenTelemetry Java Agent 무코드 자동 주입) 2-Tier 분리(롤링 배포 시 구버전 Pod 간섭을 차단하는 `matchLabelKeys: [pod-template-hash]` 기반 Multi-AZ 균등 분산 및 stable PDB `minAvailable: 1`) 및 각각 CPU 기반 HPA / Prometheus 요청률 기반 KEDA 오토스케일링
   - 3-Tier 노드 분리: `np-app`(Karpenter On-Demand 기본 풀 + `np-app-spot` Spot 확장 풀), `ng-critical`(클러스터 컨트롤러·OpenTelemetry Operator 및 DB 초기화/백업 Job 전용 관리형 노드 그룹), `ng-platform`(모니터링·분산 트레이싱 스택 및 `gp3` PVC 전용 관리형 노드 그룹)
   - 프라이빗 DB 서브넷의 RDS MySQL 8.4 LTS Multi-AZ(Primary/Standby 동기 복제), S3 암호화 백업(`CronJob`), 역할별 DB 계정(admin/app/backup) 분리, AWS Secrets Manager + External Secrets Operator(ESO) 기반 시크릿 동기화
   - OpenTelemetry(Operator · Java Agent · Collector) + Grafana Tempo(전용 S3 버킷 IRSA 연동) 기반 분산 트레이싱(SDK 10% 헤드 샘플링), 100% 전수 RED 메트릭(`http_server_request_duration_seconds`) 및 Trace-based Exemplar(`trace_id`) 점프, Logback MDC(`trace_id`/`span_id`) 로그 상관분석
@@ -31,8 +31,8 @@
 | **Edge / DNS** | Route 53, ACM, AWS WAFv2 | 도메인 A(Alias) 라우팅, 공인 TLS 인증서 발급·갱신, OWASP/SQLi/KnownBadInputs 관리형 규칙 필터링 | AWS 관리형 (`ap-northeast-2`) |
 | **Ingress LB** | AWS ALB (AWS Load Balancer Controller) | HTTP(`80`)→HTTPS(`443`) 리다이렉트, TLS 1.3/1.2 종단, 비정상 헤더 드롭, `target-type: ip`로 NGF Pod에 직접 라우팅 | 퍼블릭 서브넷 (`2a`, `2c`) |
 | **L7 Gateway** | NGINX Gateway Fabric 2.x (`nginx-gateway`) | Gateway API(`v1.6.3`). 컨트롤 플레인(2 Replicas)이 Gateway마다 데이터 플레인 `petclinic-gateway-nginx`(2 Replicas, AZ 분산, 차트 PDB `minAvailable: 1`, `ClusterIP`)를 생성. `HTTPRoute`로 `web` / `web-canary` 트래픽 분할(배포 중 100:0, 카나리 검증 후 90:10, `X-Canary: always`는 항상 `web-canary`) | `nginx-gateway` / `np-app` (`workload-tier=app`) |
-| **Web Tier** | `web`, `web-canary` (Nginx + Exporter) | `/resources/*`, `/webjars/*` 정적 에셋 직접 서빙 및 보안 헤더 부여, 동적 요청을 각각 `was-stable:8080`, `was-canary:8080`으로 프록시. 사이드카 `nginx-prometheus-exporter`(`:9113`) 내장. CPU 60% 기준 HPA(`web` 2~10, `web-canary` 1~4), stable PDB(`minAvailable: 1`) | `petclinic` / `np-app` (`workload-tier=app`) |
-| **WAS Tier** | `was-stable`, `was-canary` (Tomcat 11 + JMX Exporter + OTel Java Agent) | 사전 언패킹된 `webapps/ROOT` 구동(`jpa` 프로필, 읽기 전용 루트 파일시스템), `WelcomeController` 기반 메인 대시보드(`/`, `/welcome` — 운영 통계 3종 및 `VisitSummary` 플랫 프로젝션 기반 최근 방문 5건 조회) 및 PetClinic 비즈니스 서블릿 처리, JMX Exporter(`:9404/metrics`) 노출 및 OpenTelemetry Operator가 주입하는 Java Agent(`autoinstrumentation-java:2.12.0`)로 HTTP·Spring MVC·Hibernate/JDBC 자동 계측(`service.version=stable\|canary`), Logback ConfigMap 마운트로 MDC `trace_id`/`span_id` 출력. Prometheus 요청률 기반 KEDA `ScaledObject`(`was-stable` 2~10·fallback 4, `was-canary` 1~3·fallback 2), stable PDB(`minAvailable: 1`), Tomcat JDBC 풀 최대 10 | `petclinic` / `np-app` (`workload-tier=app`) |
+| **Web Tier** | `web`, `web-canary` (Nginx + Exporter) | `/resources/*`, `/webjars/*` 정적 에셋 직접 서빙 및 보안 헤더 부여, 동적 요청을 각각 `was-stable:8080`, `was-canary:8080`으로 프록시. 사이드카 `nginx-prometheus-exporter`(`:9113`) 내장. `topologySpreadConstraints` 기반 AZ 균등 분산(`topologyKey: topology.kubernetes.io/zone`, `maxSkew: 1`, `matchLabelKeys: [pod-template-hash]` — stable `DoNotSchedule`, canary `ScheduleAnyway`). CPU 60% 기준 HPA(`web` 2~10, `web-canary` 1~4), stable PDB(`minAvailable: 1`) | `petclinic` / `np-app` (`workload-tier=app`) |
+| **WAS Tier** | `was-stable`, `was-canary` (Tomcat 11 + JMX Exporter + OTel Java Agent) | 사전 언패킹된 `webapps/ROOT` 구동(`jpa` 프로필, 읽기 전용 루트 파일시스템), `WelcomeController` 기반 메인 대시보드(`/`, `/welcome` — 운영 통계 3종 및 `VisitSummary` 플랫 프로젝션 기반 최근 방문 5건 조회) 및 PetClinic 비즈니스 서블릿 처리, JMX Exporter(`:9404/metrics`) 노출 및 OpenTelemetry Operator가 주입하는 Java Agent(`autoinstrumentation-java:2.12.0`)로 HTTP·Spring MVC·Hibernate/JDBC 자동 계측(`service.version=stable\|canary`), Logback ConfigMap 마운트로 MDC `trace_id`/`span_id` 출력. `topologySpreadConstraints` 기반 AZ 균등 분산(`topologyKey: topology.kubernetes.io/zone`, `maxSkew: 1`, `matchLabelKeys: [pod-template-hash]` — stable `DoNotSchedule`, canary `ScheduleAnyway`). Prometheus 요청률 기반 KEDA `ScaledObject`(`was-stable` 2~10·fallback 4, `was-canary` 1~3·fallback 2), stable PDB(`minAvailable: 1`), Tomcat JDBC 풀 최대 10 | `petclinic` / `np-app` (`workload-tier=app`) |
 | **Cluster Controllers** | CoreDNS, LBC, Metrics Server, Karpenter, KEDA, ESO, EBS CSI, OpenTelemetry Operator | 클러스터 핵심 제어부, 오토스케일러·시크릿·스토리지 드라이버 및 `Instrumentation` CR 기반 Java Agent Mutating Webhook(`:9443`, `failurePolicy: Ignore`) | `kube-system`, `keda`, `external-secrets`, `opentelemetry-operator-system` / `ng-critical` (Taint: `node-role=critical:NoSchedule`) |
 | **DB Jobs** | `db-init` (Job), `db-backup` (CronJob) | 배포 시 admin 계정으로 멱등 스키마/초기 데이터 적재(`schema.sql`, `data.sql`) 및 app/backup 계정 생성·권한 부여, 매일 03:00 KST `mysqldump` 압축본을 S3(`SSE-KMS`)에 업로드 | `petclinic` / `ng-critical` (Taint: `node-role=critical:NoSchedule`) |
 | **Observability & Tracing** | Prometheus, Grafana, Alertmanager, OTel Collector, Grafana Tempo, kube-state-metrics, node-exporter, Fluent Bit | `ServiceMonitor` 기반 `web`(`:9113`)·`was`(`:9404`)·`otel-collector`(`:8889`, OpenMetrics Exemplar) 스크래핑, KEDA 스케일링 쿼리 제공, `gp3` 암호화 볼륨 영속화, Prometheus 2 Replicas(`exemplar-storage` 활성화) AZ 분산, `PrometheusRule` → Alertmanager Webhook. OTel Collector(2 Replicas AZ 분산, `:4317`/`:4318` 수신)는 트레이스를 Tempo(`:4317` 수신, `:3200` 쿼리, `gp3` 10Gi WAL + 전용 S3 IRSA)로 전달하고 RED 메트릭+Exemplar를 `:8889`로 노출. `node-exporter` 및 Fluent Bit DaemonSet은 전 노드에서 메트릭·컨테이너 로그(→ CloudWatch Logs) 수집 | `monitoring` (`ng-platform`, Taint: `node-role=platform:NoSchedule`; `node-exporter`는 전 노드 Toleration) / `amazon-cloudwatch` (Fluent Bit 전 노드 Toleration) |
@@ -70,8 +70,10 @@
 │       ├── architecture-pod-diagram/design.md   # 다이어그램 Pod 단위 상세화 설계 (Pod 배치 표, 선 규칙)
 │       ├── codebuild-image-build/{design,review,security}.md  # CodeBuild 기반 컨테이너 이미지 빌드·푸시 설계·리뷰·보안 점검
 │       ├── rds-mysql-84/{design,review,security}.md           # RDS MySQL 8.4 LTS 전환 설계·리뷰·보안 점검
-│       └── staff-dashboard/                  # 스태프 운영 대시보드(WelcomeController, VisitSummary) 설계·목업·리뷰·보안 점검
-│           ├── mockup/main.html              # UI 프로토타입 원본
+│       ├── staff-dashboard/                  # 스태프 운영 대시보드(WelcomeController, VisitSummary) 설계·목업·리뷰·보안 점검
+│       │   ├── mockup/main.html              # UI 프로토타입 원본
+│       │   └── {design,review,security}.md
+│       └── spread-on-rollout/                # 롤링 업데이트 시 AZ 균등 분산 보장(matchLabelKeys) 설계·리뷰·보안 점검
 │           └── {design,review,security}.md
 ├── app/                                  # spring-framework-petclinic 소스 코드
 │   ├── pom.xml                           # Maven WAR 빌드, MySQL/PostgreSQL/H2/HSQLDB 프로필
@@ -116,15 +118,15 @@
 │   │   ├── job-db-init.yaml              # admin 계정으로 schema/data 적재 + app/backup 계정 생성·최소 권한 부여 Job (ng-critical, mysql:8.4.11, REQUIRE SSL)
 │   │   └── cronjob-db-backup.yaml        # 일일 mysqldump(backup 계정) → S3(SSE-KMS) 업로드 CronJob (ng-critical, mysql:8.4.11, IRSA db-backup)
 │   ├── web/
-│   │   ├── deployment.yaml               # web(→was-stable) 및 web-canary(→was-canary) Deployment + nginx-exporter 사이드카
+│   │   ├── deployment.yaml               # web(→was-stable) 및 web-canary(→was-canary) Deployment + nginx-exporter 사이드카 (리비전별 AZ 토폴로지 분산 matchLabelKeys 적용)
 │   │   ├── service.yaml                  # web, web-canary Service (:80→:8080, :9113)
 │   │   ├── hpa.yaml                      # web(2~10), web-canary(1~4) CPU 60% HPA
 │   │   ├── pdb.yaml                      # web stable PodDisruptionBudget (minAvailable: 1)
 │   │   └── networkpolicy.yaml            # web Ingress 허용 (nginx-gateway → 8080, Prometheus → 9113)
 │   ├── was/
 │   │   ├── instrumentation.yaml          # OpenTelemetry Instrumentation CR (petclinic-java) 및 Logback MDC 출력용 ConfigMap (petclinic-was-logback)
-│   │   ├── deployment-stable.yaml        # was-stable Deployment (inject-java, service.version=stable, Logback 마운트, 1280Mi~2Gi, readiness initialDelaySeconds 20)
-│   │   ├── deployment-canary.yaml        # was-canary Deployment (inject-java, service.version=canary, Logback 마운트, 1280Mi~2Gi, readiness initialDelaySeconds 20)
+│   │   ├── deployment-stable.yaml        # was-stable Deployment (inject-java, service.version=stable, Logback 마운트, 1280Mi~2Gi, readiness initialDelaySeconds 20, 리비전별 AZ 토폴로지 분산 matchLabelKeys 적용)
+│   │   ├── deployment-canary.yaml        # was-canary Deployment (inject-java, service.version=canary, Logback 마운트, 1280Mi~2Gi, readiness initialDelaySeconds 20, 리비전별 AZ 토폴로지 분산 matchLabelKeys 적용)
 │   │   ├── service-stable.yaml           # was-stable Service (:8080, :9404)
 │   │   ├── service-canary.yaml           # was-canary Service (:8080, :9404)
 │   │   ├── service.yaml                  # was 통합 Service (:8080, :9404)
@@ -164,7 +166,7 @@
     ├── daily-stop.sh                     # 퇴근 전 앱/Karpenter 노드·RDS·관리형 노드그룹 일괄 중지 및 잔여 비용 안내 (--dry-run 지원)
     ├── daily-start.sh                    # 출근 시 RDS·관리형 노드그룹·컨트롤러(opentelemetry-operator 포함)·Karpenter·워크로드/오토스케일러/CronJob 일괄 복원 (--dry-run 지원)
     ├── test-prometheus-rules.sh          # promtool로 PrometheusRule 단위 테스트 실행
-    └── validate-manifests.sh             # YAML 문법, 고정 이미지/애드온 버전, 평문 시크릿 부재, 노드 티어/비루트, 역할별 DB 시크릿·PDB·KEDA fallback, 트레이싱, CodeBuild(buildspec fail-fast/태그 검증/amd64, IAM 정책 최소 권한, 소스/백업/Tempo 버킷 이름 상이 검증, .env.example 정합성, build-and-push 오프라인 테스트), daily-stop/start 회귀 테스트 검증기
+    └── validate-manifests.sh             # YAML 문법, 고정 이미지/애드온 버전, 평문 시크릿 부재, 노드 티어/비루트, 역할별 DB 시크릿·PDB·KEDA fallback, 워크로드 리비전별 AZ 분산(matchLabelKeys: [pod-template-hash], maxSkew 1, zone), 트레이싱, CodeBuild(buildspec fail-fast/태그 검증/amd64, IAM 정책 최소 권한, 소스/백업/Tempo 버킷 이름 상이 검증, .env.example 정합성, build-and-push 오프라인 테스트), daily-stop/start 회귀 테스트 검증기
 ```
 
 ---
@@ -178,7 +180,7 @@
 **다이어그램 읽는 법**
 - **선 종류**: 실선 = 사용자 요청 경로(①~⑥, 남색 stable / 주황 canary), 자홍 점선 = 관측(메트릭·트레이스·로그), 회색 점선 = 생성·설정·권한(컨트롤, RDS Multi-AZ 동기 복제 포함).
 - **배치**: VPC를 `2a` / `2c` 두 열 × 퍼블릭·앱 프라이빗·DB 프라이빗 서브넷 행으로 나누고, EKS 클러스터 안에 AZ별 노드 박스(`np-app`/`np-app-spot`, `ng-critical`, `ng-platform`)와 그 위의 Pod를 `이름 ×기본 레플리카 (종류)` 로 그린다. 배치는 `k8s/`·`infra/`·`scripts/deploy-all.sh` 기준의 의도된 배치이며 실클러스터 조회 결과가 아니다.
-- **AZ 표기**: 레플리카 2개 이상이면서 zone 분산 제약이 있는 워크로드는 두 AZ에 1개씩 그린다. `AZ 비고정` 이 붙은 Pod(레플리카 1개이거나 AZ 제약 없음)는 그려진 AZ가 예시 위치다.
+- **AZ 표기**: 레플리카 2개 이상이면서 zone 분산 제약이 있는 워크로드는 두 AZ에 1개씩 그린다. `AZ 비고정` 이 붙은 Pod(레플리카 1개이거나 AZ 제약 없음)는 그려진 AZ가 예시 위치다. `web` 및 `was` 워크로드는 `topologySpreadConstraints`에 `matchLabelKeys: [pod-template-hash]`를 적용하여 롤링 업데이트 시에도 구버전 ReplicaSet 간섭 없이 신규 Pod가 `2a`와 `2c`에 1개씩 균등하게 스케줄링된다 (단, K8s 스케줄러 특성상 신규 배치 시점에만 평가되므로 HPA/KEDA 스케일다운 후 불균형 발생 시에는 `rollout restart`로 재분산한다).
 - **경로 단순화**: ③→④→⑤는 같은 AZ 안에서 세로로 그렸지만 실제 Service 로드밸런싱은 AZ를 넘을 수 있다. 모든 노드에 뜨는 DaemonSet(`aws-node`, `kube-proxy`, `ebs-csi-node`, `prometheus-node-exporter`, `aws-for-fluent-bit`)은 클러스터 안 띠 하나에 모아 그리고, 클러스터 하단에 주요 K8s 리소스(Ingress·Gateway·HTTPRoute·Service·HPA·ScaledObject·ConfigMap·Secret·ExternalSecret·PVC 등, CRD는 `crd` 아이콘)를 AZ 열별 두 상자로 나눠 둔다. 선이 Pod 라벨을 가로지르지 않도록 NGF 컨트롤 플레인 → 데이터 플레인 설정 배포, ESO → Secret, EBS CSI → PVC, OTel Operator → `was` 주입 경로는 선 대신 Pod 설명(또는 라벨 없는 선)으로 표시한다.
 
 ### 단계별 트래픽, 분산 트레이싱 및 제어 흐름 (① ~ ⑥)
@@ -270,7 +272,7 @@ sequenceDiagram
 | **Web Container** | Nginx + Exporter Sidecar | `nginx:1.27.2-alpine`, `nginx/nginx-prometheus-exporter:1.3.0` |
 | **WAS Container** | Apache Tomcat 11 + JMX Exporter + OTel Java Agent | `tomcat:11.0.2-jre21-temurin-noble`, `jmx_prometheus_javaagent:1.0.1`, `autoinstrumentation-java:2.12.0` (init container 주입) |
 | **DB Jobs** | MySQL Client / AWS CLI | `mysql:8.4.11`, `amazon/aws-cli:2.18.0` |
-| **Kubernetes** | Amazon EKS | `1.36` (AL2023 AMI `al2023@v20260930`, 새 클러스터 생성 기준) |
+| **Kubernetes** | Amazon EKS | `1.36` (AL2023 AMI `al2023@v20260930`, K8s 1.36 PodTopologySpread `matchLabelKeys` GA 활용, 새 클러스터 생성 기준) |
 | **Gateway API** | Gateway API CRDs / NGF | CRDs `v1.6.3` (standard), `nginx-gateway-fabric` Helm `2.8.0` |
 | **Autoscaling** | Karpenter / KEDA / Metrics Server | Karpenter `1.15.0` (+ `karpenter-crd`), KEDA `2.21.0`, Metrics Server Helm `3.14.0` (`v0.9.0`) |
 | **Ingress / Storage / Secrets** | LBC / EBS CSI / ESO | `aws-load-balancer-controller` Helm `3.6.1` (`v3.6.1`), `aws-ebs-csi-driver` `${EBS_CSI_ADDON_VERSION}`(환경별 고정), `external-secrets` `2.13.0` (API `v1`) |
@@ -355,6 +357,7 @@ sequenceDiagram
    - 모든 네임스페이스에 워크로드 특성에 맞는 Pod Security Standards(`petclinic`·`opentelemetry-operator-system`: `enforce: restricted`, `nginx-gateway`/`external-secrets`/`keda`: `enforce: baseline`, `monitoring`/`amazon-cloudwatch`: `enforce: privileged`) 레이블을 적용한다.
    - `web`, `was`, `db-init`, `db-backup`, `otel-collector`, `tempo`는 비루트 사용자(`UID/GID 10001`, `opentelemetry-operator`는 `65532`), `runAsNonRoot: true`, `allowPrivilegeEscalation: false`, `capabilities: { drop: ["ALL"] }`, `seccompProfile: RuntimeDefault`, `readOnlyRootFilesystem: true`(`otel-operator` 제외)로 실행되며, 런타임 쓰기가 필요한 경로만 `emptyDir` 또는 PVC 볼륨으로 마운트한다.
    - CodeBuild 환경에서 빌드되는 `web` 및 `was` 이미지는 멀티스테이지 빌드를 통해 빌드 도구와 임시 파일을 배제하고, `UID 10001` 비루트 사용자로 구동되며, JMX Exporter JAR은 SHA256 체크섬 고정 검증을 거친다. 빌드 시 `--platform linux/amd64`를 강제하여 Karpenter 노드(`np-app`, `np-app-spot`)의 x86_64 아키텍처와 일치시킨다.
+   - `web` 및 `was` 워크로드에 `matchLabelKeys: [pod-template-hash]` 기반 가용영역 토폴로지 분산 제약을 적용하여 롤링 업데이트 중 특정 AZ 편중으로 인한 가용성 침해(단일 AZ 장애 시 서비스 단절)를 방지함으로써 클라우드 인프라의 장애 복원력과 고가용성(HA)을 보장한다. 별도의 특권 컨트롤러(Descheduler 등)나 RBAC 권한 상승 없이 EKS 내장 스케줄러 기능으로 동작하여 공격 표면(Attack Surface) 확장을 차단하고 최소 권한 격리 규격을 유지한다.
 6. **일일 중지·기동 스크립트 최소 권한 및 무결성 보호 (`scripts/daily-stop.sh` · `scripts/daily-start.sh`)**:
    - 두 스크립트는 AWS 컨트롤 플레인(`eks:DescribeCluster`, `eks:DescribeNodegroup`, `eks:UpdateNodegroupConfig`, `eks:DescribeUpdate`, `rds:DescribeDBInstances`, `rds:StopDBInstance`, `rds:StartDBInstance`)과 K8s 스케일링·롤아웃 API(`petclinic`·`nginx-gateway` 리소스 제어, 클러스터 범위 `nodepools`/`nodeclaims` 제어, `kube-system`·`external-secrets`·`keda`·`opentelemetry-operator-system` `deployments` 조회)만 사용하며, DB 비밀번호나 K8s `Secret` 값을 읽거나 출력하지 않는다.
    - 관리형 노드 그룹 스케일 백업 파일(`.daily-nodegroup-state.json`)은 `.gitignore`로 추적에서 제외하고 `umask 077`로 생성하며, 기동 시 모든 변경(RDS 시작 포함) 전에 JSON 유효성과 `minSize`/`desiredSize`/`maxSize` 정수·범위(`desiredSize >= 1`, `minSize <= desiredSize <= maxSize`)를 검증해 손상된 상태 파일이나 잘못된 환경변수로 인한 비정상 스케일링·부분 기동을 차단한다.
@@ -403,3 +406,7 @@ sequenceDiagram
 - `staff-dashboard`: 대시보드 최근 방문 목록(`findRecentVisits`) 조회 시 `Visit` 엔티티 대신 읽기 전용 플랫 프로젝션 DTO(`VisitSummary`)를 도입함 / `Pet.visits` 컬렉션의 `FetchType.EAGER` 매핑으로 인해 fetch join 시에도 반려동물별 전체 방문 이력이 N+1 추가 조회되는 부하를 원천 차단하고 단 1회의 상한 제한(`limit=5`) 쿼리로만 필요한 필드를 로딩하기 위함 (design.md의 `List<Visit>` 엔티티 그래프 대신 `VisitSummary` 프로젝션 적용)
 - `staff-dashboard`: DB 스키마(DDL) 변경 없이 기존 테이블 구조를 유지하고, 목업의 담당 수의사(Assigned Vet)·당직 상태(On Duty) 및 당일 방문(Visits Today) 대신 수의사 전문 분야 명단과 전체 누적 방문 수로 대체함 / 사용자 요구사항에 따라 DB 스키마 수정을 일절 배제하고 과거 시점(2008~2011) 샘플 데이터 환경에서도 빈 화면 없이 일관된 통계를 제공하기 위함
 - `staff-dashboard`: 목업의 전역 신규 방문/반려동물 등록 버튼 대신 최근 방문 행별 개별 등록 링크(`/owners/{ownerId}/pets/{petId}/visits/new`)를 제공함 / PetClinic 도메인 구조상 방문 등록은 반드시 특정 보호자 및 반려동물 컨텍스트 하에서만 유효하여 유효하지 않은 전역 엔드포인트 오류를 방지하기 위함
+- `spread-on-rollout`: 롤링 업데이트 시 구버전 ReplicaSet Pod와의 라벨 간섭으로 인한 AZ 편중을 방지하기 위해 `web`·`was` stable/canary 매니페스트에 EKS 1.36 내장 스케줄러 기능인 `matchLabelKeys: [pod-template-hash]`를 적용함 / 별도 Descheduler 데몬 설치 없이 Deployment 컨트롤러가 주입하는 고유 해시 기준으로만 zone 스큐를 계산하여 롤아웃 중 및 완료 후에도 `2a`와 `2c` 간 AZ 균등 분산(maxSkew 1)을 안정적으로 보장하기 위함
+- `spread-on-rollout`: `topologyKey`로 가용영역(`topology.kubernetes.io/zone`) 분산만 적용하고 호스트명(`kubernetes.io/hostname`) 단위 분산은 제외함 / 현재 `np-app` 노드가 AZ별 1대씩 운영되어 AZ 분산만으로 노드 분산이 동시 달성되며, 노드 단위 `DoNotSchedule` 설정 시 HPA/KEDA 스케일아웃마다 Karpenter가 인스턴스를 무조건 신규 생성하여 발생하는 과도한 인프라 비용 낭비 및 빈 패킹 정책과의 경합을 방지하기 위함
+- `spread-on-rollout`: stable 워크로드에는 엄격한 `whenUnsatisfiable: DoNotSchedule`을, canary 워크로드에는 유연한 `whenUnsatisfiable: ScheduleAnyway` 정책을 분리 유지함 / stable은 프로덕션 무중단 HA를 위해 단일 AZ 몰림을 원천 차단하고, canary는 적은 레플리카 수(1개 등) 및 임시 검증 특성상 스케줄링 유연성을 확보하여 단일 노드 환경에서도 롤아웃이 블록되지 않도록 하기 위함
+- `spread-on-rollout`: `topologySpreadConstraints`가 신규 Pod 배치 시점에만 평가되는 Kubernetes 스케줄러 한계(스케일다운 시 ReplicaSet이 AZ 균형을 고려하지 않음)를 명시하고, `scripts/validate-manifests.sh`에 `matchLabelKeys` 리스트 타입(`isinstance(..., list)`) 및 zone 분산 필수 검증을 추가함 / HPA/KEDA 축소 후 2:0 등 편중 발생 시 `rollout restart` 기반 자가 치유 운영 방안을 정립하고, 잘못된 스칼라 문자열 설정이나 분산 누락으로 인한 가용성 회귀를 배포 전 정적 검사로 차단하기 위함 (design.md의 축소 시 대칭 보장 가정을 실제 K8s 한계 기준으로 정정 반영)

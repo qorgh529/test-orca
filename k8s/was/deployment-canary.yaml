@@ -24,6 +24,7 @@ spec:
           whenUnsatisfiable: ScheduleAnyway
           labelSelector:
             matchLabels: { app: was, track: canary }
+          matchLabelKeys: [pod-template-hash]
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
