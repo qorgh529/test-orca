@@ -391,11 +391,11 @@ Claude는 아래 체크리스트 순서에 따라 단계별로 구현하고 커�
   - `./scripts/validate-manifests.sh` 실행하여 전체 정적 검사 및 셸 스크립트 문법 검사 통과 확인.
   - `.env.example` 문법 확인.
 
-- [ ] **Step 8 [위험]: `infra/aws/provision-aws-resources.sh pre-cluster` 실행**
+- [x] **Step 8 [위험]: `infra/aws/provision-aws-resources.sh pre-cluster` 실행** (실행 완료 2026-10-26)
   - 실제 AWS 계정에 CodeBuild S3 버킷, IAM Role, CodeBuild Project 생성/업데이트 적용.
   - *(실행 전 사용자 컨펌 필수)*
 
-- [ ] **Step 9 [위험]: `scripts/build-and-push.sh` 실행 검증**
+- [x] **Step 9 [위험]: `scripts/build-and-push.sh` 실행 검증** (v1.0.0 SUCCEEDED 2026-10-26)
   - 실제 `IMAGE_TAG`를 지정하여 `scripts/build-and-push.sh` 실행.
   - AWS CodeBuild 콘솔 및 CLI에서 빌드 성공(`SUCCEEDED`) 확인.
   - Amazon ECR `petclinic-web`, `petclinic-was` 저장소에 해당 태그의 이미지가 정상 푸시되었는지 확인.
