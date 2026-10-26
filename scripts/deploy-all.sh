@@ -2,7 +2,10 @@
 # Install cluster add-ons and apply all manifests in dependency order.
 # Prereqs: infra/aws/provision-aws-resources.sh (all phases) and scripts/build-and-push.sh.
 set -euo pipefail
+# The opening split is a per-run choice: the command line wins over (usually empty) .env values.
+caller_stable="${STABLE_WEIGHT:-}" caller_canary="${CANARY_WEIGHT:-}"
 . "$(dirname "$0")/lib.sh"
+STABLE_WEIGHT="${caller_stable:-${STABLE_WEIGHT:-}}" CANARY_WEIGHT="${caller_canary:-${CANARY_WEIGHT:-}}"
 
 require AWS_REGION AWS_ACCOUNT_ID EKS_CLUSTER_NAME VPC_ID PUBLIC_SUBNET_A_ID PUBLIC_SUBNET_C_ID \
   DOMAIN_NAME ROUTE53_HOSTED_ZONE_ID ACM_CERTIFICATE_ARN WAF_WEB_ACL_ARN \
