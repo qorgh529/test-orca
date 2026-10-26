@@ -53,8 +53,18 @@ grafana_waf_ready() {
   acl_name=$(aws wafv2 list-web-acls --scope REGIONAL --query "WebACLs[?Id=='$acl_id'].Name | [0]" --output text) \
     && [ -n "$acl_name" ] && [ "$acl_name" != None ] || return 1
   acl=$(aws wafv2 get-web-acl --scope REGIONAL --name "$acl_name" --id "$acl_id" --output json) || return 1
-  jq -e '.WebACL.Rules | min_by(.Priority) | .Name == "BlockUnauthorizedGrafanaAccess"
-    and (.Action | has("Block")) and ([.. | .IPSetReferenceStatement? // empty] | length == 1)' \
+  # Structure, not just names: AND(path starts with /grafana after decode+normalise, NOT in our IP set).
+  # SearchString is a blob, which CLI v2 prints base64-encoded ("/grafana" = L2dyYWZhbmE=).
+  jq -e --arg set "/${EKS_CLUSTER_NAME}-grafana-allowed-ips/" '
+    .WebACL.Rules | min_by(.Priority)
+    | .Name == "BlockUnauthorizedGrafanaAccess" and (.Action | keys == ["Block"])
+      and (.Statement | keys == ["AndStatement"])
+      and (.Statement.AndStatement.Statements | length == 2
+        and any(.[]; .ByteMatchStatement | . != null and .FieldToMatch == {UriPath: {}}
+          and .PositionalConstraint == "STARTS_WITH"
+          and (.SearchString == "L2dyYWZhbmE=" or .SearchString == "/grafana")
+          and (.TextTransformations | map(.Type) | contains(["URL_DECODE", "NORMALIZE_PATH"])))
+        and any(.[]; .NotStatement.Statement.IPSetReferenceStatement.ARN // "" | contains($set)))' \
     <<<"$acl" >/dev/null
 }
 

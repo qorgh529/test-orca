@@ -17,28 +17,44 @@ EOF
 chmod +x "$T/bin/aws"
 export PATH="$T/bin:$PATH" WAF_WEB_ACL_ARN=arn:test/webacl/test-web-acl/abc
 
+export EKS_CLUSTER_NAME=test-eks
 managed='{"Name":"AWSManagedRulesCommonRuleSet","Priority":1,"OverrideAction":{"None":{}},
   "Statement":{"ManagedRuleGroupStatement":{"VendorName":"AWS","Name":"AWSManagedRulesCommonRuleSet"}}}'
-grafana() {  # $1 priority, $2 action
-  echo "{\"Name\":\"BlockUnauthorizedGrafanaAccess\",\"Priority\":$1,\"Action\":{\"$2\":{}},
-    \"Statement\":{\"AndStatement\":{\"Statements\":[{\"ByteMatchStatement\":{\"SearchString\":\"/grafana\"}},
-    {\"NotStatement\":{\"Statement\":{\"IPSetReferenceStatement\":{\"ARN\":\"arn:test:ipset\"}}}}]}}}"
-}
+# The rule as grafana-waf writes it and as `aws wafv2 get-web-acl` prints it (SearchString base64).
+good=$(jq -nc '{Name: "BlockUnauthorizedGrafanaAccess", Priority: 0, Action: {Block: {}},
+  Statement: {AndStatement: {Statements: [
+    {ByteMatchStatement: {FieldToMatch: {UriPath: {}}, PositionalConstraint: "STARTS_WITH",
+      SearchString: "L2dyYWZhbmE=", TextTransformations: [{Priority: 0, Type: "URL_DECODE"},
+      {Priority: 1, Type: "NORMALIZE_PATH"}, {Priority: 2, Type: "LOWERCASE"}]}},
+    {NotStatement: {Statement: {IPSetReferenceStatement:
+      {ARN: "arn:aws:wafv2:r:a:regional/ipset/test-eks-grafana-allowed-ips/id"}}}}]}}}')
+rule() { jq -c "$1" <<<"$good"; }  # a variant of the good rule
 acl() { echo "{\"WebACL\":{\"Rules\":[$1]}}"; }
 
 fail=0
 check() {  # name, expected (ready|blocked)
   local got=blocked
-  (. "$REPO/scripts/lib.sh" 2>/dev/null; grafana_waf_ready) && got=ready
+  (. "$REPO/scripts/lib.sh" 2>/dev/null; export EKS_CLUSTER_NAME=test-eks; grafana_waf_ready) && got=ready
   if [ "$got" = "$2" ]; then echo "ok   $1"; else echo "FAIL $1 (expected $2, got $got)"; fail=1; fi
 }
 
-ACL=$(acl "$(grafana 0 Block),$managed") check "rule first, Block, IP set" ready
+ACL=$(acl "$good,$managed") check "rule first, Block, AND(path, NOT our IP set)" ready
+ACL=$(acl "$(rule '.Statement.AndStatement.Statements[0].ByteMatchStatement.SearchString = "/grafana"'),$managed") \
+  check "SearchString printed raw" ready
 ACL=$(acl "$managed") check "no /grafana rule" blocked
-ACL=$(acl "$managed,$(grafana 2 Block)") check "rule behind a managed rule group" blocked
-ACL=$(acl "$(grafana 0 Count),$managed") check "rule only counts" blocked
-ACL=$(acl "$(grafana 0 Block | sed 's/IPSetReferenceStatement/Unused/'),$managed") check "rule without IP set" blocked
-ACL_NAME=None ACL=$(acl "$(grafana 0 Block)") check "WebACL not found" blocked
+ACL=$(acl "$managed,$(rule '.Priority = 2')") check "rule behind a managed rule group" blocked
+ACL=$(acl "$(rule '.Action = {Count: {}}'),$managed") check "rule only counts" blocked
+ACL=$(acl "$(rule '.Statement = .Statement.AndStatement.Statements[1].NotStatement.Statement'),$managed") \
+  check "IP set match without NOT (blocks the allowed IPs instead)" blocked
+ACL=$(acl "$(rule '.Statement.AndStatement.Statements[1] = .Statement.AndStatement.Statements[1].NotStatement.Statement'),$managed") \
+  check "NOT removed inside the AND" blocked
+ACL=$(acl "$(rule '.Statement.AndStatement.Statements[0].ByteMatchStatement.SearchString = "L2FkbWlu"'),$managed") \
+  check "path other than /grafana" blocked
+ACL=$(acl "$(rule '.Statement.AndStatement.Statements[0].ByteMatchStatement.TextTransformations = [{Priority: 0, Type: "LOWERCASE"}]'),$managed") \
+  check "no URL_DECODE / NORMALIZE_PATH" blocked
+ACL=$(acl "$(rule '.Statement.AndStatement.Statements[1].NotStatement.Statement.IPSetReferenceStatement.ARN |= sub("test-eks-grafana"; "other")'),$managed") \
+  check "a different IP set" blocked
+ACL_NAME=None ACL=$(acl "$good") check "WebACL not found" blocked
 
 [ "$fail" = 0 ] && echo "OK: grafana_waf_ready offline tests"
 exit "$fail"
