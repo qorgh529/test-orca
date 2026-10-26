@@ -65,6 +65,8 @@
 ├── buildspec.yml                         # AWS CodeBuild 빌드 명세서 (pre_build 태그 정규식·latest 검증 및 ECR 로그인 → build linux/amd64 → post_build ECR 푸시, 단계별 on-failure: ABORT)
 ├── docs/
 │   ├── architecture.md                   # 시스템 전체 아키텍처 현황 (본 문서)
+│   ├── architecture-overview.drawio      # 인프라 계층·설정값·포트 흐름 중심의 개요 다이어그램 원본 (서브넷 CIDR, 노드그룹 사양, RDS Multi-AZ, Edge, CI/CD·관측)
+│   ├── architecture-overview.drawio.{svg,png} # 내보낸 개요 다이어그램 이미지 (draw.io 데스크톱에서 내보냄)
 │   ├── architecture.drawio               # AWS·Kubernetes 공식 아이콘 기반 Pod 단위 아키텍처 다이어그램 원본 (AZ × 서브넷 격자, 노드별 Pod 배치, K8s 리소스 행, 범례)
 │   ├── architecture.drawio.{svg,png}     # 내보낸 다이어그램 이미지 (Embedded XML 포함, draw.io 데스크톱에서 내보냄)
 │   ├── design.md                         # 초기 구축 설계서
@@ -196,11 +198,28 @@
 
 ## 4. 데이터 흐름 — Draw.io 아키텍처 다이어그램
 
+### 개요 다이어그램 (인프라 계층 및 설정값 조망)
+
+> 원본 파일: [`docs/architecture-overview.drawio`](./architecture-overview.drawio) · 이미지: [`docs/architecture-overview.drawio.svg`](./architecture-overview.drawio.svg) / [`docs/architecture-overview.drawio.png`](./architecture-overview.drawio.png)
+
+![AWS EKS 기반 Spring Framework PetClinic 아키텍처 개요](./architecture-overview.drawio.svg)
+
+**개요도 읽는 법**
+- **좌우 계층 구조**: 사용자 브라우저(좌측) → 엣지 보안(Route 53, WAFv2, ACM, IGW) → Multi-AZ VPC `10.0.0.0/16`(퍼블릭·앱·DB 서브넷) → 완전 격리 DB(RDS MySQL Multi-AZ)로 이어지며, 하단에는 AWS 관리형 운영·CI/CD·관측 서비스가 배치된다.
+- **핵심 포트 흐름**: 사용자 HTTPS `:443` (HTTP `:80` 리다이렉트) → 인터넷 페이싱 ALB → NGF Gateway `:80` (`target-type: ip`) → Web Tier `:8080` (카나리 90:10 분할 및 `X-Canary: always` 헤더 라우팅, `/grafana` 최장 접두사 분기) → WAS Tier `:8080` (리버스 프록시) → RDS MySQL Primary `:3306` (TLS 암호화 연결).
+- **서브넷 CIDR 및 네트워크 설정값**: 퍼블릭 서브넷(`10.0.0.0/24`, `10.0.1.0/24`, AZ별 NAT Gateway `petclinic-nat-2a`/`2c`), 앱 프라이빗 서브넷(`10.0.16.0/20`, `10.0.32.0/20`, EKS 1.36 워커 노드), DB 프라이빗 서브넷(`10.0.48.0/24`, `10.0.49.0/24`, 인터넷 라우트 없는 Air-Gapped 로컬 전용).
+- **노드 그룹 구성**: 애플리케이션 워크로드 `np-app`(Karpenter On-Demand c6i/m6i/t3) & `np-app-spot`(Spot 확장 풀), 클러스터 핵심 컨트롤러 `ng-critical`(`m6i.large` ×2, Taint: critical), 관측성 및 스토리지 전용 `ng-platform`(`m6i.large` ×2, Taint: platform).
+- **RDS Multi-AZ**: RDS MySQL 8.4.11 Multi-AZ Primary(`ap-northeast-2a`, `:3306 TLS`, `require_secure_transport=ON`)와 Standby(`ap-northeast-2c`) 간 동기식 복제.
+
+---
+
+### 상세 다이어그램 (Pod 단위 배치 및 K8s 리소스)
+
 > 원본 파일: [`docs/architecture.drawio`](./architecture.drawio) · 편집 가능 이미지(Embedded XML): [`docs/architecture.drawio.svg`](./architecture.drawio.svg) / [`docs/architecture.drawio.png`](./architecture.drawio.png)
 
 ![AWS EKS 기반 Spring Framework PetClinic 아키텍처](./architecture.drawio.svg)
 
-**다이어그램 읽는 법**
+**상세 다이어그램 읽는 법**
 - **선 종류**: 실선 = 사용자 요청 경로(①~⑥, 남색 stable / 주황 canary), 자홍 점선 = 관측(메트릭·트레이스·로그), 회색 점선 = 생성·설정·권한(컨트롤, RDS Multi-AZ 동기 복제 포함).
 - **배치**: VPC를 `2a` / `2c` 두 열 × 퍼블릭·앱 프라이빗·DB 프라이빗 서브넷 행으로 나누고, EKS 클러스터 안에 AZ별 노드 박스(`np-app`/`np-app-spot`, `ng-critical`, `ng-platform`)와 그 위의 Pod를 `이름 ×기본 레플리카 (종류)` 로 그린다. 퍼블릭 서브넷(`10.0.0.0/24`, `10.0.1.0/24`)은 IGW로 향하는 라우트(`petclinic-rt-public`)를 통해 ALB와 NAT Gateway가 배치되며, 앱 프라이빗 서브넷(`10.0.16.0/20`, `10.0.32.0/20`)은 각 AZ별 NAT(`petclinic-nat-2a`, `petclinic-nat-2c`)를 통해 아웃바운드 인터넷 통신을 수행하고, DB 프라이빗 서브넷(`10.0.48.0/24`, `10.0.49.0/24`)은 외부 라우트 없이 VPC 로컬(`10.0.0.0/16`) 경로만 존재하는 완전 격리(Air-Gapped) 구조다. 배치는 `k8s/`·`infra/`·`scripts/deploy-all.sh` 기준의 의도된 배치이며 실클러스터 조회 결과가 아니다.
 - **AZ 표기**: 레플리카 2개 이상이면서 zone 분산 제약이 있는 워크로드는 두 AZ에 1개씩 그린다. `AZ 비고정` 이 붙은 Pod(레플리카 1개이거나 AZ 제약 없음)는 그려진 AZ가 예시 위치다. `web` 및 `was` 워크로드는 `topologySpreadConstraints`에 `matchLabelKeys: [pod-template-hash]`를 적용하여 롤링 업데이트 시에도 구버전 ReplicaSet 간섭 없이 신규 Pod가 `2a`와 `2c`에 1개씩 균등하게 스케줄링된다 (단, K8s 스케줄러 특성상 신규 배치 시점에만 평가되므로 HPA/KEDA 스케일다운 후 불균형 발생 시에는 `rollout restart`로 재분산한다).
