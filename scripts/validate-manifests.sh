@@ -5,7 +5,8 @@
 #   5. stable/canary tags, DB secret per role, JDBC pool cap, KEDA fallback, Prometheus HA, PDBs
 #   6. scripts/daily-{stop,start}.sh syntax, offline --dry-run, tests/scripts/daily-stop-start.test.sh (needs jq)
 #   7. tracing: placement, IRSA-only Tempo (grafana-community chart, pinned image), was agent injection / service.version / resources
-#   8. codebuild: buildspec tag guards + linux/amd64, least-privilege service role policy, .env.example variables
+#   8. codebuild: buildspec tag guards + linux/amd64, least-privilege service role policy, .env.example variables,
+#      source/backup/Tempo bucket isolation guard, tests/scripts/build-and-push.test.sh
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
@@ -28,6 +29,8 @@ for s in infra/aws/provision-aws-resources.sh scripts/deploy-all.sh scripts/buil
 done
 # Real-mode branches (lookup errors, RDS stopping, state file, maxSize) against fake aws/kubectl.
 bash "$ROOT/tests/scripts/daily-stop-start.test.sh" || { echo "FAIL tests/scripts/daily-stop-start.test.sh"; exit 1; }
+# CodeBuild mode of build-and-push.sh (caller tag/target, per-run source key, archive filter, guards) against a fake aws.
+bash "$ROOT/tests/scripts/build-and-push.test.sh" || { echo "FAIL tests/scripts/build-and-push.test.sh"; exit 1; }
 
 "${PYTHON:-python3}" - "$ROOT" <<'PY'
 import pathlib, re, subprocess, sys
@@ -340,6 +343,14 @@ try:
                 err(f"codebuild-policy.json: ECR access outside petclinic-web/was: {r}")
 except (OSError, ValueError, KeyError) as e:
     err(f"infra/aws/iam-policies/codebuild-policy.json: {e}")
+    if (phases.get("post_build") or {}).get("on-failure") != "ABORT":
+        err("buildspec.yml: post_build must set on-failure: ABORT (no web push after a failed was push)")
+    if "=~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$" not in cmds("pre_build"):
+        err("buildspec.yml: pre_build must check IMAGE_TAG against the docker tag grammar")
+# The CodeBuild bucket gets a 1-day expiry: provisioning must refuse a name shared with backup/Tempo.
+prov = (root / "infra/aws/provision-aws-resources.sh").read_text(encoding="utf-8")
+if not re.search(r'"\$CODEBUILD_S3_BUCKET_NAME" != "\$BACKUP_S3_BUCKET_NAME" \] && \[ "\$CODEBUILD_S3_BUCKET_NAME" != "\$TEMPO_S3_BUCKET_NAME"', prov):
+    err("provision-aws-resources.sh: pre-cluster must refuse CODEBUILD_S3_BUCKET_NAME equal to the backup or Tempo bucket")
 env_example = (root / ".env.example").read_text(encoding="utf-8")
 for v in ("CODEBUILD_PROJECT_NAME", "CODEBUILD_S3_BUCKET_NAME"):
     if not re.search(rf"^{v}=", env_example, re.M):

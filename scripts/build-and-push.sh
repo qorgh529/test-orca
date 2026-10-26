@@ -6,7 +6,10 @@
 #
 #   IMAGE_TAG=v1.0.0 [BUILD_TARGET=all|web|was] ./scripts/build-and-push.sh [--local]
 set -euo pipefail
+# Per-run settings from the command line win over the (usually empty) ones copied into .env.
+caller_tag="${IMAGE_TAG:-}" caller_target="${BUILD_TARGET:-}"
 . "$(dirname "$0")/lib.sh"
+IMAGE_TAG="${caller_tag:-${IMAGE_TAG:-}}" BUILD_TARGET="${caller_target:-${BUILD_TARGET:-}}"
 
 usage() { echo "usage: IMAGE_TAG=<tag> [BUILD_TARGET=all|web|was] $0 [--local]"; }
 LOCAL=0
@@ -20,6 +23,9 @@ done
 
 require AWS_REGION AWS_ACCOUNT_ID ECR_WEB_REPOSITORY_URI ECR_WAS_REPOSITORY_URI IMAGE_TAG
 [ "$IMAGE_TAG" != "latest" ] || { echo "IMAGE_TAG must not be 'latest'" >&2; exit 1; }
+# Docker tag grammar; it also lands in an S3 key and the CodeBuild environment.
+[[ "$IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] \
+  || { echo "IMAGE_TAG must match [A-Za-z0-9_][A-Za-z0-9_.-]{0,127}" >&2; exit 1; }
 BUILD_TARGET="${BUILD_TARGET:-all}"
 case "$BUILD_TARGET" in all|web|was) ;; *) echo "BUILD_TARGET must be all, web or was" >&2; exit 1 ;; esac
 targets=(was web); [ "$BUILD_TARGET" = all ] || targets=("$BUILD_TARGET")
@@ -39,6 +45,10 @@ fi
 require EKS_CLUSTER_NAME
 CODEBUILD_PROJECT_NAME="${CODEBUILD_PROJECT_NAME:-${EKS_CLUSTER_NAME}-image-build}"
 CODEBUILD_S3_BUCKET_NAME="${CODEBUILD_S3_BUCKET_NAME:-${EKS_CLUSTER_NAME}-codebuild-${AWS_ACCOUNT_ID}}"
+for b in "${BACKUP_S3_BUCKET_NAME:-}" "${TEMPO_S3_BUCKET_NAME:-}"; do
+  [ "$CODEBUILD_S3_BUCKET_NAME" != "$b" ] \
+    || { echo "CODEBUILD_S3_BUCKET_NAME must differ from BACKUP_S3_BUCKET_NAME and TEMPO_S3_BUCKET_NAME" >&2; exit 1; }
+done
 for c in aws git python3; do command -v "$c" >/dev/null || { echo "missing command: $c" >&2; exit 1; }; done
 
 # Repositories are IMMUTABLE: fail now instead of after a full build.
@@ -51,7 +61,7 @@ done
 
 echo "== Packaging source"
 # Tracked plus untracked-but-not-ignored files, so uncommitted edits are built too. .gitignore already
-# keeps .env, target/ and the daily state file out; .env* and *.secret are dropped again as a backstop.
+# keeps .env, target/ and the daily state file out; env files and key material are dropped again as a backstop.
 archive=$(mktemp --suffix=.zip)
 trap 'rm -f "$archive"' EXIT
 git -C "$ROOT" ls-files -z --cached --others --exclude-standard \
@@ -62,13 +72,15 @@ names = sorted({n for n in sys.stdin.buffer.read().decode().split("\0") if n})
 with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
     for n in names:
         base = os.path.basename(n)
-        if (base.startswith(".env") and base != ".env.example") or base.endswith(".secret"):
+        if ((base.startswith(".env") and base != ".env.example") or base.startswith("id_")
+                or base.endswith((".secret", ".pem", ".key", ".pfx", ".p12"))):
             continue
         p = os.path.join(root, n)
         if os.path.isfile(p) and not os.path.islink(p):  # deleted-but-tracked files are skipped
             z.write(p, n)
 ' "$ROOT" "$archive"
-key="source/${IMAGE_TAG}.zip"
+# One key per run: a second run with the same tag must not replace a source that is still queued.
+key="source/${IMAGE_TAG}-$(date -u +%Y%m%dT%H%M%SZ)-$(cat /proc/sys/kernel/random/uuid).zip"
 aws s3 cp --only-show-errors "$archive" "s3://${CODEBUILD_S3_BUCKET_NAME}/${key}"
 
 echo "== Starting CodeBuild $CODEBUILD_PROJECT_NAME ($BUILD_TARGET:$IMAGE_TAG)"

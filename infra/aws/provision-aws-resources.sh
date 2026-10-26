@@ -59,6 +59,10 @@ pre_cluster() {
   # The Tempo lifecycle deletes objects: it must never land on the backup bucket.
   [ "$TEMPO_S3_BUCKET_NAME" != "$BACKUP_S3_BUCKET_NAME" ] \
     || { echo "TEMPO_S3_BUCKET_NAME must differ from BACKUP_S3_BUCKET_NAME" >&2; exit 1; }
+  # The CodeBuild bucket gets a 1-day expiry and SSE-S3, and the build role may read it: never a shared bucket.
+  export CODEBUILD_S3_BUCKET_NAME="${CODEBUILD_S3_BUCKET_NAME:-${EKS_CLUSTER_NAME}-codebuild-${AWS_ACCOUNT_ID}}"
+  [ "$CODEBUILD_S3_BUCKET_NAME" != "$BACKUP_S3_BUCKET_NAME" ] && [ "$CODEBUILD_S3_BUCKET_NAME" != "$TEMPO_S3_BUCKET_NAME" ] \
+    || { echo "CODEBUILD_S3_BUCKET_NAME must differ from BACKUP_S3_BUCKET_NAME and TEMPO_S3_BUCKET_NAME" >&2; exit 1; }
   local retention="${TEMPO_RETENTION_DAYS:-14}"
   [[ "$retention" =~ ^[1-9][0-9]*$ ]] || { echo "TEMPO_RETENTION_DAYS must be a positive integer" >&2; exit 1; }
   local dir="$ROOT/infra/aws/iam-policies" name arn doc v

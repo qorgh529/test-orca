@@ -104,7 +104,7 @@ cp .env.example .env
 ```bash
 IMAGE_TAG=v1.0.0 ./scripts/build-and-push.sh
 ```
-> 이미지는 AWS CodeBuild에서 빌드됩니다. 스크립트가 작업 트리(커밋 안 된 변경 포함, `.gitignore` 대상과 `.env*` 제외)를 zip으로 묶어 CodeBuild 소스 버킷(1일 후 자동 삭제)에 올리고, `buildspec.yml` 로 `linux/amd64` 빌드 → ECR 푸시까지 진행 상황을 따라갑니다. 같은 태그가 이미 ECR에 있으면 빌드 전에 멈춥니다. 한 이미지만 빌드하려면 `BUILD_TARGET=web` 또는 `was`, 로컬 Docker로 빌드하려면 `--local` 을 붙입니다. 실패하면 출력된 CloudWatch Logs 그룹(`/aws/codebuild/<프로젝트명>`)에서 원인을 확인합니다.
+> 이미지는 AWS CodeBuild에서 빌드됩니다. 스크립트가 작업 트리(커밋 안 된 변경 포함, `.gitignore` 대상과 `.env*`·키 파일 제외)를 zip으로 묶어 CodeBuild 소스 버킷(1일 후 자동 삭제)에 올리고, `buildspec.yml` 로 `linux/amd64` 빌드 → ECR 푸시까지 진행 상황을 따라갑니다. 같은 태그가 이미 ECR에 있으면 빌드 전에 멈춥니다. 한 이미지만 빌드하려면 `BUILD_TARGET=web` 또는 `was`, 로컬 Docker로 빌드하려면 `--local` 을 붙입니다. 실패하면 출력된 CloudWatch Logs 그룹(`/aws/codebuild/<프로젝트명>`)에서 원인을 확인합니다.
 
 ### Step 4. 클러스터 애드온·워크로드 전체 배포 및 카나리 검증
 ```bash

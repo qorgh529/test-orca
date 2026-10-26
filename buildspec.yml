@@ -13,6 +13,7 @@ phases:
       - echo "== Validating parameters"
       - '[ -n "${IMAGE_TAG:-}" ] || { echo "IMAGE_TAG is required" >&2; exit 1; }'
       - '[ "$IMAGE_TAG" != "latest" ] || { echo "IMAGE_TAG must not be latest" >&2; exit 1; }'
+      - '[[ "$IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || { echo "IMAGE_TAG is not a valid tag" >&2; exit 1; }'
       - 'case "${BUILD_TARGET:-all}" in all|web|was) ;; *) echo "BUILD_TARGET must be all, web or was" >&2; exit 1 ;; esac'
       - echo "== Logging in to Amazon ECR"
       - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
@@ -30,6 +31,8 @@ phases:
           docker build --platform linux/amd64 -f docker/web/Dockerfile -t "${ECR_WEB_REPOSITORY_URI}:${IMAGE_TAG}" .
         fi
   post_build:
+    # A failed was push must not be followed by a web push (no half-released tag).
+    on-failure: ABORT
     commands:
       - echo "== Pushing images to ECR"
       - |
