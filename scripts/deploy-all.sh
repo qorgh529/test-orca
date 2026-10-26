@@ -27,6 +27,9 @@ OPEN_STABLE="${STABLE_WEIGHT:-90}" OPEN_CANARY="${CANARY_WEIGHT:-10}"
 check_weights "$OPEN_STABLE" "$OPEN_CANARY"
 
 "$ROOT/scripts/validate-manifests.sh"
+# Stop before anything changes rather than publish /grafana to every IP.
+grafana_waf_ready || { echo "WAF WebACL has no /grafana allow-list rule at priority 0:" \
+  "run ./infra/aws/provision-aws-resources.sh grafana-waf first" >&2; exit 1; }
 
 K="$ROOT/k8s"
 aws eks update-kubeconfig --region "$AWS_REGION" --name "$EKS_CLUSTER_NAME"

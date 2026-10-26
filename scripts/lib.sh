@@ -45,6 +45,19 @@ wait_route_accepted() {
 }
 
 # Render every *.yaml in the given dirs/files as one multi-document stream.
+# /grafana (k8s/gateway/httproute-grafana.yaml) may only go live behind its WAF allow-list: the
+# WebACL's first rule must be BlockUnauthorizedGrafanaAccess, blocking IPs outside its IP set
+# (infra/aws/provision-aws-resources.sh grafana-waf, docs/features/grafana-public-path/design.md).
+grafana_waf_ready() {
+  local acl_id="${WAF_WEB_ACL_ARN##*/}" acl_name acl
+  acl_name=$(aws wafv2 list-web-acls --scope REGIONAL --query "WebACLs[?Id=='$acl_id'].Name | [0]" --output text) \
+    && [ -n "$acl_name" ] && [ "$acl_name" != None ] || return 1
+  acl=$(aws wafv2 get-web-acl --scope REGIONAL --name "$acl_name" --id "$acl_id" --output json) || return 1
+  jq -e '.WebACL.Rules | min_by(.Priority) | .Name == "BlockUnauthorizedGrafanaAccess"
+    and (.Action | has("Block")) and ([.. | .IPSetReferenceStatement? // empty] | length == 1)' \
+    <<<"$acl" >/dev/null
+}
+
 render_all() {
   local f
   for f in $(find "$@" -name '*.yaml' | sort); do

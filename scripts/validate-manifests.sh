@@ -32,6 +32,8 @@ done
 bash "$ROOT/tests/scripts/daily-stop-start.test.sh" || { echo "FAIL tests/scripts/daily-stop-start.test.sh"; exit 1; }
 # CodeBuild mode of build-and-push.sh (caller tag/target, per-run source key, archive filter, guards) against a fake aws.
 bash "$ROOT/tests/scripts/build-and-push.test.sh" || { echo "FAIL tests/scripts/build-and-push.test.sh"; exit 1; }
+# deploy-all.sh's /grafana guard (WAF allow-list rule first) against a fake aws.
+bash "$ROOT/tests/scripts/grafana-waf-ready.test.sh" || { echo "FAIL tests/scripts/grafana-waf-ready.test.sh"; exit 1; }
 
 "${PYTHON:-python3}" - "$ROOT" <<'PY'
 import pathlib, re, subprocess, sys
@@ -438,9 +440,19 @@ if (len(rules) != 1 or [m.get("path") for m in rules[0].get("matches", [])] != [
 grant = one("k8s/monitoring/referencegrant-grafana.yaml", "ReferenceGrant")
 if [t.get("name") for t in (grant or {}).get("spec", {}).get("to", [])] != ["kube-prometheus-stack-grafana"]:
     err("referencegrant-grafana.yaml: must grant only Service kube-prometheus-stack-grafana")
-gnp = one("k8s/monitoring/networkpolicy-grafana.yaml", "NetworkPolicy")
-if not gnp or any(p.get("port") != 3000 for r in gnp["spec"].get("ingress", []) for p in r.get("ports", [])):
-    err("networkpolicy-grafana.yaml: Grafana ingress must exist and allow only port 3000")
+# Exactly two sources (the gateway data plane, Prometheus), each limited to TCP 3000: an empty rule,
+# a missing source or a missing port list would open Grafana wider.
+gnp = (one("k8s/monitoring/networkpolicy-grafana.yaml", "NetworkPolicy") or {}).get("spec", {})
+srcs = sorted(tuple(sorted(f.items())) for r in gnp.get("ingress", []) for f in r.get("from", []))
+if (gnp.get("podSelector") != {"matchLabels": {"app.kubernetes.io/name": "grafana"}}
+        or gnp.get("policyTypes") != ["Ingress"] or len(gnp.get("ingress", [])) != 2
+        or any(r.get("ports") != [{"protocol": "TCP", "port": 3000}] or len(r.get("from", [])) != 1
+               for r in gnp.get("ingress", []))
+        or srcs != sorted([
+            (("namespaceSelector", {"matchLabels": {"kubernetes.io/metadata.name": "nginx-gateway"}}),
+             ("podSelector", {"matchLabels": {"gateway.networking.k8s.io/gateway-name": "petclinic-gateway"}})),
+            (("podSelector", {"matchLabels": {"app.kubernetes.io/name": "prometheus"}}),)])):
+    err("networkpolicy-grafana.yaml: Grafana ingress only from the gateway data plane and Prometheus, TCP 3000")
 listener = (one("k8s/gateway/gateway.yaml", "Gateway") or {}).get("spec", {}).get("listeners", [{}])[0]
 allowed = [v for e in listener.get("allowedRoutes", {}).get("namespaces", {}).get("selector", {})
            .get("matchExpressions", []) for v in e.get("values", [])]
