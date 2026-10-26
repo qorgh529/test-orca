@@ -390,7 +390,8 @@ for (f, name), policy in SPREAD.items():
     c = zone[0]
     if c.get("maxSkew") != 1 or c.get("whenUnsatisfiable") != policy:
         err(f"{f} {name}: zone spread must be maxSkew 1, whenUnsatisfiable {policy}")
-    if "pod-template-hash" not in (c.get("matchLabelKeys") or []):
+    keys = c.get("matchLabelKeys")
+    if not isinstance(keys, list) or "pod-template-hash" not in keys:  # a bare string would match by substring
         err(f"{f} {name}: zone spread must set matchLabelKeys: [pod-template-hash]")
 
 if errors:
