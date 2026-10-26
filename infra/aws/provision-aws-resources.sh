@@ -291,9 +291,16 @@ post_cluster() {
       --subnet-ids "$DB_PRIVATE_SUBNET_A_ID" "$DB_PRIVATE_SUBNET_C_ID" >/dev/null
 
   echo "== RDS parameter group: TLS required"
-  aws rds describe-db-parameter-groups --db-parameter-group-name "${db_id}-params" >/dev/null 2>&1 \
-    || aws rds create-db-parameter-group --db-parameter-group-name "${db_id}-params" \
-      --db-parameter-group-family mysql8.0 --description "PetClinic MySQL - require TLS" >/dev/null
+  local family
+  family=$(aws rds describe-db-parameter-groups --db-parameter-group-name "${db_id}-params" \
+    --query 'DBParameterGroups[0].DBParameterGroupFamily' --output text 2>/dev/null) || family=""
+  if [ -z "$family" ]; then
+    aws rds create-db-parameter-group --db-parameter-group-name "${db_id}-params" \
+      --db-parameter-group-family mysql8.4 --description "PetClinic MySQL 8.4 - require TLS" >/dev/null
+  elif [ "$family" != mysql8.4 ]; then
+    # A leftover 8.0 group cannot be attached to an 8.4 instance; never replace it silently.
+    echo "parameter group ${db_id}-params is $family, not mysql8.4: delete it (or rename) and re-run" >&2; exit 1
+  fi
   aws rds modify-db-parameter-group --db-parameter-group-name "${db_id}-params" \
     --parameters "ParameterName=require_secure_transport,ParameterValue=ON,ApplyMethod=immediate" >/dev/null
 
@@ -304,11 +311,16 @@ post_cluster() {
   password=$(aws secretsmanager get-secret-value --secret-id "$RDS_SECRET_NAME" \
     --query SecretString --output text | jq -r .password)
 
-  echo "== RDS MySQL 8.0 Multi-AZ (encrypted, private; an existing instance is reused as-is)"
+  echo "== RDS MySQL 8.4 Multi-AZ (encrypted, private; an existing instance is reused as-is)"
   if ! aws rds describe-db-instances --db-instance-identifier "$db_id" >/dev/null 2>&1; then
-    PW="$password" jq -n '{MasterUserPassword: env.PW}' | aws rds create-db-instance --cli-input-json file:///dev/stdin \
+    # aws-cli 2.x rejects --cli-input-json from a pipe ("Invalid JSON received"), so use a 600 temp file.
+    local input
+    input=$(mktemp); chmod 600 "$input"
+    trap "rm -f '$input'" EXIT  # expanded now: $input is local and gone by the time EXIT runs
+    PW="$password" jq -n '{MasterUserPassword: env.PW}' > "$input"
+    aws rds create-db-instance --cli-input-json "file://$input" \
       --db-instance-identifier "$db_id" \
-      --engine mysql --engine-version 8.0.39 \
+      --engine mysql --engine-version 8.4.11 \
       --db-instance-class db.t3.medium \
       --allocated-storage 20 --storage-type gp3 --storage-encrypted \
       --multi-az --no-publicly-accessible \
@@ -319,6 +331,7 @@ post_cluster() {
       --db-parameter-group-name "${db_id}-params" \
       --enable-cloudwatch-logs-exports '["error","slowquery"]' \
       --backup-retention-period 7 --copy-tags-to-snapshot --deletion-protection >/dev/null
+    rm -f "$input"
   fi
   aws rds wait db-instance-available --db-instance-identifier "$db_id"
   host=$(aws rds describe-db-instances --db-instance-identifier "$db_id" \
