@@ -286,17 +286,20 @@ sequenceDiagram
     rect rgb(240, 255, 240)
     Note over Ops,RT: [출근 시 NAT 게이트웨이 기동 및 라우팅 복원 흐름 (nat-start.sh)]
     Ops->>Script: ./scripts/nat-start.sh [--dry-run]
-    loop AZ = 2a, 2c
+    loop AZ = 2a → 2c 순차 처리
         Script->>EC2: describe-nat-gateways (Name=petclinic-nat-2<az>, available|pending)
         alt 이미 존재하는 경우
-            Script-->>Ops: 기존 NAT Gateway 재사용 및 라우트 확인
+            Script-->>Ops: 기존 NAT Gateway 재사용
         else 존재하지 않는 경우
-            Script->>EC2: allocate-address (Domain=vpc, Tag: petclinic-nat-2<az>)
+            Script->>EC2: describe-addresses (미연결 petclinic-nat-2<az> EIP 확인)
+            alt 미연결 EIP 부재 시
+                Script->>EC2: allocate-address (Domain=vpc, Tag: petclinic-nat-2<az>)
+            end
             Script->>EC2: create-nat-gateway (Subnet: petclinic-public-2<az>, EIP 할당)
-            Script->>EC2: wait nat-gateway-available (가용 상태 대기)
-            Script->>RT: replace-route / create-route (0.0.0.0/0 -> 신규 NatGatewayId)
-            Script-->>Ops: NAT Gateway 가용 확인 및 앱 라우트 0.0.0.0/0 갱신 완료
         end
+        Script->>EC2: wait nat-gateway-available (가용 상태 대기)
+        Script->>RT: replace-route / create-route (0.0.0.0/0 -> NatGatewayId)
+        Script-->>Ops: 해당 AZ NAT 가용 확인 및 앱 라우트 0.0.0.0/0 갱신 완료
     end
     Script-->>Ops: 전 가용영역 NAT 프로비저닝 및 아웃바운드 경로 선확보 완료
     end
@@ -310,7 +313,7 @@ sequenceDiagram
   - VPC 내에 종료되지 않은 EC2 인스턴스가 남아 있을 때 NAT가 먼저 삭제되면 노드 드레인 및 EKS 컨트롤 플레인 통신이 단절되므로, 인스턴스가 완전히 소멸할 때까지 최대 300초(`NAT_STOP_INSTANCE_WAIT`) 동안 대기한 후 삭제를 진행한다.
   - EIP 반납 시 `Project=petclinic`의 다른 자원이 오반납되는 사고를 차단하기 위해, 삭제 대상 NAT에 실제로 붙어 있던 할당 ID와 실패한 실행이 남긴 `petclinic-nat-2a/2c` 태그의 미연결 주소만 엄격히 선별하여 해제한다.
 - **NAT 온디맨드 기동 및 블랙홀 경로 복구 (`nat-start.sh`)**:
-  - EIP 할당 및 NAT 게이트웨이 생성을 비동기로 요청한 뒤 `nat-gateway-available`을 병렬 대기하여 프로비저닝 소요 시간을 최소화한다.
+  - AZ 2a → 2c 순서로 하나씩 순차 처리(EIP 재사용 또는 할당 → NAT 생성 → `nat-gateway-available` 대기 → 앱 라우트 `0.0.0.0/0` 생성/교체)하여 프로비저닝 및 라우팅 복구를 완료한다.
   - 이전 중지로 인해 앱 라우트 테이블의 `0.0.0.0/0`이 삭제된 NAT를 가리켜 발생한 `blackhole` 라우트를 `replace-route`로 신규 NAT 게이트웨이 ID로 정상 교체한다.
 
 ### 컨테이너 이미지 빌드 및 ECR 푸시 파이프라인 (`scripts/build-and-push.sh` · AWS CodeBuild)
