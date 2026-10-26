@@ -262,32 +262,32 @@ sequenceDiagram
 > **안내**: AWS 실자원에 닿거나 요금/상태 변화를 유발하는 단계는 **`[위험]`** 으로 표시되어 있으므로, 해당 단계 실행 전에는 `ORCA_WORKFLOW.md` 규칙에 따라 반드시 계획 및 승인을 거쳐야 한다.
 
 ### 1단계: 애플리케이션 드라이버 버전 상향 (`app/pom.xml`)
-- [ ] `app/pom.xml` 파일 내 `<mysql-driver.version>`을 `8.1.0`에서 `8.4.0`으로 변경
-- [ ] Maven 빌드 테스트 수행 (`mvn test -Dtest=PetclinicIntegrationTests` 또는 전체 빌드)으로 Connector/J 8.4.0 컴파일 및 패키징 정상 여부 검증
+- [x] `app/pom.xml` 파일 내 `<mysql-driver.version>`을 `8.1.0`에서 `8.4.0`으로 변경 (`d1e24a1`)
+- [x] Maven 빌드 테스트 수행 (`mvn test -Dtest=PetclinicIntegrationTests` 또는 전체 빌드)으로 Connector/J 8.4.0 컴파일 및 패키징 정상 여부 검증 (`d1e24a1`)
 
 ### 2단계: K8s DB 매니페스트 이미지 태그 수정
-- [ ] `k8s/jobs/job-db-init.yaml`: `mysql` 컨테이너의 `image: mysql:8.0.39`를 `image: mysql:8.4.11`로 변경
-- [ ] `k8s/jobs/cronjob-db-backup.yaml`: `dump` initContainer의 `image: mysql:8.0.39`를 `image: mysql:8.4.11`로 변경
-- [ ] 두 매니페스트의 실행 인수(CLI 옵션 및 SQL 구문)가 MySQL 8.4 호환 사양과 일치하는지 재확인
+- [x] `k8s/jobs/job-db-init.yaml`: `mysql` 컨테이너의 `image: mysql:8.0.39`를 `image: mysql:8.4.11`로 변경 (`8bd2d0e`)
+- [x] `k8s/jobs/cronjob-db-backup.yaml`: `dump` initContainer의 `image: mysql:8.0.39`를 `image: mysql:8.4.11`로 변경 (`8bd2d0e`)
+- [x] 두 매니페스트의 실행 인수(CLI 옵션 및 SQL 구문)가 MySQL 8.4 호환 사양과 일치하는지 재확인 (`8bd2d0e`)
 
 ### 3단계: 인프라 프로비저닝 스크립트 수정 (`infra/aws/provision-aws-resources.sh`)
-- [ ] 파라미터 그룹 패밀리를 `--db-parameter-group-family mysql8.0`에서 `--db-parameter-group-family mysql8.4`로 변경
-- [ ] 파라미터 그룹 설명 및 에코 메시지를 `MySQL 8.4`로 현행화
-- [ ] RDS 생성 CLI 옵션을 `--engine mysql --engine-version 8.0.39`에서 `--engine mysql --engine-version 8.4.11`로 변경
-- [ ] `require_secure_transport=ON` 파라미터 적용 로직 유지 확인
+- [x] 파라미터 그룹 패밀리를 `--db-parameter-group-family mysql8.0`에서 `--db-parameter-group-family mysql8.4`로 변경 (`804068f`)
+- [x] 파라미터 그룹 설명 및 에코 메시지를 `MySQL 8.4`로 현행화 (`804068f`)
+- [x] RDS 생성 CLI 옵션을 `--engine mysql --engine-version 8.0.39`에서 `--engine mysql --engine-version 8.4.11`로 변경 (`804068f`)
+- [x] `require_secure_transport=ON` 파라미터 적용 로직 유지 확인 (`804068f`)
 
 ### 4단계: 정적 유효성 검증 및 CI 회귀 테스트 갱신 (`scripts/validate-manifests.sh`)
-- [ ] `scripts/validate-manifests.sh`에 다음 검증 로직 추가/갱신:
+- [x] `scripts/validate-manifests.sh`에 다음 검증 로직 추가/갱신: (`60f4cf9`)
   - `infra/aws/provision-aws-resources.sh` 내 RDS 엔진 버전이 `8.4.11`인지 검사
   - 파라미터 그룹 패밀리가 `mysql8.4`인지 검사
   - `k8s/jobs/job-db-init.yaml`의 이미지가 `mysql:8.4.11`인지 검사
   - `k8s/jobs/cronjob-db-backup.yaml`의 이미지가 `mysql:8.4.11`인지 검사
   - `app/pom.xml`의 `<mysql-driver.version>`이 `8.4.0`인지 검사
-- [ ] `bash scripts/validate-manifests.sh`를 실행하여 43개 YAML 및 오프라인 테스트 전체 통과 확인
+- [x] `bash scripts/validate-manifests.sh`를 실행하여 43개 YAML 및 오프라인 테스트 전체 통과 확인 (`60f4cf9`)
 
 ### 5단계: 문서 현행화 (`README.md`)
-- [ ] `README.md` 내 기술 스택 테이블의 RDS MySQL 버전을 `8.0.39`에서 `8.4.11` (MySQL 8.4 LTS)로 갱신
-- [ ] 관련 설명 내 `mysql:8.0.39` 이미지를 `mysql:8.4.11`로 갱신
+- [x] `README.md` 내 기술 스택 테이블의 RDS MySQL 버전을 `8.0.39`에서 `8.4.11` (MySQL 8.4 LTS)로 갱신 (`e2fd508`)
+- [x] 관련 설명 내 `mysql:8.0.39` 이미지를 `mysql:8.4.11`로 갱신 (`e2fd508`)
 
 ### 6단계: 컨테이너 이미지 빌드 및 ECR 푸시 (CodeBuild)
 - [ ] `scripts/build-and-push.sh`를 통해 `was` 이미지를 빌드 및 ECR 푸시 (`BUILD_TARGET=was IMAGE_TAG=...`)하여 Connector/J 8.4.0이 포함된 컨테이너 준비
@@ -316,3 +316,7 @@ sequenceDiagram
 ## 구현 중 질문
 
 *(구현 중 발생하는 질문이나 설계 결정 필요 사항이 있을 경우 여기에 기록합니다.)*
+
+- (Claude, 참고) 6단계 빌드 태그: `deploy-all.sh` 는 web·was에 같은 `STABLE_IMAGE_TAG`·`CANARY_IMAGE_TAG` 를 쓰므로 `BUILD_TARGET=was` 로 새 태그만 만들면 web 이미지가 그 태그로 없음 → 새 태그(예: `v1.0.1`)로 web·was 모두 빌드(`BUILD_TARGET=all`)하는 것으로 진행. 6단계는 ECR에 이미지를 올리는 AWS 작업이라 7단계와 함께 실행 전 컨펌
+- (Claude, 참고) db-init의 `CREATE USER ... IDENTIFIED BY ... REQUIRE SSL` 은 8.4 기본 `caching_sha2_password` 로 생성되고 TLS 연결이라 추가 설정 불필요. `mysqldump --single-transaction --set-gtid-purged=OFF` 는 8.4에서도 유효(10단계에서 실제 확인). Maven `./mvnw test` 78개 통과, `-P MySQL dependency:resolve` 로 Connector/J 8.4.0 확인
+
