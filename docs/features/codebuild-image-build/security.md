@@ -50,7 +50,7 @@
 지적 사항 없음.
 
 ### Medium
-- [ ] `scripts/validate-manifests.sh:346-349` — **CI 보안 회귀 검증 스크립트 들여쓰기 오류로 인한 buildspec 보안 규칙(ABORT, 태그 정규식) 검사 누락.** `scripts/validate-manifests.sh:346-349`에서 `buildspec.yml`의 `post_build.on-failure == ABORT` 설정 여부 및 `pre_build` 단계의 `IMAGE_TAG` 정규식 검사 로직이 `codebuild-policy.json` 파싱의 `except (OSError, ValueError, KeyError) as e:` 블록 내부로 들여쓰기되어 있다. 이로 인해 정책 파일이 정상적인 JSON인 일반 실행 환경에서는 두 가지 검사가 전혀 실행되지 않고 통과(silent bypass)된다. 향후 `buildspec.yml`에서 fail-fast나 태그 검증 로직이 누락되더라도 CI에서 감지하지 못하므로, 해당 검사 구문을 `except` 블록 밖(`try-except` 이후 또는 정상 검사 흐름)으로 이동시켜 상시 검증되도록 수정해야 한다.
+- [x] `scripts/validate-manifests.sh:346-349` — **CI 보안 회귀 검증 스크립트 들여쓰기 오류로 인한 buildspec 보안 규칙(ABORT, 태그 정규식) 검사 누락.** `scripts/validate-manifests.sh:346-349`에서 `buildspec.yml`의 `post_build.on-failure == ABORT` 설정 여부 및 `pre_build` 단계의 `IMAGE_TAG` 정규식 검사 로직이 `codebuild-policy.json` 파싱의 `except (OSError, ValueError, KeyError) as e:` 블록 내부로 들여쓰기되어 있다. 이로 인해 정책 파일이 정상적인 JSON인 일반 실행 환경에서는 두 가지 검사가 전혀 실행되지 않고 통과(silent bypass)된다. 향후 `buildspec.yml`에서 fail-fast나 태그 검증 로직이 누락되더라도 CI에서 감지하지 못하므로, 해당 검사 구문을 `except` 블록 밖(`try-except` 이후 또는 정상 검사 흐름)으로 이동시켜 상시 검증되도록 수정해야 한다. (`b58b01d`)
 
 ### Low
 지적 사항 없음.

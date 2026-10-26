@@ -30,7 +30,7 @@
 - 지적 사항 없음.
 
 ### Medium / Low
-- [ ] `scripts/validate-manifests.sh:346` — **Medium: buildspec 회귀 검사 두 개가 정상 실행에서 건너뛰어진다.** `post_build.on-failure == ABORT` 검사와 `pre_build` 태그 정규식 검사가 IAM 정책 파싱의 `except` 블록 안에 들여쓰기되어 있다. 정상적인 `codebuild-policy.json`에서는 두 검사가 실행되지 않으므로, buildspec에서 해당 보호 장치를 제거해도 검증이 통과한다. 두 검사를 buildspec을 처리하는 `else` 블록으로 옮기고 각각의 보호 장치를 제거했을 때 실패하는 음성 검증을 추가해야 한다. 실제 IAM 정책을 사용하는 해당 검사 블록에 `phases={'post_build': {}}`, `cmds=lambda p: ''`를 전달해 실행했으며 오류 목록이 빈 배열인 것을 확인했다. 현재 buildspec 자체에는 두 보호 장치가 있어 현재 빌드 동작을 막는 문제는 아니다.
+- [x] `scripts/validate-manifests.sh:346` — **Medium: buildspec 회귀 검사 두 개가 정상 실행에서 건너뛰어진다.** `post_build.on-failure == ABORT` 검사와 `pre_build` 태그 정규식 검사가 IAM 정책 파싱의 `except` 블록 안에 들여쓰기되어 있다. 정상적인 `codebuild-policy.json`에서는 두 검사가 실행되지 않으므로, buildspec에서 해당 보호 장치를 제거해도 검증이 통과한다. 두 검사를 buildspec을 처리하는 `else` 블록으로 옮기고 각각의 보호 장치를 제거했을 때 실패하는 음성 검증을 추가해야 한다. 실제 IAM 정책을 사용하는 해당 검사 블록에 `phases={'post_build': {}}`, `cmds=lambda p: ''`를 전달해 실행했으며 오류 목록이 빈 배열인 것을 확인했다. 현재 buildspec 자체에는 두 보호 장치가 있어 현재 빌드 동작을 막는 문제는 아니다. (`b58b01d`)
 
 ### 기존 아키텍처와의 일치
 - 신규 불일치 지적 사항 없음. 기존 Dockerfile, WAR 패키징, `linux/amd64`, ECR 불변 태그, 백업·Tempo 권한 및 버킷 분리 구조를 유지한다.
