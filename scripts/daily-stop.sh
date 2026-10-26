@@ -5,11 +5,12 @@
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
-usage() { echo "usage: $0 [--dry-run] [-h|--help]"; }
-DRY_RUN=0
+usage() { echo "usage: $0 [--dry-run] [--stop-nat] [-h|--help]"; }
+DRY_RUN=0 STOP_NAT=0
 for a in "$@"; do
   case "$a" in
     --dry-run) DRY_RUN=1 ;;
+    --stop-nat) STOP_NAT=1 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 1 ;;
   esac
@@ -58,11 +59,19 @@ kube() {
   run kubectl "${nsarg[@]}" "$verb" "$res" "$@"
 }
 
+nat_notice() {
+  if (( STOP_NAT )); then
+    echo "  - NAT Gateways (2 AZs): deleted by --stop-nat; recreate with scripts/nat-start.sh or daily-start.sh --start-nat"
+  else
+    echo "  - NAT Gateway (VPC public subnets, 2 AZs): still running (~\$0.059/hr per NAT GW, ~\$2.83/day for 2 AZs + data processing); delete with scripts/nat-stop.sh or daily-stop.sh --stop-nat"
+  fi
+}
+
 notice() {
   cat <<EOF
 == Notice: Non-stoppable resources & remaining costs ($AWS_REGION) ==
   - EKS Control Plane ($EKS_CLUSTER_NAME): cannot be stopped (~\$0.10/hr, ~\$2.40/day)
-  - NAT Gateway (VPC public subnets, 2 AZs): cannot be stopped (~\$0.059/hr per NAT GW, ~\$2.83/day for 2 AZs + data processing)
+$(nat_notice)
   - Application Load Balancer (petclinic-alb): kept active with Ingress (~\$0.0252/hr, ~\$0.60/day + LCU)
   - Persistent Storage & Edge (EBS gp3 PVCs, RDS gp3 storage, WAFv2 WebACL, Route 53, Secrets Manager): billed while stopped
   - RDS Auto-Start Note: AWS automatically restarts a stopped RDS instance after 7 consecutive days.
@@ -135,5 +144,11 @@ done
 for u in "${updates[@]}"; do
   wait_update "${u%%=*}" "${u#*=}"
 done
+
+# Last: the nodes are gone, so nothing loses egress (nat-stop.sh still refuses while instances run).
+if (( STOP_NAT )); then
+  echo "== NAT gateways"
+  if (( DRY_RUN )); then bash "$ROOT/scripts/nat-stop.sh" --dry-run; else bash "$ROOT/scripts/nat-stop.sh"; fi
+fi
 
 notice
