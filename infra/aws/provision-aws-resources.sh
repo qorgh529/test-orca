@@ -293,7 +293,7 @@ post_cluster() {
   echo "== RDS parameter group: TLS required"
   aws rds describe-db-parameter-groups --db-parameter-group-name "${db_id}-params" >/dev/null 2>&1 \
     || aws rds create-db-parameter-group --db-parameter-group-name "${db_id}-params" \
-      --db-parameter-group-family mysql8.0 --description "PetClinic MySQL - require TLS" >/dev/null
+      --db-parameter-group-family mysql8.4 --description "PetClinic MySQL 8.4 - require TLS" >/dev/null
   aws rds modify-db-parameter-group --db-parameter-group-name "${db_id}-params" \
     --parameters "ParameterName=require_secure_transport,ParameterValue=ON,ApplyMethod=immediate" >/dev/null
 
@@ -304,11 +304,11 @@ post_cluster() {
   password=$(aws secretsmanager get-secret-value --secret-id "$RDS_SECRET_NAME" \
     --query SecretString --output text | jq -r .password)
 
-  echo "== RDS MySQL 8.0 Multi-AZ (encrypted, private; an existing instance is reused as-is)"
+  echo "== RDS MySQL 8.4 Multi-AZ (encrypted, private; an existing instance is reused as-is)"
   if ! aws rds describe-db-instances --db-instance-identifier "$db_id" >/dev/null 2>&1; then
     PW="$password" jq -n '{MasterUserPassword: env.PW}' | aws rds create-db-instance --cli-input-json file:///dev/stdin \
       --db-instance-identifier "$db_id" \
-      --engine mysql --engine-version 8.0.39 \
+      --engine mysql --engine-version 8.4.11 \
       --db-instance-class db.t3.medium \
       --allocated-storage 20 --storage-type gp3 --storage-encrypted \
       --multi-az --no-publicly-accessible \
