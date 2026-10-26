@@ -394,6 +394,29 @@ for (f, name), policy in SPREAD.items():
     if not isinstance(keys, list) or "pod-template-hash" not in keys:  # a bare string would match by substring
         err(f"{f} {name}: zone spread must set matchLabelKeys: [pod-template-hash]")
 
+# 11. Graceful shutdown (docs/features/graceful-shutdown/design.md): each container waits in preStop
+# until NGF and kube-proxy drop the pod, and the grace period covers that wait plus the drain.
+SHUTDOWN = {("k8s/web/deployment.yaml", "web"): 35, ("k8s/web/deployment.yaml", "web-canary"): 35,
+            ("k8s/was/deployment-stable.yaml", "was-stable"): 45,
+            ("k8s/was/deployment-canary.yaml", "was-canary"): 45}
+PRESTOP = 15
+for (f, name), grace in SHUTDOWN.items():
+    dep = next((d for d in docs.get(root / f, []) if d and d.get("kind") == "Deployment"
+                and d["metadata"]["name"] == name), None)
+    if dep is None:
+        err(f"{f}: Deployment {name} not found")
+        continue
+    spec = dep["spec"]["template"]["spec"]
+    tgps = spec.get("terminationGracePeriodSeconds")
+    if not isinstance(tgps, int) or tgps < grace:
+        err(f"{f} {name}: terminationGracePeriodSeconds must be an integer >= {grace}")
+    for c in spec["containers"]:
+        secs = ((((c.get("lifecycle") or {}).get("preStop") or {}).get("sleep") or {}).get("seconds"))
+        if not isinstance(secs, int) or secs < PRESTOP:
+            err(f"{f} {name}/{c['name']}: lifecycle.preStop.sleep.seconds must be an integer >= {PRESTOP}")
+        elif isinstance(tgps, int) and tgps <= secs:
+            err(f"{f} {name}/{c['name']}: terminationGracePeriodSeconds must exceed the preStop sleep")
+
 if errors:
     print("\n".join("FAIL " + e for e in errors))
     sys.exit(1)
