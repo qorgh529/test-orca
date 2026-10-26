@@ -86,8 +86,8 @@
         <mxCell id="fluent_band" value="Fluent Bit DaemonSet (전 노드 Toleration → CloudWatch Logs) · node-exporter · aws-node · ebs-csi-node" style="rounded=1;arcSize=6;html=1;whiteSpace=wrap;fillColor=#FFF8E7;strokeColor=#ED7100;dashed=1;verticalAlign=middle;align=center;fontStyle=1;fontSize=11;fontColor=#232F3E;" vertex="1" parent="1">
           <mxGeometry x="660" y="730" width="1000" height="45" as="geometry"/>
         </mxCell>
-        <mxCell id="db_subnet" value="프라이빗 서브넷 — DB (완전 격리)&lt;br&gt;&lt;font style=&quot;font-size:10px;font-weight:normal&quot; color=&quot;#8C1B92&quot;&gt;2a: 10.0.48.0/24 · 2c: 10.0.49.0/24&lt;br&gt;인터넷 라우트 없음 (Air-Gapped)&lt;/font&gt;" style="points=[[0,0],[0.25,0],[0.5,0],[0.75,0],[1,0],[1,0.25],[1,0.5],[1,0.75],[1,1],[0.75,1],[0.5,1],[0.25,1],[0,1],[0,0.75],[0,0.5],[0,0.25]];outlineConnect=0;gradientColor=none;html=1;whiteSpace=wrap;fontSize=12;fontStyle=1;container=1;pointerEvents=0;collapsible=0;recursiveResize=0;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_security_group;grStroke=0;strokeColor=#C925D1;fillColor=#FAF0FB;verticalAlign=top;align=left;spacingLeft=30;spacingTop=4;fontColor=#8C1B92;dashed=0;" vertex="1" parent="1">
-          <mxGeometry x="1690" y="95" width="205" height="735" as="geometry"/>
+        <mxCell id="db_subnet" value="프라이빗 서브넷 — DB (완전 격리)&lt;br&gt;&lt;font style=&quot;font-size:10px;font-weight:normal&quot; color=&quot;#8C1B92&quot;&gt;2a: 10.0.48.0/24 · 2c: 10.0.49.0/24&lt;br&gt;인터넷 라우트 없음 (Air-Gapped)&lt;/font&gt;" style="points=[[0,0],[0.25,0],[0.5,0],[0.75,0],[1,0],[1,0.25],[1,0.5],[1,0.75],[1,1],[0.75,1],[0.5,1],[0.25,1],[0,1],[0,0.75],[0,0.5],[0,0.25]];outlineConnect=0;gradientColor=none;html=1;whiteSpace=nowrap;fontSize=11;fontStyle=1;container=1;pointerEvents=0;collapsible=0;recursiveResize=0;shape=mxgraph.aws4.group;grIcon=mxgraph.aws4.group_security_group;grStroke=0;strokeColor=#C925D1;fillColor=#FAF0FB;verticalAlign=top;align=left;spacingLeft=26;spacingTop=4;fontColor=#8C1B92;dashed=0;" vertex="1" parent="1">
+          <mxGeometry x="1690" y="95" width="215" height="735" as="geometry"/>
         </mxCell>
         <mxCell id="rds_primary" value="&lt;b&gt;RDS MySQL 8.4.11 Primary&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#545B64&quot;&gt;ap-northeast-2a (:3306 TLS)&lt;br&gt;mysql8.4 파라미터 그룹&lt;br&gt;require_secure_transport=ON&lt;br&gt;gp3 KMS 암호화&lt;/font&gt;" style="sketch=0;points=[[0,0,0],[0.25,0,0],[0.5,0,0],[0.75,0,0],[1,0,0],[0,1,0],[0.25,1,0],[0.5,1,0],[0.75,1,0],[1,1,0],[0,0.25,0],[0,0.5,0],[0,0.75,0],[1,0.25,0],[1,0.5,0],[1,0.75,0]];outlineConnect=0;fontColor=#232F3E;gradientColor=#5040BA;gradientDirection=north;fillColor=#3334B9;strokeColor=#ffffff;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=12;fontStyle=0;aspect=fixed;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.rds;" vertex="1" parent="1">
           <mxGeometry x="1758" y="210" width="68" height="68" as="geometry"/>
@@ -181,7 +181,7 @@
               <mxPoint x="860" y="272"/>
               <mxPoint x="860" y="352"/>
             </Array>
-            <mxPoint x="20" y="-12" as="offset"/>
+            <mxPoint x="20" y="28" as="offset"/>
           </mxGeometry>
         </mxCell>
         <mxCell id="e3_grafana" value="③ /grafana 접두사 우선 (:80)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=1.5;strokeColor=#BC1356;fontColor=#BC1356;fontSize=10;dashed=1;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="ngf" target="prom_stack">
@@ -224,8 +224,14 @@
             </Array>
           </mxGeometry>
         </mxCell>
-        <mxCell id="e_rds_repl" value="Multi-AZ 동기 복제" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#8C1B92;fontColor=#8C1B92;fontStyle=1;fontSize=11;dashed=1;startArrow=classic;startFill=1;labelBackgroundColor=#FAF0FB;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="rds_primary" target="rds_standby">
-          <mxGeometry relative="1" as="geometry"/>
+        <mxCell id="e_rds_repl" value="Multi-AZ 동기 복제" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#8C1B92;fontColor=#8C1B92;fontStyle=1;fontSize=11;dashed=1;startArrow=classic;startFill=1;labelBackgroundColor=#FAF0FB;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="rds_primary" target="rds_standby">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1900" y="244"/>
+              <mxPoint x="1900" y="360"/>
+              <mxPoint x="1792" y="360"/>
+            </Array>
+          </mxGeometry>
         </mxCell>
         <mxCell id="e_prom_keda" value="PromQL (:9090)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=1.5;strokeColor=#BC1356;fontColor=#BC1356;fontSize=10;dashed=1;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="prom_stack" target="crit_addons">
           <mxGeometry relative="1" as="geometry"/>
@@ -237,7 +243,7 @@
               <mxPoint x="648" y="470"/>
               <mxPoint x="740" y="470"/>
             </Array>
-            <mxPoint x="35" y="-10" as="offset"/>
+            <mxPoint x="35" y="14" as="offset"/>
           </mxGeometry>
         </mxCell>
         <mxCell id="e_otel" value="OTLP :4318 (Traces·RED)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=1.5;strokeColor=#BC1356;fontColor=#BC1356;fontSize=10;dashed=1;labelBackgroundColor=#FFFFFF;exitX=0.98;exitY=1;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="np_app_box" target="tracing_stack">
@@ -254,36 +260,38 @@
         <mxCell id="e_prom_tempo" value=":8889 / :3200 (Exemplar)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=1.5;strokeColor=#BC1356;fontColor=#BC1356;fontSize=10;dashed=1;startArrow=classic;startFill=1;labelBackgroundColor=#FFFFFF;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" edge="1" parent="1" source="prom_stack" target="tracing_stack">
           <mxGeometry relative="1" as="geometry"/>
         </mxCell>
-        <mxCell id="e_alert_slack" value="slack_configs (:443)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=1.5;strokeColor=#4A154B;fontColor=#4A154B;fontSize=10;dashed=1;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="prom_stack" target="slack_channel">
+        <mxCell id="e_alert_slack" value="slack_configs (:443)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=1.5;strokeColor=#4A154B;fontColor=#4A154B;fontSize=10;dashed=1;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.75;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="prom_stack" target="slack_channel">
           <mxGeometry relative="1" as="geometry">
             <Array as="points">
-              <mxPoint x="1242" y="835"/>
+              <mxPoint x="1150" y="598"/>
+              <mxPoint x="1150" y="835"/>
               <mxPoint x="1697" y="835"/>
             </Array>
           </mxGeometry>
         </mxCell>
-        <mxCell id="e_tempo_s3" value="트레이스 블록 (:443 IRSA)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=1.5;strokeColor=#277116;fontColor=#277116;fontSize=10;dashed=1;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="tracing_stack" target="s3_tempo">
+        <mxCell id="e_tempo_s3" value="트레이스 블록 (:443 IRSA)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=1.5;strokeColor=#277116;fontColor=#277116;fontSize=10;dashed=1;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.75;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="tracing_stack" target="s3_tempo">
           <mxGeometry relative="1" as="geometry">
             <Array as="points">
-              <mxPoint x="1462" y="855"/>
+              <mxPoint x="1368" y="598"/>
+              <mxPoint x="1368" y="855"/>
               <mxPoint x="1172" y="855"/>
             </Array>
           </mxGeometry>
         </mxCell>
-        <mxCell id="e_backup_s3" value="백업 업로드 (HTTPS :443)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=1.5;strokeColor=#277116;fontColor=#277116;fontSize=10;dashed=1;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="db_jobs" target="s3_backup">
+        <mxCell id="e_backup_s3" value="백업 업로드 (HTTPS :443)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=1.5;strokeColor=#277116;fontColor=#277116;fontSize=10;dashed=1;labelBackgroundColor=#FFFFFF;exitX=0;exitY=0.75;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="db_jobs" target="s3_backup">
           <mxGeometry relative="1" as="geometry">
             <Array as="points">
-              <mxPoint x="962" y="810"/>
+              <mxPoint x="875" y="598"/>
+              <mxPoint x="875" y="810"/>
               <mxPoint x="917" y="810"/>
             </Array>
             <mxPoint x="0" y="28" as="offset"/>
           </mxGeometry>
         </mxCell>
-        <mxCell id="e_eso" value="ESO 시크릿 동기화" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=1.5;strokeColor=#C7131F;fontColor=#C7131F;fontSize=10;dashed=1;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.25;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="secrets_mgr" target="crit_addons">
+        <mxCell id="e_eso" value="ESO 시크릿 동기화" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=1.5;strokeColor=#C7131F;fontColor=#C7131F;fontSize=10;dashed=1;labelBackgroundColor=#FFFFFF;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0;entryY=0.25;entryDx=0;entryDy=0;" edge="1" parent="1" source="secrets_mgr" target="crit_addons">
           <mxGeometry relative="1" as="geometry">
             <Array as="points">
-              <mxPoint x="662" y="845"/>
-              <mxPoint x="726" y="845"/>
+              <mxPoint x="662" y="566"/>
             </Array>
           </mxGeometry>
         </mxCell>
