@@ -417,6 +417,40 @@ for (f, name), grace in SHUTDOWN.items():
         elif isinstance(tgps, int) and tgps <= secs:
             err(f"{f} {name}/{c['name']}: terminationGracePeriodSeconds must exceed the preStop sleep")
 
+# 12. Grafana at /grafana (docs/features/grafana-public-path/design.md): sub-path serving, closed
+# sign-up/anonymous access, a route that only reaches the Grafana Service, and a WAF allow-list.
+def one(f, kind):
+    return next((d for d in docs.get(root / f, []) if d and d.get("kind") == kind), None)
+values = next(iter(docs.get(root / "k8s/monitoring/kube-prometheus-values.yaml", [])), {})
+gini = (values.get("grafana") or {}).get("grafana.ini") or {}
+want = {("server", "root_url"): "https://${DOMAIN_NAME}/grafana/", ("server", "serve_from_sub_path"): True,
+        ("security", "cookie_secure"): True, ("security", "allow_embedding"): False,
+        ("users", "allow_sign_up"): False, ("auth.anonymous", "enabled"): False}
+for (sec, key), val in want.items():
+    if (gini.get(sec) or {}).get(key) != val:
+        err(f"kube-prometheus-values.yaml: grafana.ini {sec}.{key} must be {val!r}")
+route = one("k8s/gateway/httproute-grafana.yaml", "HTTPRoute")
+rules = (route or {}).get("spec", {}).get("rules") or []
+if (len(rules) != 1 or [m.get("path") for m in rules[0].get("matches", [])] != [{"type": "PathPrefix", "value": "/grafana"}]
+        or [(b.get("namespace"), b.get("name")) for b in rules[0].get("backendRefs", [])]
+        != [("monitoring", "kube-prometheus-stack-grafana")]):
+    err("httproute-grafana.yaml: one rule, PathPrefix /grafana -> monitoring/kube-prometheus-stack-grafana")
+grant = one("k8s/monitoring/referencegrant-grafana.yaml", "ReferenceGrant")
+if [t.get("name") for t in (grant or {}).get("spec", {}).get("to", [])] != ["kube-prometheus-stack-grafana"]:
+    err("referencegrant-grafana.yaml: must grant only Service kube-prometheus-stack-grafana")
+gnp = one("k8s/monitoring/networkpolicy-grafana.yaml", "NetworkPolicy")
+if not gnp or any(p.get("port") != 3000 for r in gnp["spec"].get("ingress", []) for p in r.get("ports", [])):
+    err("networkpolicy-grafana.yaml: Grafana ingress must exist and allow only port 3000")
+listener = (one("k8s/gateway/gateway.yaml", "Gateway") or {}).get("spec", {}).get("listeners", [{}])[0]
+allowed = [v for e in listener.get("allowedRoutes", {}).get("namespaces", {}).get("selector", {})
+           .get("matchExpressions", []) for v in e.get("values", [])]
+if sorted(allowed) != ["nginx-gateway", "petclinic"]:
+    err("gateway.yaml: routes allowed only from petclinic and nginx-gateway")
+if not re.search(r"^GRAFANA_ALLOWED_CIDRS=$", (root / ".env.example").read_text(encoding="utf-8"), re.M):
+    err(".env.example: GRAFANA_ALLOWED_CIDRS= must be present and empty")
+if "grafana-waf) grafana_waf" not in prov or '"URL_DECODE"' not in prov or '"NORMALIZE_PATH"' not in prov:
+    err("provision-aws-resources.sh: grafana-waf must block /grafana after URL_DECODE + NORMALIZE_PATH")
+
 if errors:
     print("\n".join("FAIL " + e for e in errors))
     sys.exit(1)
