@@ -68,7 +68,7 @@
 1. **로컬 CLI 도구**:
    - `aws` (AWS CLI v2), `eksctl`, `kubectl`, `helm`, `docker`, `jq`, `envsubst` (`gettext`), `curl`
    - 오프라인 검증 및 테스트용: `python3` (`PyYAML` 패키지 포함), `promtool` (또는 Docker)
-2. **AWS 네트워크 리소스 (입력값)**:
+2. **AWS 네트워크 리소스**: 없으면 `./infra/aws/provision-aws-resources.sh vpc` 로 만들 수 있습니다 (Step 2 참고).
    - 서울 리전(`ap-northeast-2`)의 VPC 및 `ap-northeast-2a` / `ap-northeast-2c` 가용 영역별 서브넷 ID:
      - 퍼블릭 서브넷 2개 (`PUBLIC_SUBNET_A_ID`, `PUBLIC_SUBNET_C_ID`)
      - 앱 프라이빗 서브넷 2개 (`APP_PRIVATE_SUBNET_A_ID`, `APP_PRIVATE_SUBNET_C_ID`)
@@ -89,6 +89,11 @@ cp .env.example .env
 ### Step 2. AWS 주변 인프라 및 EKS 클러스터 프로비저닝
 각 단계는 멱등(Idempotent)하게 동작하므로 중간에 중단되더라도 안전하게 재실행할 수 있습니다.
 ```bash
+# 0) VPC 10.0.0.0/16, 서브넷 6개(퍼블릭 10.0.0.0/24·10.0.1.0/24, 앱 10.0.16.0/20·10.0.32.0/20, DB 10.0.48.0/24·10.0.49.0/24),
+#    IGW, 라우트 테이블 4개, AZ별 NAT 2개 생성 (리전은 ap-northeast-2 고정, Name=petclinic-* 태그로 찾아 재사용)
+./infra/aws/provision-aws-resources.sh vpc
+# 마지막에 출력된 VPC_ID 와 서브넷 ID 6개를 .env에 반영
+
 # 1) IAM Policy/Role, ECR 리포지토리, CloudWatch Log Group, 백업용·Tempo용 S3 버킷, CodeBuild(소스 버킷·서비스 역할·프로젝트), WAFv2 WebACL, ACM 인증서 생성
 ./infra/aws/provision-aws-resources.sh pre-cluster
 # 출력된 ECR_*_REPOSITORY_URI, WAF_WEB_ACL_ARN, ACM_CERTIFICATE_ARN을 .env에 반영
@@ -156,6 +161,14 @@ AWS Secrets Manager에서 `petclinic_app` 또는 `petclinic_backup` 비밀번호
 ```bash
 ./scripts/rotate-db-secrets.sh
 ```
+
+### 5) 업무 외 시간 중지·기동 (비용 절감)
+퇴근 시 앱 노드·RDS·관리형 노드 그룹을 내리고, `--stop-nat` 을 붙이면 마지막에 NAT Gateway 2개 삭제·EIP 반납까지 합니다(약 하루 USD 2.8 절감). 출근 시 `--start-nat` 은 노드보다 먼저 NAT를 만들고 앱 라우트 테이블을 새 NAT로 돌립니다.
+```bash
+./scripts/daily-stop.sh --stop-nat     # 또는 daily-stop.sh 후 ./scripts/nat-stop.sh
+./scripts/daily-start.sh --start-nat   # 또는 ./scripts/nat-start.sh 후 daily-start.sh
+```
+> `nat-stop.sh` 는 VPC 안에 실행 중인 EC2가 있으면 멈춥니다(노드 egress 보호, `--force` 로 무시). 둘 다 `--dry-run` 을 지원합니다.
 
 ---
 
