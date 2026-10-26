@@ -370,6 +370,29 @@ for job in ("k8s/jobs/job-db-init.yaml", "k8s/jobs/cronjob-db-backup.yaml"):
 if "<mysql-driver.version>8.4.0</mysql-driver.version>" not in pom:
     err("app/pom.xml: mysql-driver.version must be Connector/J 8.4.0")
 
+# 10. Zone spread survives rollouts (docs/features/spread-on-rollout/design.md): without
+# matchLabelKeys the old ReplicaSet's pods are counted and new pods can all land in one zone.
+SPREAD = {("k8s/web/deployment.yaml", "web"): "DoNotSchedule",
+          ("k8s/web/deployment.yaml", "web-canary"): "ScheduleAnyway",
+          ("k8s/was/deployment-stable.yaml", "was-stable"): "DoNotSchedule",
+          ("k8s/was/deployment-canary.yaml", "was-canary"): "ScheduleAnyway"}
+for (f, name), policy in SPREAD.items():
+    dep = next((d for d in docs.get(root / f, []) if d and d.get("kind") == "Deployment"
+                and d["metadata"]["name"] == name), None)
+    if dep is None:
+        err(f"{f}: Deployment {name} not found")
+        continue
+    zone = [c for c in dep["spec"]["template"]["spec"].get("topologySpreadConstraints") or []
+            if c.get("topologyKey") == "topology.kubernetes.io/zone"]
+    if len(zone) != 1:
+        err(f"{f} {name}: needs exactly one zone topologySpreadConstraint")
+        continue
+    c = zone[0]
+    if c.get("maxSkew") != 1 or c.get("whenUnsatisfiable") != policy:
+        err(f"{f} {name}: zone spread must be maxSkew 1, whenUnsatisfiable {policy}")
+    if "pod-template-hash" not in (c.get("matchLabelKeys") or []):
+        err(f"{f} {name}: zone spread must set matchLabelKeys: [pod-template-hash]")
+
 if errors:
     print("\n".join("FAIL " + e for e in errors))
     sys.exit(1)
