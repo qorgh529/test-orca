@@ -1,0 +1,141 @@
+<!-- Spring PetClinic Staff Operations Console UI Prototype -->
+<div class="petclinic-operations-console container-fluid py-4">
+  <!-- Top Navigation & Header -->
+  <header class="d-flex justify-content-between align-items-center mb-4 pb-3 border-bottom">
+    <div class="d-flex align-items-center gap-3">
+      <span class="badge bg-primary fs-6">Spring PetClinic V3.2 DB</span>
+      <h1 class="h3 mb-0 text-dark fw-bold">Staff Operations & Practice Console</h1>
+    </div>
+    <nav class="nav gap-3">
+      <a class="nav-link text-secondary fw-semibold" href="/">Home</a>
+      <a class="nav-link text-secondary fw-semibold" href="/owners/find">Find Owners</a>
+      <a class="nav-link text-secondary fw-semibold" href="/vets">Veterinarians</a>
+      <a class="nav-link text-secondary fw-semibold" href="/visits/new">Visits & Appointments</a>
+    </nav>
+  </header>
+
+  <!-- Quick Action Toolbar -->
+  <div class="row g-3 mb-4">
+    <div class="col-md-4">
+      <div class="card shadow-sm border-0 bg-light p-3">
+        <div class="text-muted small mb-1">REGISTERED OWNERS</div>
+        <div class="d-flex justify-content-between align-items-center">
+          <span class="h4 mb-0 fw-bold">10 Active in DB</span>
+          <a href="/owners" class="text-decoration-none">View All →</a>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-4">
+      <div class="card shadow-sm border-0 bg-light p-3">
+        <div class="text-muted small mb-1">REGISTERED PATIENTS</div>
+        <div class="h4 mb-0 fw-bold">13 Total Pets <span class="fs-6 text-muted">(6 Types)</span></div>
+      </div>
+    </div>
+    <div class="col-md-4">
+      <div class="card shadow-sm border-0 bg-light p-3">
+        <div class="text-muted small mb-1">SCHEDULED VISITS</div>
+        <div class="d-flex justify-content-between align-items-center">
+          <span class="h4 mb-0 fw-bold">4 Visits Today</span>
+          <a href="/visits/new" class="text-decoration-none">Up-to-Date</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main Content Grid -->
+  <div class="row g-4">
+    <!-- Left Column: Recent Visits Schedule Table -->
+    <div class="col-lg-8">
+      <div class="card shadow-sm border-0">
+        <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
+          <h5 class="mb-0 fw-bold">Visits & Appointments Schedule</h5>
+          <a href="/visits/new" class="btn btn-primary btn-sm">+ Record Visit</a>
+        </div>
+        <div class="card-body p-0">
+          <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+              <thead class="table-light">
+                <tr>
+                  <th>VISIT DATE</th>
+                  <th>PET & TYPE</th>
+                  <th>OWNER & CONTACT</th>
+                  <th>DESCRIPTION / NOTES</th>
+                  <th>ASSIGNED VET</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td class="fw-semibold">2024-10-24</td>
+                  <td><strong>Leo</strong> <br><small class="text-muted">Cat (DOB: 2020-09-07)</small></td>
+                  <td>George Franklin <br><small class="text-muted">(608) 555-1023</small></td>
+                  <td>Rabies vaccination and annual checkup</td>
+                  <td><span class="badge bg-info text-dark">Dr. Helen Leary</span></td>
+                </tr>
+                <tr>
+                  <td class="fw-semibold">2024-10-24</td>
+                  <td><strong>Basil</strong> <br><small class="text-muted">Hamster (DOB: 2023-01-15)</small></td>
+                  <td>Eduardo Rodriquez <br><small class="text-muted">(608) 555-8763</small></td>
+                  <td>Lethargic, dental check (overgrown incisors)</td>
+                  <td><span class="badge bg-info text-dark">Dr. Linda Douglas</span></td>
+                </tr>
+                <tr>
+                  <td class="fw-semibold">2024-10-24</td>
+                  <td><strong>Rosy</strong> <br><small class="text-muted">Dog (DOB: 2021-04-12)</small></td>
+                  <td>Eduardo Rodriquez <br><small class="text-muted">(608) 555-8763</small></td>
+                  <td>Post-operative suture check</td>
+                  <td><span class="badge bg-info text-dark">Dr. Rafael Ortega</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right Column: Vets Roster & Quick Search -->
+    <div class="col-lg-4">
+      <!-- Find Owner Widget -->
+      <div class="card shadow-sm border-0 mb-4">
+        <div class="card-header bg-white py-3">
+          <h5 class="mb-0 fw-bold">Find Owner</h5>
+        </div>
+        <div class="card-body">
+          <form action="/owners/find" method="get">
+            <div class="input-group mb-3">
+              <input type="text" name="lastName" class="form-control" placeholder="Enter last name..." value="Franklin">
+              <button class="btn btn-outline-secondary" type="submit">Search</button>
+            </div>
+          </form>
+          <div class="p-3 bg-light rounded">
+            <strong>George Franklin</strong> (Owner #1)<br>
+            <small class="text-muted">110 W. Liberty St., Madison</small><br>
+            <small class="text-muted">Tel: (608) 555-1023</small>
+          </div>
+        </div>
+      </div>
+
+      <!-- Veterinarians Roster -->
+      <div class="card shadow-sm border-0">
+        <div class="card-header bg-white py-3">
+          <h5 class="mb-0 fw-bold">Veterinarians Roster</h5>
+        </div>
+        <div class="card-body p-0">
+          <ul class="list-group list-group-flush">
+            <li class="list-group-item d-flex justify-content-between align-items-center">
+              <div><strong>James Carter</strong> <br><small class="text-muted">General Practice</small></div>
+              <span class="badge bg-success">On Duty</span>
+            </li>
+            <li class="list-group-item d-flex justify-content-between align-items-center">
+              <div><strong>Helen Leary</strong> <br><small class="text-muted">Radiology</small></div>
+              <span class="badge bg-success">On Duty</span>
+            </li>
+            <li class="list-group-item d-flex justify-content-between align-items-center">
+              <div><strong>Linda Douglas</strong> <br><small class="text-muted">Dentistry & Surgery</small></div>
+              <span class="badge bg-success">On Duty</span>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

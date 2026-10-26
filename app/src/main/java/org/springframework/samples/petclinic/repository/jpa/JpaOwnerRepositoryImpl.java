@@ -78,4 +78,9 @@ public class JpaOwnerRepositoryImpl implements OwnerRepository {
 
     }
 
+    @Override
+    public long countOwners() {
+        return this.em.createQuery("SELECT count(owner) FROM Owner owner", Long.class).getSingleResult();
+    }
+
 }

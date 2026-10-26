@@ -34,4 +34,8 @@ public interface SpringDataPetRepository extends PetRepository, Repository<Pet, 
     @Override
     @Query("SELECT ptype FROM PetType ptype ORDER BY ptype.name")
     List<PetType> findPetTypes();
+
+    @Override
+    @Query("SELECT count(pet) FROM Pet pet")
+    long countPets();
 }

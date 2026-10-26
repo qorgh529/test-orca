@@ -19,6 +19,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.time.LocalDate;
 import java.util.Collection;
+import java.util.List;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -27,6 +28,7 @@ import org.springframework.samples.petclinic.model.Pet;
 import org.springframework.samples.petclinic.model.PetType;
 import org.springframework.samples.petclinic.model.Vet;
 import org.springframework.samples.petclinic.model.Visit;
+import org.springframework.samples.petclinic.model.VisitSummary;
 import org.springframework.samples.petclinic.util.EntityUtils;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.transaction.annotation.Transactional;
@@ -199,5 +201,35 @@ abstract class AbstractClinicServiceTests {
         assertThat(visitArr[0].getPet().getId()).isEqualTo(7);
     }
 
+    @Test
+    void shouldCountOwnersPetsAndVisits() {
+        assertThat(this.clinicService.countOwners()).isEqualTo(this.clinicService.findOwnerByLastName("").size());
+        assertThat(this.clinicService.countPets()).isEqualTo(13);
+        assertThat(this.clinicService.countVisits()).isEqualTo(4);
+    }
+
+    @Test
+    void shouldFindRecentVisitsNewestFirstWithPetAndOwner() {
+        List<VisitSummary> visits = this.clinicService.findRecentVisits(2);
+        assertThat(visits).hasSize(2);
+        assertThat(visits.get(0).getDate()).isEqualTo(LocalDate.of(2013, 1, 4));
+        assertThat(visits.get(1).getDate()).isEqualTo(LocalDate.of(2013, 1, 3));
+        VisitSummary newest = visits.get(0);
+        assertThat(newest.getDescription()).isEqualTo("spayed");
+        assertThat(newest.getPetId()).isEqualTo(7);
+        assertThat(newest.getPetName()).isEqualTo("Samantha");
+        assertThat(newest.getPetBirthDate()).isNotNull();
+        assertThat(newest.getPetType()).isEqualTo("cat");
+        assertThat(newest.getOwnerId()).isEqualTo(6);
+        assertThat(newest.getOwnerFirstName()).isEqualTo("Jean");
+        assertThat(newest.getOwnerLastName()).isEqualTo("Coleman");
+        assertThat(newest.getOwnerTelephone()).isNotBlank();
+    }
+
+    @Test
+    void shouldCapRecentVisitsAtLimit() {
+        assertThat(this.clinicService.findRecentVisits(10)).hasSize(4);
+        assertThat(this.clinicService.findRecentVisits(1)).hasSize(1);
+    }
 
 }

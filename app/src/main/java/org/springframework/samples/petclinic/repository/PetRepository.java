@@ -56,4 +56,6 @@ public interface PetRepository {
      */
     void save(Pet pet);
 
+    long countPets();
+
 }

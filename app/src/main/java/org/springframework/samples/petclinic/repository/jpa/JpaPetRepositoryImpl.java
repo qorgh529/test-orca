@@ -62,4 +62,9 @@ public class JpaPetRepositoryImpl implements PetRepository {
         }
     }
 
+    @Override
+    public long countPets() {
+        return this.em.createQuery("SELECT count(pet) FROM Pet pet", Long.class).getSingleResult();
+    }
+
 }
