@@ -36,7 +36,7 @@
     | Grafana → Tempo | `3200` | TraceQL / trace 조회 |
     | Tempo → S3 | `443` | 전용 버킷 `TEMPO_S3_BUCKET_NAME` (SSE-KMS, 퍼블릭 차단, `TEMPO_RETENTION_DAYS` 만료), IRSA `monitoring/tempo` |
 - **최소 권한 DB 계정 분리 및 시크릿 외부화**:
-  - **RDS MySQL 8.0 Multi-AZ**(Primary/Standby 동기 복제, `require_secure_transport=ON`)를 프라이빗 DB 서브넷에 격리합니다.
+  - **RDS MySQL 8.4 LTS Multi-AZ**(Primary/Standby 동기 복제, `require_secure_transport=ON`)를 프라이빗 DB 서브넷에 격리합니다.
   - DB 계정을 역할별로 3분리하여 각각 **AWS Secrets Manager**와 **External Secrets Operator(ESO)** 로 동기화합니다:
     - `petclinic_admin` (`petclinic-rds-admin-secret`): `db-init` Job 전용 (스키마/데이터 적재 및 계정 관리)
     - `petclinic_app` (`petclinic-rds-secret`): `was-stable` / `was-canary` 전용 (`SELECT, INSERT, UPDATE, DELETE`만 허용)
@@ -59,7 +59,7 @@
 | **Secrets / Storage** | ESO / EBS CSI Driver | `external-secrets` **`2.13.0`** (`v1` API), `aws-ebs-csi-driver` (`${EBS_CSI_ADDON_VERSION}`) |
 | **Observability** | Prometheus Stack / Fluent Bit | `kube-prometheus-stack` **`92.11.0`** (Prometheus `v3.15.0`), `aws-for-fluent-bit` **`0.2.0`** (`3.2.1`) |
 | **Tracing** | OTel Operator / Collector / Java agent / Tempo | `opentelemetry-operator` **`0.105.0`** (`0.144.0`), `opentelemetry-collector` **`0.116.0`** (`otel/opentelemetry-collector-contrib:0.120.0`), `autoinstrumentation-java:2.12.0`, `grafana-community/tempo` **`3.2.1`** (`grafana/tempo:3.1.1`) |
-| **Database / Backup** | Amazon RDS for MySQL / S3 | MySQL **`8.0.39`** (`db.t3.medium` Multi-AZ), `mysql:8.0.39`, `amazon/aws-cli:2.18.0` |
+| **Database / Backup** | Amazon RDS for MySQL / S3 | MySQL **`8.4.11`** LTS (`db.t3.medium` Multi-AZ), `mysql:8.4.11`, `amazon/aws-cli:2.18.0` |
 
 ---
 
@@ -96,7 +96,7 @@ cp .env.example .env
 # 2) eksctl 기반 EKS 1.36 클러스터(ng-critical, ng-platform) 생성 및 Karpenter discovery 태그 부여
 ./infra/aws/provision-aws-resources.sh cluster
 
-# 3) RDS MySQL 8.0 Multi-AZ(TLS 강제) 및 Secrets Manager 시크릿(admin/app/backup, Grafana, Alertmanager) 생성
+# 3) RDS MySQL 8.4 LTS Multi-AZ(TLS 강제) 및 Secrets Manager 시크릿(admin/app/backup, Grafana, Alertmanager) 생성
 ./infra/aws/provision-aws-resources.sh post-cluster
 ```
 
