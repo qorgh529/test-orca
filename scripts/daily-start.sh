@@ -5,11 +5,12 @@
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
-usage() { echo "usage: $0 [--dry-run] [-h|--help]"; }
-DRY_RUN=0
+usage() { echo "usage: $0 [--dry-run] [--start-nat] [-h|--help]"; }
+DRY_RUN=0 START_NAT=0
 for a in "$@"; do
   case "$a" in
     --dry-run) DRY_RUN=1 ;;
+    --start-nat) START_NAT=1 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 1 ;;
   esac
@@ -72,11 +73,19 @@ target_size() {
   echo "${!min:-2} ${!d:-2} ${!max:-4}"
 }
 
+nat_notice() {
+  if (( START_NAT )); then
+    echo "  - NAT Gateways (2 AZs): started by --start-nat (~\$2.83/day while up); delete at day end with daily-stop.sh --stop-nat"
+  else
+    echo "  - NAT Gateway (VPC public subnets, 2 AZs): not touched (~\$2.83/day while up); if deleted overnight, nodes have no egress until scripts/nat-start.sh (or --start-nat)"
+  fi
+}
+
 notice() {
   cat <<EOF
 == Notice: Non-stoppable resources & remaining costs ($AWS_REGION) ==
   - EKS Control Plane ($EKS_CLUSTER_NAME): cannot be stopped (~\$0.10/hr, ~\$2.40/day)
-  - NAT Gateway (VPC public subnets, 2 AZs): cannot be stopped (~\$0.059/hr per NAT GW, ~\$2.83/day for 2 AZs + data processing)
+$(nat_notice)
   - Application Load Balancer (petclinic-alb): kept active with Ingress (~\$0.0252/hr, ~\$0.60/day + LCU)
   - Persistent Storage & Edge (EBS gp3 PVCs, RDS gp3 storage, WAFv2 WebACL, Route 53, Secrets Manager): billed while stopped
   - RDS Auto-Start Note: AWS automatically restarts a stopped RDS instance after 7 consecutive days.
@@ -95,6 +104,12 @@ for ng in ng-critical ng-platform; do
   fi
   target[$ng]="$min $desired $max"
 done
+
+# First: nodes need NAT egress (ECR, EKS API, STS) to join and pull images.
+if (( START_NAT )); then
+  echo "== NAT gateways"
+  if (( DRY_RUN )); then bash "$ROOT/scripts/nat-start.sh" --dry-run; else bash "$ROOT/scripts/nat-start.sh"; fi
+fi
 
 echo "== 1/4 RDS $RDS_INSTANCE_ID start"
 if (( DRY_RUN )); then

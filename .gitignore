@@ -21,3 +21,6 @@ target/
 
 # scripts/daily-stop.sh: managed node group sizes saved for daily-start.sh
 .daily-nodegroup-state.json
+
+# Local deliverable report and screenshots (real domain in captures; not for the public repo)
+docs/report/

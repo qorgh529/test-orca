@@ -8,6 +8,7 @@
 #   8. codebuild: buildspec tag guards + linux/amd64, least-privilege service role policy, .env.example variables,
 #      source/backup/Tempo bucket isolation guard, tests/scripts/build-and-push.test.sh
 #   9. MySQL 8.4: RDS engine + mysql8.4 parameter group, db job client images, Connector/J (docs/features/rds-mysql-84)
+#  10. vpc-provisioning: scripts/nat-{start,stop}.sh syntax + offline --dry-run, tests/scripts/vpc-provisioning.test.sh
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
@@ -25,6 +26,13 @@ for s in daily-stop daily-start; do
     echo "FAIL scripts/$s.sh --dry-run"; echo "$out"; exit 1
   fi
 done
+# NAT start/stop: valid bash, and --dry-run exits before any AWS call.
+for s in nat-start nat-stop; do
+  bash -n "$ROOT/scripts/$s.sh" || { echo "FAIL scripts/$s.sh: bash syntax"; exit 1; }
+  if ! out=$(PATH=/usr/bin:/bin bash "$ROOT/scripts/$s.sh" --dry-run 2>&1) || ! grep -q "DRY-RUN" <<<"$out"; then
+    echo "FAIL scripts/$s.sh --dry-run"; echo "$out"; exit 1
+  fi
+done
 for s in infra/aws/provision-aws-resources.sh scripts/deploy-all.sh scripts/build-and-push.sh; do
   bash -n "$ROOT/$s" || { echo "FAIL $s: bash syntax"; exit 1; }
 done
@@ -34,6 +42,8 @@ bash "$ROOT/tests/scripts/daily-stop-start.test.sh" || { echo "FAIL tests/script
 bash "$ROOT/tests/scripts/build-and-push.test.sh" || { echo "FAIL tests/scripts/build-and-push.test.sh"; exit 1; }
 # deploy-all.sh's /grafana guard (WAF allow-list rule first) against a fake aws.
 bash "$ROOT/tests/scripts/grafana-waf-ready.test.sh" || { echo "FAIL tests/scripts/grafana-waf-ready.test.sh"; exit 1; }
+# provision-aws-resources.sh vpc (create, re-run, mismatch stops) and NAT start/stop against a stateful fake aws.
+bash "$ROOT/tests/scripts/vpc-provisioning.test.sh" || { echo "FAIL tests/scripts/vpc-provisioning.test.sh"; exit 1; }
 
 "${PYTHON:-python3}" - "$ROOT" <<'PY'
 import pathlib, re, subprocess, sys
