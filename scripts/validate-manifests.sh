@@ -429,6 +429,8 @@ want = {("server", "root_url"): "https://${DOMAIN_NAME}/grafana/", ("server", "s
         ("security", "cookie_secure"): True, ("security", "cookie_samesite"): "lax",
         ("security", "allow_embedding"): False,
         ("users", "allow_sign_up"): False, ("auth.anonymous", "enabled"): False}
+if ((values.get("grafana") or {}).get("serviceMonitor") or {}).get("path") != "/grafana/metrics":
+    err("kube-prometheus-values.yaml: grafana.serviceMonitor.path must be /grafana/metrics (sub-path serving)")
 for (sec, key), val in want.items():
     if (gini.get(sec) or {}).get(key) != val:
         err(f"kube-prometheus-values.yaml: grafana.ini {sec}.{key} must be {val!r}")

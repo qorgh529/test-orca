@@ -104,6 +104,10 @@ grafana:
       login_maximum_lifetime_duration: 24h
     auth.anonymous:
       enabled: false
+  # With serve_from_sub_path, /metrics answers 301 to the public /grafana/metrics, where the WAF blocks
+  # the cluster's NAT IPs: scrape the sub-path directly.
+  serviceMonitor:
+    path: /grafana/metrics
   sidecar:
     datasources:
       # Exemplar trace_id on the default Prometheus datasource opens the trace in Tempo.
