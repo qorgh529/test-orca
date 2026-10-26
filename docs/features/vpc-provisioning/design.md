@@ -370,26 +370,26 @@ VPC 프로비저닝 및 NAT 게이트웨이 라이프사이클 관리에 필요�
 
 ## 6. 구현 단계 체크리스트 (Claude가 순서대로 따라갈 수 있게)
 
-- [ ] **Step 1: `infra/aws/provision-aws-resources.sh`에 `vpc` 서브명령어 추가**
+- [x] **Step 1: `infra/aws/provision-aws-resources.sh`에 `vpc` 서브명령어 추가**
   - 최상단 `export AWS_REGION=ap-northeast-2 AWS_DEFAULT_REGION=ap-northeast-2` 고정.
   - VPC, 서브넷 6개, IGW, 라우트 테이블 4개, AZ별 NAT 2개 및 EIP 멱등 프로비저닝 로직 작성.
   - 모든 리소스에 `Name=petclinic-*`, `Project=petclinic` 태그 일관 적용.
   - 기존 리소스가 태그로 조회되면 중복 생성하지 않고 재사용.
   - 종료 시 `.env` 설정 형식으로 `VPC_ID` 및 서브넷 ID 6개 출력.
-  - 커밋: `feat: add vpc provisioning phase to provision-aws-resources.sh`
+  - 커밋: `feat: add vpc provisioning phase to provision-aws-resources.sh` (`e5f4e39`)
 
-- [ ] **Step 2: NAT 게이트웨이 정지/기동 스크립트(`scripts/nat-stop.sh`, `scripts/nat-start.sh`) 구현**
+- [x] **Step 2: NAT 게이트웨이 정지/기동 스크립트(`scripts/nat-stop.sh`, `scripts/nat-start.sh`) 구현**
   - `scripts/nat-stop.sh`: `Project=petclinic` 태그의 NAT 게이트웨이 삭제 대기 및 EIP 해제 (멱등 처리).
   - `scripts/nat-start.sh`: AZ별 EIP 할당, NAT 게이트웨이 생성 대기, `petclinic-rt-app-2a/c` 라우트 교체 (멱등 처리).
   - 두 스크립트 모두 `chmod +x` 실행 권한 부여 및 리전 서울 고정.
-  - 커밋: `feat: add nat-stop and nat-start scripts for daily cost saving`
+  - 커밋: `feat: add nat-stop and nat-start scripts for daily cost saving` (`fd7f5fb`)
 
-- [ ] **Step 3: `scripts/daily-stop.sh` 및 `scripts/daily-start.sh` 연계 옵션 반영**
+- [x] **Step 3: `scripts/daily-stop.sh` 및 `scripts/daily-start.sh` 연계 옵션 반영**
   - `daily-stop.sh`: `--stop-nat` 인자 처리 추가. 노드그룹 축소(desired=0) 완료 후 `nat-stop.sh` 호출. `notice()`에 NAT 정지 옵션 안내 추가.
   - `daily-start.sh`: `--start-nat` 인자 처리 추가. RDS/노드그룹 시작 전 `nat-start.sh` 선행 호출. `notice()` 갱신.
-  - 커밋: `feat: integrate optional nat start/stop flags into daily scripts`
+  - 커밋: `feat: integrate optional nat start/stop flags into daily scripts` (`21298ee`)
 
-- [ ] **Step 4: 오프라인 회귀 테스트(`tests/scripts/vpc-provisioning.test.sh`) 작성**
+- [x] **Step 4: 오프라인 회귀 테스트(`tests/scripts/vpc-provisioning.test.sh`) 작성**
   - 가짜 `aws` CLI 스텁을 구성하여 호출 인자 로깅 및 응답 시뮬레이션.
   - 테스트 케이스:
     1. 신규 VPC 생성 시: `create-vpc`, `modify-vpc-attribute`, `create-subnet` 6회, `create-internet-gateway`, `create-route-table` 4회, `create-nat-gateway` 2회 호출 및 `.env` 출력 확인.
@@ -397,19 +397,19 @@ VPC 프로비저닝 및 NAT 게이트웨이 라이프사이클 관리에 필요�
     3. 리전 강제 고정: 외부에서 `AWS_REGION=us-east-1` 주입 시에도 `ap-northeast-2`로 실행되는지 확인.
     4. `nat-stop.sh`: NAT 존재 시 삭제 대기 및 EIP 반납 확인, 없을 시 안전 통과 확인.
     5. `nat-start.sh`: NAT 부재 시 생성 및 라우트 연결 확인, 이미 존재 시 건너뜀 확인.
-  - 커밋: `test: add offline unit tests for vpc provisioning and nat control`
+  - 커밋: `test: add offline unit tests for vpc provisioning and nat control` (`0a22dc0`)
 
-- [ ] **Step 5: `scripts/validate-manifests.sh` 및 정적 검사 등록**
+- [x] **Step 5: `scripts/validate-manifests.sh` 및 정적 검사 등록**
   - `scripts/validate-manifests.sh`에 `tests/scripts/vpc-provisioning.test.sh` 실행 항목 추가.
   - `bash -n` 문법 검사 대상에 신규 스크립트 추가.
-  - 커밋: `test: register vpc provisioning tests in validate-manifests.sh`
+  - 커밋: `test: register vpc provisioning tests in validate-manifests.sh` (`f2b19f7`)
 
-- [ ] **Step 6: `README.md` Day-2 운영 런북 갱신**
+- [x] **Step 6: `README.md` Day-2 운영 런북 갱신**
   - 네트워크 초기 구축(`provision-aws-resources.sh vpc`) 설명 추가.
   - 일일 비용 절감을 위한 NAT 켜기/끄기 런북 가이드 반영 (`daily-stop.sh --stop-nat`, `daily-start.sh --start-nat`).
-  - 커밋: `docs: update operational runbook for vpc and nat lifecycle`
+  - 커밋: `docs: update operational runbook for vpc and nat lifecycle` (`541bbe0`)
 
-- [ ] **Step 7: 전체 정적 검증 및 테스트 실행**
+- [x] **Step 7: 전체 정적 검증 및 테스트 실행**
   - `./scripts/validate-manifests.sh` 실행하여 전체 43개 이상 YAML 매니페스트, 4개 이상 스크립트 단위 테스트 성공 확인.
 
 - [ ] **Step 8 [위험]: 실 AWS VPC 멱등성 검증 (※ 주의: 이번 기능 브랜치에서는 실행하지 않음)**
@@ -457,3 +457,10 @@ VPC 프로비저닝 및 NAT 게이트웨이 라이프사이클 관리에 필요�
 ## 8. 구현 중 질문
 
 *(Claude가 구현 단계에서 설계 범위 내의 세부 결정 사항을 기록하는 공간입니다.)*
+
+- **Q1. 리전 고정 범위** — §3.2·§5.3은 "스크립트 최상단"에서 고정하라고 했지만, `provision-aws-resources.sh` 의 다른 단계(pre-cluster 등)는 `.env` 의 필수값 `AWS_REGION` 을 그대로 쓰므로 건드리지 않고 **`vpc` 단계 함수 안과 `nat-start.sh`/`nat-stop.sh` 안에서만** `ap-northeast-2` 로 고정했다(서브넷 AZ 이름이 서울로 하드코딩된 곳만). 테스트는 셸에 `us-east-1` 을 주입하고 모든 호출이 `ap-northeast-2` 인지 확인한다.
+- **Q2. ELB 서브넷 태그 미부여** — §3.2 (참고)의 `kubernetes.io/role/elb` / `internal-elb` 태그는 넣지 않았다. 10-26 실환경 서브넷에 없고(요구사항: 실환경과 동일), ALB는 `alb-ingress.yaml` 의 `alb.ingress.kubernetes.io/subnets` 어노테이션으로 서브넷을 직접 지정하므로 필요 없다.
+- **Q3. 다른 설정으로 이미 있는 리소스** — 같은 Name 태그의 VPC·서브넷이 다른 CIDR/AZ이거나, 서브넷이 다른 라우트 테이블에 연결돼 있거나, IGW가 다른 VPC에 붙어 있거나, `petclinic-vpc` 가 2개 이상이면 **고치지 않고 멈춘다**(실환경을 조용히 바꾸지 않기 위해). 기본 경로(0.0.0.0/0)만 대상이 다르면 `replace-route` 로 바로잡는다(삭제된 NAT를 가리키는 blackhole 경로 복구).
+- **Q4. NAT 생성 코드 공유** — `vpc` 단계의 NAT·EIP·앱 라우트 설정은 따로 구현하지 않고 마지막에 `scripts/nat-start.sh` 를 호출한다. `nat-start.sh` 는 VPC를 `.env` 가 아니라 `Name=petclinic-vpc` 태그로 찾으므로 `.env` 를 채우기 전(새 VPC 직후)에도 동작한다. NAT가 이미 있어도 앱 라우트가 그 NAT를 가리키는지 확인하고, 실패한 실행이 남긴 미연결 EIP(`petclinic-nat-2<az>` 태그)는 재사용한다.
+- **Q5. nat-stop 안전장치 추가** — 설계에 없던 보호: VPC 안에 `pending/running/stopping` EC2가 있으면 멈춘다(노드 egress 차단 방지, `--force` 로 무시). 10-26 마감처럼 마지막 노드가 `Terminating:Wait` 에 걸려 있으면 `daily-stop.sh --stop-nat` 은 노드 그룹 축소 후 이 단계에서 실패하므로, 노드가 사라진 뒤 `nat-stop.sh` 를 다시 실행한다. 이미 `deleting` 인 NAT도 삭제 완료를 기다리며, EIP는 **연결되지 않은 것만** 반납한다(연결된 것은 개수만 안내).
+- **Q6. 두 스크립트의 `--dry-run`** — `daily-*.sh --dry-run` 과 `validate-manifests.sh` 가 오프라인으로 돌 수 있도록 `nat-start.sh`/`nat-stop.sh` 에 `--dry-run`(AWS 호출 전에 계획만 출력하고 종료)을 넣었다.
