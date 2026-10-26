@@ -142,15 +142,17 @@ EOF
 
 vpc_tags() { echo "ResourceType=$1,Tags=[{Key=Name,Value=$2},{Key=Project,Value=petclinic}]"; }
 
-# Route table <name> in <vpc>, created when missing.
+# Route table <name> in <vpc>, created when missing. Called as $(...), where set -e does not reach:
+# a failed lookup must not read as "missing" (it would create a duplicate), so each call returns on failure.
 vpc_route_table() {
   local id
   id=$(aws ec2 describe-route-tables --filters "Name=vpc-id,Values=$1" "Name=tag:Name,Values=$2" \
-    --query 'RouteTables[0].RouteTableId' --output text)
+    --query 'RouteTables[0].RouteTableId' --output text) || return 1
   if [ -z "$id" ] || [ "$id" = None ]; then
     id=$(aws ec2 create-route-table --vpc-id "$1" --tag-specifications "$(vpc_tags route-table "$2")" \
-      --query RouteTable.RouteTableId --output text)
+      --query RouteTable.RouteTableId --output text) || return 1
   fi
+  [ -n "$id" ] && [ "$id" != None ] || { echo "no route table id for $2" >&2; return 1; }
   echo "$id"
 }
 

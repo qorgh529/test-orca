@@ -29,9 +29,11 @@ if (( DRY_RUN )); then
 fi
 
 # lookup <describe-what> <name> <query>: one resource by Name tag inside petclinic-vpc ("" when missing).
+# Runs as $(...), where set -e does not reach: a failed call returns non-zero instead of reading as missing.
 lookup() {
   local id
-  id=$(aws ec2 "describe-$1" --filters "Name=vpc-id,Values=$VPC" "Name=tag:Name,Values=$2" --query "$3" --output text)
+  id=$(aws ec2 "describe-$1" --filters "Name=vpc-id,Values=$VPC" "Name=tag:Name,Values=$2" --query "$3" --output text) \
+    || return 1
   [ "$id" = None ] && id=""
   echo "$id"
 }

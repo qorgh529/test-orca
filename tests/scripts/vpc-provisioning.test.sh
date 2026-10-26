@@ -13,11 +13,13 @@ LOG="$T/calls.log"
 
 # DB layout: vpc ("id cidr"), subnet.<name> ("id cidr az"), igw ("id vpc|None"), rt.<name> (id),
 # assoc.<subnet-id> (rt id), route.<rt-id> ("gateway-id nat-id", None when unset),
-# nat.<name> (id), eip.<name> ("alloc-id nat-id|None"). INSTANCES = running EC2 count.
+# nat.<name> (id), eip.<name> ("alloc-id nat-id|None"), instances (running counts, one per call; 0 when empty).
+# FAIL_ON=<text>: any call containing it fails like an AWS error.
 cat > "$T/bin/aws" <<'EOF'
 #!/usr/bin/env bash
 echo "region=$AWS_REGION aws $*" >> "$LOG"
 a=" $* "
+if [ -n "${FAIL_ON:-}" ] && [[ "$a" == *"$FAIL_ON"* ]]; then echo "An error occurred (Throttling)" >&2; exit 254; fi
 arg() { local v=${a#* $1 }; [ "$v" != "$a" ] && echo "${v%% *}"; }   # value after a flag
 tagname() { grep -o 'Name=tag:Name,Values=[^ ]*' <<<"$a" | head -1 | cut -d= -f3; }
 specname() { grep -o 'Key=Name,Value=[^}]*' <<<"$a" | head -1 | cut -d= -f3; }
@@ -45,7 +47,9 @@ case "$a" in
   *" create-route "*|*" replace-route "*) r=$(arg --route-table-id)
     echo "$(arg --gateway-id || echo None) $(arg --nat-gateway-id || echo None)" > "$DB/route.$r" ;;
   *" describe-nat-gateways "*) if [[ "$q" == *State* ]]; then
-      for n in "$DB"/nat.*; do [ -f "$n" ] && printf '%s\tavailable\n' "$(cat "$n")"; done
+      for n in "$DB"/nat.*; do [ -f "$n" ] || continue; id=$(cat "$n"); al=None
+        for e in "$DB"/eip.*; do [ -f "$e" ] && read -r x at < "$e" && [ "$at" = "$id" ] && al=$x; done
+        printf '%s\tavailable\t%s\n' "$id" "$al"; done
     else f "nat.$(tagname)" || echo None; fi ;;
   *" allocate-address "*) n=$(specname); echo "eipalloc-$n None" > "$DB/eip.$n"; echo "eipalloc-$n" ;;
   *" create-nat-gateway "*) n=$(specname); echo "nat-$n" > "$DB/nat.$n"
@@ -53,18 +57,21 @@ case "$a" in
     echo "nat-$n" ;;
   *" delete-nat-gateway "*) id=$(arg --nat-gateway-id); rm -f "$DB/nat.${id#nat-}"
     for e in "$DB"/eip.*; do read -r al at < "$e"; [ "$at" = "$id" ] && echo "$al None" > "$e"; done; true ;;
-  *" describe-addresses "*) free=(); used=0
+  *" describe-addresses "*) free=(); used=0; names=",$(tagname),"
     for e in "$DB"/eip.*; do [ -f "$e" ] || continue; read -r al at < "$e"
+      [ "$names" = ",," ] || [[ "$names" == *",${e##*/eip.},"* ]] || continue
       if [ "$at" = None ]; then free+=("$al"); else used=$((used + 1)); fi; done
     if [[ "$q" == length* ]]; then echo "$used"
     elif [[ "$q" == *"[0]"* ]]; then n=$(tagname); if [ -f "$DB/eip.$n" ] && read -r al at < "$DB/eip.$n" && [ "$at" = None ]; then echo "$al"; else echo None; fi
     else echo "${free[*]}"; fi ;;
   *" release-address "*) for e in "$DB"/eip.*; do read -r al _ < "$e"; [ "$al" = "$(arg --allocation-id)" ] && rm -f "$e"; done; true ;;
-  *" describe-instances "*) echo "${INSTANCES:-0}" ;;
+  *" describe-instances "*) read -r n rest < "$DB/instances" 2>/dev/null || true; echo "${n:-0}"; echo "$rest" > "$DB/instances" ;;
 esac
 exit 0
 EOF
-chmod +x "$T/bin/aws"
+# nat-stop.sh polls terminating instances every 10s; the fake returns at once.
+printf '#!/usr/bin/env bash\nexit 0\n' > "$T/bin/sleep"
+chmod +x "$T/bin/aws" "$T/bin/sleep"
 export LOG DB PATH="$T/bin:$PATH"
 
 fails=0
@@ -117,13 +124,32 @@ t "vpc stops on a subnet tied to another route table" eval '
   run "subnet subnet-petclinic-db-2a is associated with rtb-other" $VPC && ! called " associate-route-table "'
 
 t "nat-stop refuses while instances run" eval '
-  fresh && run ok $VPC && INSTANCES=3 run "3 EC2 instance(s) still running" "$T/scripts/nat-stop.sh" &&
+  fresh && run ok $VPC && echo 3 > "$DB/instances" &&
+  NAT_STOP_INSTANCE_WAIT=0 run "3 EC2 instance(s) still running in vpc-1 after 0s" "$T/scripts/nat-stop.sh" &&
   ! called delete-nat-gateway && ! called release-address'
 t "nat-stop deletes both NATs, waits, releases their EIPs" eval '
   run ok "$T/scripts/nat-stop.sh" && [ "$(count " delete-nat-gateway ")" = 2 ] &&
   called "wait nat-gateway-deleted --nat-gateway-ids nat-petclinic-nat-2a nat-petclinic-nat-2c" &&
   [ "$(count " release-address ")" = 2 ] && ! ls "$DB"/nat.* "$DB"/eip.* 2>/dev/null &&
   ! grep -v "^region=ap-northeast-2 " "$LOG" | grep -q .'
+t "nat-stop waits for terminating instances, then deletes" eval '
+  fresh && run ok $VPC && echo "2 1 0" > "$DB/instances" && run ok "$T/scripts/nat-stop.sh" &&
+  [ "$(count " describe-instances ")" = 3 ] && [ "$(count " delete-nat-gateway ")" = 2 ]'
+t "nat-stop keeps other Project=petclinic EIPs" eval '
+  fresh && run ok $VPC && echo "eipalloc-bastion None" > "$DB/eip.petclinic-bastion" &&
+  run ok "$T/scripts/nat-stop.sh" && [ "$(count " release-address ")" = 2 ] &&
+  ! called "release-address --allocation-id eipalloc-bastion" && [ -f "$DB/eip.petclinic-bastion" ]'
+t "nat-stop releases a NAT-named EIP left by a failed nat-start" eval '
+  echo "eipalloc-left None" > "$DB/eip.petclinic-nat-2c" && run ok "$T/scripts/nat-stop.sh" &&
+  called "release-address --allocation-id eipalloc-left" && ! called "release-address --allocation-id eipalloc-bastion"'
+t "nat-stop stops when the EIP lookup fails" eval '
+  fresh && run ok $VPC && FAIL_ON=describe-addresses run "Throttling" "$T/scripts/nat-stop.sh" &&
+  ! called release-address && ! grep -q "NAT gateways stopped" "$T/out"'
+t "vpc does not create a route table when the lookup fails" eval '
+  fresh && FAIL_ON="describe-route-tables --filters Name=vpc-id" run "Throttling" $VPC && ! called create-route-table'
+t "nat-start does not create a NAT when a lookup fails" eval '
+  fresh && run ok $VPC && run ok "$T/scripts/nat-stop.sh" &&
+  FAIL_ON="describe-subnets" run "Throttling" "$T/scripts/nat-start.sh" && ! called create-nat-gateway'
 t "nat-stop re-run is a no-op" eval '
   run ok "$T/scripts/nat-stop.sh" && grep -q "no NAT gateways" "$T/out" && ! called delete-nat-gateway && ! called release-address'
 t "nat-start recreates NATs and repoints the blackholed app routes" eval '

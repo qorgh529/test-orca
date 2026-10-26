@@ -168,7 +168,7 @@ AWS Secrets Manager에서 `petclinic_app` 또는 `petclinic_backup` 비밀번호
 ./scripts/daily-stop.sh --stop-nat     # 또는 daily-stop.sh 후 ./scripts/nat-stop.sh
 ./scripts/daily-start.sh --start-nat   # 또는 ./scripts/nat-start.sh 후 daily-start.sh
 ```
-> `nat-stop.sh` 는 VPC 안에 실행 중인 EC2가 있으면 멈춥니다(노드 egress 보호, `--force` 로 무시). 둘 다 `--dry-run` 을 지원합니다.
+> `nat-stop.sh` 는 VPC 안의 EC2가 종료되기를 최대 5분(`NAT_STOP_INSTANCE_WAIT`) 기다리고, 그래도 남아 있으면 멈춥니다(노드 egress 보호, `--force` 로 무시). EIP는 NAT에 붙어 있던 것과 `petclinic-nat-2a/2c` 이름의 남은 것만 반납합니다. 둘 다 `--dry-run` 을 지원합니다.
 
 ---
 

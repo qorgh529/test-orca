@@ -145,7 +145,7 @@ for u in "${updates[@]}"; do
   wait_update "${u%%=*}" "${u#*=}"
 done
 
-# Last: the nodes are gone, so nothing loses egress (nat-stop.sh still refuses while instances run).
+# Last: the nodes are gone, so nothing loses egress (nat-stop.sh waits for terminating instances, then refuses).
 if (( STOP_NAT )); then
   echo "== NAT gateways"
   if (( DRY_RUN )); then bash "$ROOT/scripts/nat-stop.sh" --dry-run; else bash "$ROOT/scripts/nat-stop.sh"; fi
