@@ -38,16 +38,21 @@ if [[ " $* " == *" get "* ]]; then
 fi
 exit 0
 EOF
+# nat-{stop,start}.sh have their own test (vpc-provisioning.test.sh): here they only log when called.
+for n in nat-stop nat-start; do
+  printf '#!/usr/bin/env bash\necho "%s $*" >> "$LOG"\n' "$n" > "$T/scripts/$n.sh"
+done
 chmod +x "$T/bin/aws" "$T/bin/kubectl"
 export LOG PATH="$T/bin:$PATH" AWS_REGION=ap-northeast-2 EKS_CLUSTER_NAME=test-eks
 NOTFOUND='Error from server (NotFound): resource not found'
 
 fails=0
-# check <name> <script> <expect: ok | error text> [VAR=value ...] — fresh call log; then extra asserts via `called`.
+# check <name> <script> <expect: ok | error text> [--flag ...] [VAR=value ...] — fresh call log; then extra asserts via `called`.
 check() {
-  local name=$1 script=$2 want=$3 rc=0; shift 3
+  local name=$1 script=$2 want=$3 rc=0 flags=(); shift 3
+  while [[ "${1:-}" == --* ]]; do flags+=("$1"); shift; done
   : > "$LOG"
-  env "$@" bash "$T/scripts/$script.sh" < /dev/null > "$T/out" 2>&1 || rc=$?
+  env "$@" bash "$T/scripts/$script.sh" "${flags[@]}" < /dev/null > "$T/out" 2>&1 || rc=$?
   if [ "$want" = ok ] && [ "$rc" = 0 ]; then return 0; fi
   if [ "$want" != ok ] && [ "$rc" != 0 ] && grep -qF -- "$want" "$T/out"; then return 0; fi
   echo "--- $name: exit $rc, wanted ${want}"; cat "$T/out"; return 1
@@ -139,6 +144,21 @@ t "start waits for the OTel operator before scaling was" eval '
   rm -f "$STATE" && check otel-order daily-start ok RDS_STATUS=available NG_SCALING="0 0 4" &&
   op=$(grep -n "opentelemetry-operator-system rollout status deploy/opentelemetry-operator" "$LOG" | cut -d: -f1) &&
   was=$(grep -n "scale deploy/was-stable" "$LOG" | head -1 | cut -d: -f1) && [ -n "$op" ] && [ "$op" -lt "$was" ]'
+
+# vpc-provisioning: NAT goes last on stop (nodes gone) and first on start (nodes need egress), only on request.
+t "stop leaves NAT alone without --stop-nat" eval '
+  rm -f "$STATE" && check no-nat-stop daily-stop ok NG_SCALING="2 2 4" KUBECTL_GET_ERROR="$NOTFOUND" && ! called nat-stop'
+t "stop --stop-nat deletes NAT after the node groups are down" eval '
+  rm -f "$STATE" && check nat-stop daily-stop ok --stop-nat NG_SCALING="2 2 4" KUBECTL_GET_ERROR="$NOTFOUND" &&
+  ng=$(grep -n "describe-update.*ng-platform" "$LOG" | tail -1 | cut -d: -f1) &&
+  nat=$(grep -n "^nat-stop" "$LOG" | cut -d: -f1) && [ -n "$nat" ] && [ "$ng" -lt "$nat" ] &&
+  grep -q "deleted by --stop-nat" "$T/out"'
+t "start --start-nat creates NAT before RDS and node groups" eval '
+  rm -f "$STATE" && check nat-start daily-start ok --start-nat RDS_STATUS=stopped NG_SCALING="0 0 4" &&
+  nat=$(grep -n "^nat-start" "$LOG" | cut -d: -f1) && rds=$(grep -n "start-db-instance" "$LOG" | cut -d: -f1) &&
+  [ -n "$nat" ] && [ "$nat" -lt "$rds" ]'
+t "start leaves NAT alone without --start-nat" eval '
+  rm -f "$STATE" && check no-nat-start daily-start ok RDS_STATUS=stopped NG_SCALING="0 0 4" && ! called nat-start'
 
 (( fails == 0 )) || { echo "$fails case(s) failed"; exit 1; }
 echo "OK: daily stop/start offline tests"
