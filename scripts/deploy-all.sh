@@ -58,7 +58,8 @@ echo "== Controllers on ng-critical (SAs with IRSA are created by eksctl)"
 helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
   --version 3.6.1 -n kube-system -f "$CRITICAL" \
   --set clusterName="$EKS_CLUSTER_NAME" --set region="$AWS_REGION" --set vpcId="$VPC_ID" \
-  --set serviceAccount.create=false --set serviceAccount.name=aws-load-balancer-controller
+  --set serviceAccount.create=false --set serviceAccount.name=aws-load-balancer-controller --wait
+# --wait: its mutating webhook intercepts every Service, so the next chart fails until the pods are Ready.
 
 # Resource Metrics API (metrics.k8s.io) for the web CPU HPA; EKS does not ship it.
 helm upgrade --install metrics-server metrics-server/metrics-server \
