@@ -14,6 +14,7 @@
   - 프라이빗 DB 서브넷의 RDS MySQL 8.4 LTS Multi-AZ(Primary/Standby 동기 복제), S3 암호화 백업(`CronJob`), 역할별 DB 계정(admin/app/backup) 분리, AWS Secrets Manager + External Secrets Operator(ESO) 기반 시크릿 동기화
   - OpenTelemetry(Operator · Java Agent · Collector) + Grafana Tempo(전용 S3 버킷 IRSA 연동) 기반 분산 트레이싱(SDK 10% 헤드 샘플링), 100% 전수 RED 메트릭(`http_server_request_duration_seconds`) 및 Trace-based Exemplar(`trace_id`) 점프, Logback MDC(`trace_id`/`span_id`) 로그 상관분석
   - 업무 외 시간 비용 절감을 위한 일일 리소스 중지·기동 스크립트(`scripts/daily-stop.sh`, `scripts/daily-start.sh` — Karpenter 앱 노드, EKS 관리형 노드 그룹, RDS MySQL 일괄 제어 및 잔여 비용 안내)
+  - 저장소 코드 기반의 완전한 VPC 및 네트워크 인프라 멱등 프로비저닝(`infra/aws/provision-aws-resources.sh vpc` — VPC `10.0.0.0/16`, 서브넷 6개, IGW, 라우트 테이블 4개, EIP 및 Multi-AZ NAT Gateway 2개 일괄 구성, `ap-northeast-2` 리전 강제 고정, 태그 기반 멱등 재사용 및 `.env` 설정 출력)과 업무 외 시간 NAT Gateway 삭제 및 EIP 반납을 통한 일일 약 $2.83(월 약 $85) 고정비 절감 스크립트(`scripts/nat-stop.sh`, `scripts/nat-start.sh` 및 `daily-stop.sh --stop-nat` / `daily-start.sh --start-nat` 연동)
   - AWS CodeBuild 기반 컨테이너 이미지 온디맨드 빌드 및 ECR 푸시 파이프라인(`scripts/build-and-push.sh`, `buildspec.yml` — 작업 서버의 rootless 컨테이너 제약을 격리하고 표준 클라우드 환경에서 `web`/`was` 멀티스테이지 이미지를 `linux/amd64`로 빌드·푸시, 전용 S3 소스 버킷 1일 만료, 최소 권한 IAM Role, 불변 태그 중복 차단 및 `latest` 금지)
 - **제외 범위 (Out-of-Scope)**:
   - Spring Boot 내장 톰캣 JAR로의 전환 (외부 Tomcat 11 컨테이너 배포 구조 유지)
@@ -26,7 +27,7 @@
   - 신규 서브도메인(`grafana.${DOMAIN_NAME}`) 및 신규 ACM 인증서 도입 제외 (단일 도메인 `${DOMAIN_NAME}` 하위 경로 방식을 일관되게 유지, `docs/features/grafana-public-path/design.md` §1.3)
   - 별도 ALB 생성 또는 IngressGroup을 통한 ALB 리스너 복잡화 제외 (L7 라우팅은 NGF에 전담시켜 ALB 리스너 수정 및 기존 서비스 중단 위험 방지, `docs/features/grafana-public-path/design.md` §1.3)
   - Grafana 외부 SSO(OAuth2/OIDC/Keycloak/Cognito) 연동 제외 (AWS Secrets Manager 동기화 관리자 자격증명 `grafana-admin` 체계 유지, `docs/features/grafana-public-path/design.md` §1.3)
-  - 일일 중지 시 EKS 컨트롤 플레인, NAT Gateway, ALB(`Ingress`), `gp3` EBS PVC 삭제·재생성 및 EventBridge/Lambda 기반 자동 스케줄러 구축 (`docs/features/daily-stop-start/design.md` §1.4)
+  - 일일 중지 시 EKS 컨트롤 플레인, ALB(`Ingress`), `gp3` EBS PVC 삭제·재생성 및 EventBridge/Lambda 기반 자동 스케줄러 구축 (NAT Gateway는 기본 중지 대상에서는 제외하되, 선택적 `--stop-nat`/`--start-nat` 플래그 및 독립 실행 스크립트로 온디맨드 수명주기 제어 지원, `docs/features/daily-stop-start/design.md` §1.4, `docs/features/vpc-provisioning/design.md` §1.4)
   - Grafana Loki 도입, Tail-based Sampling, NGF·`web`(Nginx) 계층 트레이싱, `tempo-distributed`(마이크로서비스 모드 + Kafka) 전환 및 상용 APM 도입 (`docs/features/apm-tracing/design.md` §1.4, `docs/features/tempo-chart-migration/design.md` §1.4)
   - GitHub Webhook 및 AWS CodePipeline 자동 트리거 연동 (운영자/개발자가 검증된 태그로 필요 시 트리거하는 온디맨드 CLI 빌드 워크플로 유지, `docs/features/codebuild-image-build/design.md` §1.4)
 
@@ -37,6 +38,7 @@
 | 계층 | 구성 요소 | 역할 및 주요 특징 | 배치 위치 (네임스페이스 / 노드 티어) |
 |---|---|---|---|
 | **Edge / DNS** | Route 53, ACM, AWS WAFv2 | 도메인 A(Alias) 라우팅, 공인 TLS 인증서 발급·갱신, 최우선순위(Priority 0) `/grafana*` 비인가 IP 차단 규칙(`BlockUnauthorizedGrafanaAccess` + `GRAFANA_ALLOWED_CIDRS` IPSet, URL 디코딩/경로 정규화) 및 OWASP/SQLi/KnownBadInputs 관리형 규칙 필터링 | AWS 관리형 (`ap-northeast-2`) |
+| **Network / VPC** | VPC, 서브넷(6개), IGW, 라우트 테이블(4개), NAT Gateway(2개), EIP | VPC `10.0.0.0/16`(DNS hostnames/support 활성화), Multi-AZ(`2a`, `2c`) 퍼블릭(ALB/NAT)·앱 프라이빗(EKS 노드)·DB 프라이빗(RDS) 서브넷 6개, IGW, 라우트 테이블 4개(퍼블릭 `0.0.0.0/0 -> IGW`, 앱 2a `0.0.0.0/0 -> NAT 2a`, 앱 2c `0.0.0.0/0 -> NAT 2c`, DB 격리 로컬 전용). 저장소 내 스크립트(`provision-aws-resources.sh vpc`)로 태그(`Name=petclinic-*`, `Project=petclinic`) 기반 멱등 프로비저닝, 리전(`ap-northeast-2`) 강제 고정 및 `.env` 출력. 업무 외 시간 비용 절감을 위한 온디맨드 NAT 삭제·복원(`scripts/nat-stop.sh`, `scripts/nat-start.sh`) 및 일일 스크립트 연동 | AWS VPC 및 EC2 네트워크 인프라 (`ap-northeast-2`) |
 | **Ingress LB** | AWS ALB (AWS Load Balancer Controller) | HTTP(`80`)→HTTPS(`443`) 리다이렉트, TLS 1.3/1.2 종단, 비정상 헤더 드롭, `target-type: ip`로 NGF Pod에 직접 라우팅 | 퍼블릭 서브넷 (`2a`, `2c`) |
 | **L7 Gateway** | NGINX Gateway Fabric 2.x (`nginx-gateway`) | Gateway API(`v1.6.3`). 컨트롤 플레인(2 Replicas)이 Gateway마다 데이터 플레인 `petclinic-gateway-nginx`(2 Replicas, AZ 분산, 차트 PDB `minAvailable: 1`, `ClusterIP`)를 생성. `gateway.yaml`의 `allowedRoutes`를 `petclinic`과 `nginx-gateway`로 허용하고, `HTTPRoute`로 `web` / `web-canary` 트래픽 분할(배포 중 100:0, 카나리 검증 후 90:10, `X-Canary: always`는 항상 `web-canary`) 및 `/grafana` 경로 전용 `HTTPRoute`(`httproute-grafana.yaml`)를 통해 최장 접두사 일치(8자 > 1자)로 카나리 간섭 없이 `monitoring` 네임스페이스의 Grafana Service(`:80`)로 L7 라우팅 | `nginx-gateway` / `np-app` (`workload-tier=app`) |
 | **Web Tier** | `web`, `web-canary` (Nginx + Exporter) | `/resources/*`, `/webjars/*` 정적 에셋 직접 서빙 및 보안 헤더 부여, 동적 요청을 각각 `was-stable:8080`, `was-canary:8080`으로 프록시. 사이드카 `nginx-prometheus-exporter`(`:9113`) 내장. `topologySpreadConstraints` 기반 AZ 균등 분산(`topologyKey: topology.kubernetes.io/zone`, `maxSkew: 1`, `matchLabelKeys: [pod-template-hash]` — stable `DoNotSchedule`, canary `ScheduleAnyway`). CPU 60% 기준 HPA(`web` 2~10, `web-canary` 1~4), stable PDB(`minAvailable: 1`). `terminationGracePeriodSeconds: 35` 및 메인 `nginx`·사이드카 `nginx-exporter` 공통 `lifecycle.preStop.sleep: 15s` 적용으로 롤링 배포 시 엔드포인트 등록 해제 지연을 흡수하여 HTTP 502 방지 및 메트릭 수집 연속성 보장 | `petclinic` / `np-app` (`workload-tier=app`) |
@@ -59,7 +61,7 @@
 ├── AGENTS.md                             # Codex 코드 리뷰어 규칙
 ├── CLAUDE.md                             # Claude 구현 규칙
 ├── ORCA_WORKFLOW.md                      # 에이전트 역할 분담 및 워크플로 정의
-├── README.md                             # 프로젝트 아키텍처 개요, 빠른 시작 가이드 및 Day-2 운영 런북 (CodeBuild 빌드 설명 포함)
+├── README.md                             # 프로젝트 아키텍처 개요, 빠른 시작 가이드 및 Day-2 운영 런북 (VPC 프로비저닝, 일일 NAT 제어, CodeBuild 빌드 설명 포함)
 ├── buildspec.yml                         # AWS CodeBuild 빌드 명세서 (pre_build 태그 정규식·latest 검증 및 ECR 로그인 → build linux/amd64 → post_build ECR 푸시, 단계별 on-failure: ABORT)
 ├── docs/
 │   ├── architecture.md                   # 시스템 전체 아키텍처 현황 (본 문서)
@@ -85,7 +87,9 @@
 │       │   └── {design,review,security}.md
 │       ├── graceful-shutdown/                # 무중단 서비스 및 그레이스풀 셧다운(preStop.sleep, grace period) 설계·리뷰·보안 점검
 │       │   └── {design,review,security}.md
-│       └── grafana-public-path/              # Grafana 하위 경로 오픈 및 WAF IP 화이트리스트 접근 제어 설계·리뷰·보안 점검
+│       ├── grafana-public-path/              # Grafana 하위 경로 오픈 및 WAF IP 화이트리스트 접근 제어 설계·리뷰·보안 점검
+│       │   └── {design,review,security}.md
+│       └── vpc-provisioning/                 # VPC 멱등 프로비저닝 및 NAT 라이프사이클 관리 설계·리뷰·보안 점검
 │           └── {design,review,security}.md
 ├── app/                                  # spring-framework-petclinic 소스 코드
 │   ├── pom.xml                           # Maven WAR 빌드, MySQL/PostgreSQL/H2/HSQLDB 프로필
@@ -111,7 +115,7 @@
 │       └── setenv.sh                     # JMX Exporter -javaagent:9404 및 JDBC 드라이버 프로퍼티 설정
 ├── infra/
 │   ├── aws/
-│   │   ├── provision-aws-resources.sh    # pre-cluster(IAM/ECR/Logs/백업·Tempo·CodeBuild S3 [버킷 이름 격리 검증]/CodeBuild 프로젝트/WAF/ACM), cluster(eksctl + 누락 IRSA SA 보충), post-cluster(RDS MySQL 8.4.11 Multi-AZ [mysql8.4 파라미터 그룹]/Secrets), grafana-waf(WAF IPSet 및 Priority 0 차단 규칙) 멱등 프로비저닝
+│   │   ├── provision-aws-resources.sh    # vpc(VPC·서브넷 6개·IGW·라우트 테이블 4개·EIP/NAT 멱등 프로비저닝 및 .env 출력), pre-cluster(IAM/ECR/Logs/백업·Tempo·CodeBuild S3 [버킷 이름 격리 검증]/CodeBuild 프로젝트/WAF/ACM), cluster(eksctl + 누락 IRSA SA 보충), post-cluster(RDS MySQL 8.4.11 Multi-AZ [mysql8.4 파라미터 그룹]/Secrets), grafana-waf(WAF IPSet 및 Priority 0 차단 규칙) 멱등 프로비저닝
 │   │   └── iam-policies/                 # lbc, karpenter-controller, karpenter-node-trust, eso, fluent-bit, db-backup, tempo, codebuild 최소 권한 JSON 및 codebuild-trust.json
 │   ├── eksctl/
 │   │   └── cluster.yaml                  # EKS 1.36 ClusterConfig (VPC 서브넷, IRSA [monitoring/tempo 포함], vpc-cni NetworkPolicy, EBS CSI 버전 고정, ng-critical, ng-platform)
@@ -172,17 +176,20 @@
 │   ├── monitoring/petclinic-rules.test.yaml  # PrometheusRule promtool 단위 테스트
 │   ├── scripts/daily-stop-start.test.sh  # daily-stop.sh / daily-start.sh 오프라인 회귀 테스트 (가짜 aws/kubectl, opentelemetry-operator 순서 포함)
 │   ├── scripts/build-and-push.test.sh    # build-and-push.sh 오프라인 단위 테스트 (가짜 aws CLI 기반 태그/타깃/실행별 고유 소스 키/아카이브 필터/버킷 격리 검증)
-│   └── scripts/grafana-waf-ready.test.sh # grafana_waf_ready 오프라인 단위 테스트 (가짜 aws CLI 기반 WebACL /grafana 규칙 순서·변환·IPSet 매핑 검증)
+│   ├── scripts/grafana-waf-ready.test.sh # grafana_waf_ready 오프라인 단위 테스트 (가짜 aws CLI 기반 WebACL /grafana 규칙 순서·변환·IPSet 매핑 검증)
+│   └── scripts/vpc-provisioning.test.sh  # VPC/서브넷 생성, 멱등 재사용, 리전 서울 고정, NAT 시작/종료 오프라인 모의 테스트
 └── scripts/
     ├── lib.sh                            # 공통 환경변수 로드(.env), 필수 변수 검증, envsubst 렌더링 함수 (TEMPO_*, OTEL_*, CODEBUILD_* 포함, 명령줄 IMAGE_TAG/BUILD_TARGET 보존, grafana_waf_ready 사전 검증)
+    ├── nat-start.sh                      # AZ별 EIP 할당, NAT Gateway 생성 대기, 앱 라우트 연결 스크립트 (--dry-run 지원)
+    ├── nat-stop.sh                       # VPC 잔여 EC2 종료 대기 안전장치 포함 NAT Gateway 삭제 및 EIP 반납 스크립트 (--dry-run, --force 지원)
     ├── build-and-push.sh                 # AWS CodeBuild 원격 빌드 호출 및 상태 추적 스크립트 (소스 패키징 [.git, .env*, 키 파일 제외] → 전용 S3 업로드 [실행별 고유 키] → CodeBuild 실행 및 상태 폴링, --local 지원)
     ├── deploy-all.sh                     # 애드온/트레이싱/매니페스트 배포, 배포 전 WAF 검증(grafana_waf_ready), 카나리 100:0 고정 후 롤아웃, Route 53 연결, 카나리 E2E 검증 후 STABLE_WEIGHT:CANARY_WEIGHT 개방
     ├── set-canary-weight.sh              # 재배포 없이 카나리 비율 변경 (0 = 긴급 롤백, 100 = 전체 카나리)
     ├── rotate-db-secrets.sh              # Secrets Manager DB 비밀번호 변경 반영 (ESO 강제 동기화 확인 → db-init → was 재시작)
-    ├── daily-stop.sh                     # 퇴근 전 앱/Karpenter 노드·RDS·관리형 노드그룹 일괄 중지 및 잔여 비용 안내 (--dry-run 지원)
-    ├── daily-start.sh                    # 출근 시 RDS·관리형 노드그룹·컨트롤러(opentelemetry-operator 포함)·Karpenter·워크로드/오토스케일러/CronJob 일괄 복원 (--dry-run 지원)
+    ├── daily-stop.sh                     # 퇴근 전 앱/Karpenter 노드·RDS·관리형 노드그룹 일괄 중지 및 잔여 비용 안내 (--dry-run, --stop-nat 연동 지원)
+    ├── daily-start.sh                    # 출근 시 RDS·관리형 노드그룹·컨트롤러(opentelemetry-operator 포함)·Karpenter·워크로드/오토스케일러/CronJob 일괄 복원 (--dry-run, --start-nat 연동 지원)
     ├── test-prometheus-rules.sh          # promtool로 PrometheusRule 단위 테스트 실행
-    └── validate-manifests.sh             # YAML 문법, 고정 이미지/애드온 버전, 평문 시크릿 부재, 노드 티어/비루트, 역할별 DB 시크릿·PDB·KEDA fallback, 워크로드 리비전별 AZ 분산(matchLabelKeys: [pod-template-hash], maxSkew 1, zone), 그레이스풀 셧다운(preStop.sleep 15초 이상, web 35초 / was 45초 grace period), Grafana subpath/보안·ReferenceGrant·NetworkPolicy 정합성, CodeBuild, daily-stop/start 회귀 테스트 검증기
+    └── validate-manifests.sh             # YAML 문법, 고정 이미지/애드온 버전, 평문 시크릿 부재, 노드 티어/비루트, 역할별 DB 시크릿·PDB·KEDA fallback, 워크로드 리비전별 AZ 분산(matchLabelKeys: [pod-template-hash], maxSkew 1, zone), 그레이스풀 셧다운(preStop.sleep 15초 이상, web 35초 / was 45초 grace period), Grafana subpath/보안·ReferenceGrant·NetworkPolicy 정합성, CodeBuild, daily-stop/start, vpc-provisioning 회귀 테스트 검증기
 ```
 
 ---
@@ -195,7 +202,7 @@
 
 **다이어그램 읽는 법**
 - **선 종류**: 실선 = 사용자 요청 경로(①~⑥, 남색 stable / 주황 canary), 자홍 점선 = 관측(메트릭·트레이스·로그), 회색 점선 = 생성·설정·권한(컨트롤, RDS Multi-AZ 동기 복제 포함).
-- **배치**: VPC를 `2a` / `2c` 두 열 × 퍼블릭·앱 프라이빗·DB 프라이빗 서브넷 행으로 나누고, EKS 클러스터 안에 AZ별 노드 박스(`np-app`/`np-app-spot`, `ng-critical`, `ng-platform`)와 그 위의 Pod를 `이름 ×기본 레플리카 (종류)` 로 그린다. 배치는 `k8s/`·`infra/`·`scripts/deploy-all.sh` 기준의 의도된 배치이며 실클러스터 조회 결과가 아니다.
+- **배치**: VPC를 `2a` / `2c` 두 열 × 퍼블릭·앱 프라이빗·DB 프라이빗 서브넷 행으로 나누고, EKS 클러스터 안에 AZ별 노드 박스(`np-app`/`np-app-spot`, `ng-critical`, `ng-platform`)와 그 위의 Pod를 `이름 ×기본 레플리카 (종류)` 로 그린다. 퍼블릭 서브넷(`10.0.0.0/24`, `10.0.1.0/24`)은 IGW로 향하는 라우트(`petclinic-rt-public`)를 통해 ALB와 NAT Gateway가 배치되며, 앱 프라이빗 서브넷(`10.0.16.0/20`, `10.0.32.0/20`)은 각 AZ별 NAT(`petclinic-nat-2a`, `petclinic-nat-2c`)를 통해 아웃바운드 인터넷 통신을 수행하고, DB 프라이빗 서브넷(`10.0.48.0/24`, `10.0.49.0/24`)은 외부 라우트 없이 VPC 로컬(`10.0.0.0/16`) 경로만 존재하는 완전 격리(Air-Gapped) 구조다. 배치는 `k8s/`·`infra/`·`scripts/deploy-all.sh` 기준의 의도된 배치이며 실클러스터 조회 결과가 아니다.
 - **AZ 표기**: 레플리카 2개 이상이면서 zone 분산 제약이 있는 워크로드는 두 AZ에 1개씩 그린다. `AZ 비고정` 이 붙은 Pod(레플리카 1개이거나 AZ 제약 없음)는 그려진 AZ가 예시 위치다. `web` 및 `was` 워크로드는 `topologySpreadConstraints`에 `matchLabelKeys: [pod-template-hash]`를 적용하여 롤링 업데이트 시에도 구버전 ReplicaSet 간섭 없이 신규 Pod가 `2a`와 `2c`에 1개씩 균등하게 스케줄링된다 (단, K8s 스케줄러 특성상 신규 배치 시점에만 평가되므로 HPA/KEDA 스케일다운 후 불균형 발생 시에는 `rollout restart`로 재분산한다).
 - **경로 단순화**: ③→④→⑤는 같은 AZ 안에서 세로로 그렸지만 실제 Service 로드밸런싱은 AZ를 넘을 수 있다. 모든 노드에 뜨는 DaemonSet(`aws-node`, `kube-proxy`, `ebs-csi-node`, `prometheus-node-exporter`, `aws-for-fluent-bit`)은 클러스터 안 띠 하나에 모아 그리고, 클러스터 하단에 주요 K8s 리소스(Ingress·Gateway·HTTPRoute·Service·HPA·ScaledObject·ConfigMap·Secret·ExternalSecret·PVC 등, CRD는 `crd` 아이콘)를 AZ 열별 두 상자로 나눠 둔다. 선이 Pod 라벨을 가로지르지 않도록 NGF 컨트롤 플레인 → 데이터 플레인 설정 배포, ESO → Secret, EBS CSI → PVC, OTel Operator → `was` 주입 경로는 선 대신 Pod 설명(또는 라벨 없는 선)으로 표시한다.
 
@@ -222,14 +229,70 @@
    - `was`는 ConfigMap(`petclinic-was-logback`)을 `/etc/petclinic-logging/logback.xml`로 마운트하여 컨테이너 표준 출력 로그에 `[trace_id=... span_id=...]`를 함께 기록하며, 모든 노드의 컨테이너 로그와 RDS 에러/슬로우쿼리 로그는 **Fluent Bit DaemonSet** 및 RDS 로그 내보내기를 통해 **Amazon CloudWatch Logs**로 수집된다.
 
 ### 일일 리소스 중지·기동 제어 흐름 (`scripts/daily-stop.sh` · `scripts/daily-start.sh`)
-- **퇴근 전 중지 (`scripts/daily-stop.sh [--dry-run]`)**:
+- **퇴근 전 중지 (`scripts/daily-stop.sh [--dry-run] [--stop-nat]`)**:
   1. **앱 계층 및 Karpenter 노드 축소 (`ng-critical`의 Karpenter 컨트롤러가 살아 있을 때 먼저 수행)**: `cronjob/db-backup`을 `suspend: true`로 전환 → KEDA `ScaledObject`(`was-stable`, `was-canary`)에 `paused-replicas=0` 어노테이션 설정 및 `web`/`web-canary` HPA 삭제 → `web`/`was`와 NGF(`nginx-gateway` 컨트롤 플레인 먼저, 이어서 `petclinic-gateway-nginx` 데이터 플레인) Deployment를 `replicas=0`으로 축소 → Karpenter `NodePool`(`np-app`, `np-app-spot`) `limits`를 `cpu=0, memory=0Gi`로 패치하고 `nodeclaim --all` 삭제 완료를 대기하여 앱 EC2 노드를 모두 종료한다 (`NotFound`만 건너뛰며 `Forbidden`·인증·연결 오류 시 즉시 중단).
   2. **RDS MySQL 중지**: `${RDS_INSTANCE_ID:-${EKS_CLUSTER_NAME}-mysql}` 상태가 `available`이면 `stop-db-instance`를 호출한다 (`stopping`/`stopped`이면 멱등 건너뜀).
-  3. **관리형 노드 그룹 축소**: `ng-critical`, `ng-platform`의 현재 `minSize`/`desiredSize`/`maxSize`를 조회해 `desiredSize > 0`이면 `.daily-nodegroup-state.json`(`umask 077`)에 백업한 뒤 `minSize=0, desiredSize=0`으로 축소하고, 각 update ID를 `describe-update`로 조회해 `Successful`을 확인한다(`Failed`/`Cancelled`/15분 초과 시 오류 종료). 마지막으로 중지 불가 리소스(EKS 컨트롤 플레인, NAT Gateway, ALB, 스토리지) 및 RDS 7일 자동 재시작 안내를 출력한다.
-- **출근 시 기동 (`scripts/daily-start.sh [--dry-run]`)**:
-  1. **사전 검증 및 RDS 시작 요청**: 변경 전 `.daily-nodegroup-state.json`(없으면 `NG_*` 환경변수 또는 기본값 `2/2/4`)의 `minSize`/`desiredSize`/`maxSize` 정수·범위(`1 <= desiredSize`, `minSize <= desiredSize <= maxSize`)를 먼저 검증한다. 이어서 가장 느린 RDS를 먼저 시작(`stopped`이면 즉시 `start-db-instance`, `stopping`이면 `db-instance-stopped` 대기 후 시작)하여 노드 그룹 복원과 병렬로 진행한다.
+  3. **관리형 노드 그룹 축소 및 선택적 NAT 회수**: `ng-critical`, `ng-platform`의 현재 `minSize`/`desiredSize`/`maxSize`를 조회해 `desiredSize > 0`이면 `.daily-nodegroup-state.json`(`umask 077`)에 백업한 뒤 `minSize=0, desiredSize=0`으로 축소하고, 각 update ID를 `describe-update`로 조회해 `Successful`을 확인한다(`Failed`/`Cancelled`/15분 초과 시 오류 종료). 만약 `--stop-nat` 플래그가 지정된 경우 관리형 노드 그룹 축소 완료 직후 `scripts/nat-stop.sh`를 호출하여 VPC 내 잔여 EC2 인스턴스 종료를 확인한 후 NAT Gateway 2개 삭제 및 EIP 반납을 실행한다. 마지막으로 기본 실행 시 중지되지 않는 잔여 리소스(EKS 컨트롤 플레인, ALB, 스토리지 및 `--stop-nat` 미지정 시의 NAT Gateway) 및 RDS 7일 자동 재시작 안내를 출력한다.
+- **출근 시 기동 (`scripts/daily-start.sh [--dry-run] [--start-nat]`)**:
+  1. **선택적 NAT 복원 선행 및 사전 검증**: `--start-nat` 플래그가 전달된 경우 **가장 먼저** `scripts/nat-start.sh`를 호출하여 AZ별 EIP 할당, NAT Gateway 생성 대기(`available`), 및 앱 라우트 테이블(`petclinic-rt-app-2a/c`)의 `0.0.0.0/0` 라우트를 신규 NAT ID로 갱신하여 워커 노드 기동 전 아웃바운드 인터넷 통신 경로를 선확보한다. 이어서 변경 전 `.daily-nodegroup-state.json`(없으면 `NG_*` 환경변수 또는 기본값 `2/2/4`)의 `minSize`/`desiredSize`/`maxSize` 정수·범위(`1 <= desiredSize`, `minSize <= desiredSize <= maxSize`)를 검증하고, 가장 느린 RDS를 먼저 시작(`stopped`이면 즉시 `start-db-instance`, `stopping`이면 `db-instance-stopped` 대기 후 시작)하여 노드 그룹 복원과 병렬로 진행한다.
   2. **관리형 노드 그룹 및 컨트롤러 복원**: `ng-critical`, `ng-platform`의 `minSize`/`desiredSize`/`maxSize`를 복원(update ID별 `describe-update` `Successful` 확인)하고, `coredns`, `karpenter`, `aws-load-balancer-controller`, `external-secrets`, `keda-operator`, `opentelemetry-operator`(`opentelemetry-operator-system` — Pod 주입 Webhook이 `failurePolicy: Ignore`이므로 `was` 기동 전에 반드시 Ready여야 함)의 `rollout status`를 확인한다.
   3. **RDS `available` 대기 및 앱 계층 복원**: `db-instance-available` 확인 후 `infra/karpenter/nodepool-app.yaml` 재적용으로 Karpenter `NodePool` 한도를 복원하고, NGF(최소 2), KEDA 일시중지 어노테이션 해제, `was-stable`(최소 2)/`was-canary`(최소 1)/`web`(최소 2)/`web-canary`(최소 1) 스케일 업(현재 레플리카가 최소치 이상이면 유지), `k8s/web/hpa.yaml` 재적용, Deployment `rollout status` 확인 후 `cronjob/db-backup`을 `suspend: false`로 재개한다 (필수 리소스 부재·오류 시 즉시 실패 처리).
+
+### VPC 네트워크 프로비저닝 및 NAT 라이프사이클 관리 (`provision-aws-resources.sh vpc` · `nat-stop.sh` · `nat-start.sh`)
+
+과거 저장소 외부 임시 스크립트로 구축되었던 네트워크 기반 인프라를 저장소 내부 코드로 일원화하여, 단일 명령으로 100% 동일한 VPC 및 서브넷 환경을 멱등하게 재현한다. 또한 상시 가동 시 하루 약 $2.83(월 약 $85)의 고정 비용을 발생시키는 NAT Gateway 2개와 EIP 2개를 업무 종료 시 안전하게 회수하고 업무 시작 시 자동으로 재생성·라우팅 복원하는 라이프사이클 관리 체계를 구축한다.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Ops as 운영자 / daily-stop.sh / daily-start.sh
+    participant Script as nat-stop.sh / nat-start.sh
+    participant EC2 as AWS EC2 API (ap-northeast-2)
+    participant RT as Route Tables (petclinic-rt-app-2a / 2c)
+
+    rect rgb(255, 240, 240)
+    Note over Ops,RT: [퇴근 시 NAT 게이트웨이 정지 및 비용 절감 흐름 (nat-stop.sh)]
+    Ops->>Script: ./scripts/nat-stop.sh [--dry-run] [--force]
+    Script->>EC2: describe-instances (VPC 내 pending/running/stopping EC2 확인)
+    alt EC2 인스턴스가 남아 있는 경우
+        Script->>Script: 최대 300초(NAT_STOP_INSTANCE_WAIT) 동안 10초 간격 종료 대기 (노드 egress 보호)
+    end
+    Script->>EC2: describe-nat-gateways (Project=petclinic, available|pending)
+    Script->>EC2: delete-nat-gateway (AZ별 NAT 2개 삭제 요청)
+    Script->>EC2: wait nat-gateway-deleted (삭제 완료 대기)
+    Script->>EC2: release-address (삭제된 NAT에 연결됐던 EIP 및 미연결 petclinic-nat EIP만 반납)
+    Script-->>Ops: NAT 게이트웨이 삭제 및 EIP 반납 완료 (일일 고정비 절감 시작)
+    end
+
+    rect rgb(240, 255, 240)
+    Note over Ops,RT: [출근 시 NAT 게이트웨이 기동 및 라우팅 복원 흐름 (nat-start.sh)]
+    Ops->>Script: ./scripts/nat-start.sh [--dry-run]
+    loop AZ = 2a, 2c
+        Script->>EC2: describe-nat-gateways (Name=petclinic-nat-2<az>, available|pending)
+        alt 이미 존재하는 경우
+            Script-->>Ops: 기존 NAT Gateway 재사용 및 라우트 확인
+        else 존재하지 않는 경우
+            Script->>EC2: allocate-address (Domain=vpc, Tag: petclinic-nat-2<az>)
+            Script->>EC2: create-nat-gateway (Subnet: petclinic-public-2<az>, EIP 할당)
+            Script->>EC2: wait nat-gateway-available (가용 상태 대기)
+            Script->>RT: replace-route / create-route (0.0.0.0/0 -> 신규 NatGatewayId)
+            Script-->>Ops: NAT Gateway 가용 확인 및 앱 라우트 0.0.0.0/0 갱신 완료
+        end
+    end
+    Script-->>Ops: 전 가용영역 NAT 프로비저닝 및 아웃바운드 경로 선확보 완료
+    end
+```
+
+- **멱등 프로비저닝 및 태그 일관성 (`provision-aws-resources.sh vpc`)**:
+  - `Name=petclinic-*`, `Project=petclinic` 태그를 기반으로 기존 자원을 사전 조회하여, VPC·서브넷·IGW·라우트 테이블·NAT가 이미 존재하면 중복 생성하지 않고 재사용한다.
+  - 실행 완료 시 `.env`에 즉시 반영할 수 있는 형태(`VPC_ID`, 서브넷 6개 ID)를 터미널에 표준 출력한다.
+  - 기존 리소스가 태그는 같으나 CIDR/AZ/연결 상태가 상이하거나 다수 존재하는 경우, 실환경 자원을 임의로 덮어쓰지 않고 즉시 중단(Fail-Closed)한다.
+- **NAT 온디맨드 회수 시 안전장치 (`nat-stop.sh`)**:
+  - VPC 내에 종료되지 않은 EC2 인스턴스가 남아 있을 때 NAT가 먼저 삭제되면 노드 드레인 및 EKS 컨트롤 플레인 통신이 단절되므로, 인스턴스가 완전히 소멸할 때까지 최대 300초(`NAT_STOP_INSTANCE_WAIT`) 동안 대기한 후 삭제를 진행한다.
+  - EIP 반납 시 `Project=petclinic`의 다른 자원이 오반납되는 사고를 차단하기 위해, 삭제 대상 NAT에 실제로 붙어 있던 할당 ID와 실패한 실행이 남긴 `petclinic-nat-2a/2c` 태그의 미연결 주소만 엄격히 선별하여 해제한다.
+- **NAT 온디맨드 기동 및 블랙홀 경로 복구 (`nat-start.sh`)**:
+  - EIP 할당 및 NAT 게이트웨이 생성을 비동기로 요청한 뒤 `nat-gateway-available`을 병렬 대기하여 프로비저닝 소요 시간을 최소화한다.
+  - 이전 중지로 인해 앱 라우트 테이블의 `0.0.0.0/0`이 삭제된 NAT를 가리켜 발생한 `blackhole` 라우트를 `replace-route`로 신규 NAT 게이트웨이 ID로 정상 교체한다.
 
 ### 컨테이너 이미지 빌드 및 ECR 푸시 파이프라인 (`scripts/build-and-push.sh` · AWS CodeBuild)
 
@@ -335,6 +398,7 @@ sequenceDiagram
 | 구분 | 컴포넌트 | 고정 버전 / 이미지 |
 |---|---|---|
 | **Application** | Spring Framework PetClinic | `7.0.3` (Spring Framework `7.0.9`, Hibernate `7.4.11.Final`, Java `17` 타겟 / Java `21` 런타임) |
+| **Network / VPC / NAT** | Amazon VPC, Subnets, IGW, Route Tables, NAT Gateway | VPC `10.0.0.0/16`, 서브넷 6개(퍼블릭 `10.0.0.0/24`·`10.0.1.0/24`, 앱 `10.0.16.0/20`·`10.0.32.0/20`, DB `10.0.48.0/24`·`10.0.49.0/24`), IGW(`petclinic-igw`), 라우트 테이블 4개, AWS Managed NAT Gateway 2개 (AZ `2a`, `2c`) 및 Elastic IP 2개 |
 | **Build Container** | Maven (Multi-stage Build) | `maven:3.9.9-eclipse-temurin-21` |
 | **Build Host / Container** | AWS CodeBuild Managed Image | `aws/codebuild/amazonlinux2-x86_64-standard:5.0` (`LINUX_CONTAINER`, `BUILD_GENERAL1_MEDIUM` [4 vCPU, 7 GiB], `privilegedMode: true`) |
 | **Build Target Architecture** | Docker Platform | `linux/amd64` (x86_64) |
@@ -364,7 +428,7 @@ sequenceDiagram
 | 카테고리 | 변수명 | 용도 |
 |---|---|---|
 | **AWS / 클러스터** | `AWS_REGION`, `AWS_ACCOUNT_ID`, `EKS_CLUSTER_NAME`, `EBS_CSI_ADDON_VERSION` | 리전, 계정 ID, EKS 클러스터 식별자, EBS CSI 애드온 고정 버전 |
-| **VPC 서브넷** | `VPC_ID`, `PUBLIC_SUBNET_A_ID`, `PUBLIC_SUBNET_C_ID`, `APP_PRIVATE_SUBNET_A_ID`, `APP_PRIVATE_SUBNET_C_ID`, `DB_PRIVATE_SUBNET_A_ID`, `DB_PRIVATE_SUBNET_C_ID` | `2a`/`2c` 퍼블릭(ALB), 앱 프라이빗(EKS 노드), DB 프라이빗(RDS) 서브넷 ID |
+| **VPC 서브넷** | `VPC_ID`, `PUBLIC_SUBNET_A_ID`, `PUBLIC_SUBNET_C_ID`, `APP_PRIVATE_SUBNET_A_ID`, `APP_PRIVATE_SUBNET_C_ID`, `DB_PRIVATE_SUBNET_A_ID`, `DB_PRIVATE_SUBNET_C_ID` | `2a`/`2c` 퍼블릭(ALB/NAT), 앱 프라이빗(EKS 노드), DB 프라이빗(RDS) 서브넷 ID (`./infra/aws/provision-aws-resources.sh vpc` 실행 결과로 출력되어 `.env`에 반영) |
 | **엣지 / 도메인** | `DOMAIN_NAME`, `ROUTE53_HOSTED_ZONE_ID`, `ACM_CERTIFICATE_ARN`, `WAF_WEB_ACL_ARN`, `GRAFANA_ALLOWED_CIDRS` | Route 53 도메인·호스팅 영역, ACM 인증서 ARN, WAFv2 WebACL ARN, Grafana 웹 UI(`https://${DOMAIN_NAME}/grafana/`) 접속 허용 소스 IPv4 CIDR 목록 (쉼표 구분, 예: `203.0.113.7/32`, 공백 허용). 빈 값일 경우 WAF에서 `/grafana` 경로 접근 전체 차단 (`provision-aws-resources.sh grafana-waf`로 멱등 적용) |
 | **컨테이너 이미지 / 카나리** | `ECR_WEB_REPOSITORY_URI`, `ECR_WAS_REPOSITORY_URI`, `IMAGE_TAG`, `STABLE_IMAGE_TAG`, `CANARY_IMAGE_TAG`, `STABLE_WEIGHT`, `CANARY_WEIGHT` | `web`/`was` ECR 리포지토리 URI, 빌드 태그, stable/canary 배포 태그, 카나리 검증 통과 후 여는 `HTTPRoute` 가중치(비우면 90:10, 합 100). 검증 전에는 항상 100:0이며, 배포 후 비율 변경은 `scripts/set-canary-weight.sh` |
 | **CodeBuild (이미지 빌드)** | `CODEBUILD_PROJECT_NAME`, `CODEBUILD_S3_BUCKET_NAME`, `BUILD_TARGET` | CodeBuild 프로젝트명(기본 `${EKS_CLUSTER_NAME}-image-build`), 소스 아카이브용 전용 S3 버킷명(기본 `${EKS_CLUSTER_NAME}-codebuild-${AWS_ACCOUNT_ID}`, 1일 만료 Lifecycle), 빌드 대상 이미지(`all`, `web`, `was` / 기본값 `all`). `scripts/build-and-push.sh`는 호출 시점에 지정된 `IMAGE_TAG` 및 `BUILD_TARGET`을 `.env`의 빈 기본값보다 우선 보존함 |
@@ -373,12 +437,14 @@ sequenceDiagram
 | **관측성 / 백업** | `CW_LOG_GROUP_NAME`, `PROMETHEUS_SERVER_URL`, `GRAFANA_ADMIN_SECRET_NAME`, `ALERTMANAGER_WEBHOOK_SECRET_NAME`, `ALERTMANAGER_WEBHOOK_URL`, `BACKUP_S3_BUCKET_NAME` | CloudWatch 로그 그룹, Prometheus 쿼리 URL, Grafana 관리자 시크릿(`petclinic/grafana-admin`), Alertmanager Slack Incoming Webhook 시크릿(`petclinic/alertmanager-webhook`, ESO가 동기화하여 `slack_configs`의 `api_url_file`로 마운트), Slack Incoming Webhook URL(post-cluster에서 시크릿 생성 시에만 사용; Alertmanager는 `slack_configs` 전용이며 일반 webhook 미지원), 백업용 S3 버킷명 |
 | **분산 트레이싱 (APM)** | `TEMPO_S3_BUCKET_NAME`, `TEMPO_RETENTION_DAYS`, `OTEL_TRACES_SAMPLER_ARG`, `OTEL_DEPLOYMENT_ENVIRONMENT` (및 `deploy-all.sh`가 파생하는 `TEMPO_RETENTION_HOURS`) | Tempo 트레이스 블록 저장용 전용 S3 버킷명(`BACKUP_S3_BUCKET_NAME`과 중복 금지), S3 만료 Lifecycle 및 Tempo 블록 보존 일수(기본 `14`일 → `336h`), OTel Java Agent 헤드 샘플링 비율(`0`~`1`, 기본 `0.1`), `deployment.environment` 리소스 속성(기본 `production`) |
 | **일일 중지·기동 (선택)** | `RDS_INSTANCE_ID`, `NG_CRITICAL_DESIRED_SIZE`, `NG_PLATFORM_DESIRED_SIZE` (및 `NG_CRITICAL_MIN_SIZE`, `NG_CRITICAL_MAX_SIZE`, `NG_PLATFORM_MIN_SIZE`, `NG_PLATFORM_MAX_SIZE`) | `daily-stop.sh` / `daily-start.sh` 대상 RDS 식별자(기본 `${EKS_CLUSTER_NAME}-mysql`) 및 `.daily-nodegroup-state.json` 미존재 시 관리형 노드 그룹 복원 기본 용량(기본 `2 / 2 / 4`) |
+| | `NAT_STOP_INSTANCE_WAIT` | `nat-stop.sh` 실행 시 VPC 내 잔여 EC2 인스턴스(노드) 종료 대기 제한 시간(초, 기본값 `300`) |
 
 ---
 
 ## 6. 외부 의존성 — 외부 API, DB, 서비스
 
 - **AWS 관리형 서비스**:
+  - **Amazon EC2 VPC / NAT Gateway**: VPC `10.0.0.0/16`, 퍼블릭 서브넷 2개(`10.0.0.0/24`, `10.0.1.0/24`), 앱 프라이빗 서브넷 2개(`10.0.16.0/20`, `10.0.32.0/20`), DB 프라이빗 서브넷 2개(`10.0.48.0/24`, `10.0.49.0/24`), 인터넷 게이트웨이(IGW), 관리형 NAT Gateway 2개 및 Elastic IP 2개 (저장소 내 `provision-aws-resources.sh vpc`로 멱등 프로비저닝 및 업무 외 시간 온디맨드 회수·복원 지원)
   - **AWS CodeBuild (`${CODEBUILD_PROJECT_NAME}`)**: 온디맨드 컨테이너 이미지 빌드 서비스 (`BUILD_GENERAL1_MEDIUM`, Docker in Docker, AL2023/x86_64 표준 컨테이너 환경, 전용 CloudWatch Logs 그룹 `/aws/codebuild/${CODEBUILD_PROJECT_NAME}` 보존 기간 30일)
   - **Amazon RDS for MySQL (`8.4.11` LTS)**: 애플리케이션 영속 데이터 저장소 (`:3306`, Multi-AZ, `mysql8.4` 파라미터 그룹, `require_secure_transport=ON`, `error`/`slowquery` CloudWatch 로그 내보내기, 삭제 보호 활성화, 일일 중지 후 7일 경과 시 AWS 정책에 따라 자동 재시작)
   - **AWS Secrets Manager**: RDS 계정별 접속 정보(`$RDS_SECRET_NAME` admin, `$RDS_APP_SECRET_NAME` app, `$RDS_BACKUP_SECRET_NAME` backup), Grafana 관리자 자격증명(`$GRAFANA_ADMIN_SECRET_NAME`), Alertmanager Slack Webhook URL(`$ALERTMANAGER_WEBHOOK_SECRET_NAME`) 보관
@@ -406,6 +472,7 @@ sequenceDiagram
    - Grafana가 PetClinic과 동일 출처(`https://${DOMAIN_NAME}:443`)를 공유함에 따라 발생할 수 있는 동일 출처 정책(Same-Origin) 위험을 완화하기 위해 `server.serve_from_sub_path = true`를 활성화하여 모든 세션 쿠키를 `Path=/grafana/`로 자동 격리하고, `cookie_secure = true`, `cookie_samesite = lax`를 강제하여 쿠키 유출 및 CSRF 공격을 차단한다. 또한 `allow_embedding = false`를 적용하여 `X-Frame-Options: deny` 및 CSP `frame-ancestors`를 강제함으로써 iframe을 통한 클릭재킹을 원천 방어한다.
    - RDS MySQL은 `mysql8.4` 파라미터 그룹에서 `require_secure_transport=ON`을 강제하고, `was`(`sslMode=REQUIRED`), `db-init`(`--ssl-mode=REQUIRED`), `db-backup`(`--ssl-mode=REQUIRED`) 모두 암호화 연결만 사용한다. Tempo → S3 구간도 HTTPS(`insecure: false`)와 `SSE-KMS` 암호화를 강제하며, CodeBuild 소스 버킷도 SSE-S3(`AES256`) 암호화 및 HTTPS 전송을 강제한다.
 2. **네트워크 격리 (VPC SG & Kubernetes NetworkPolicy)**:
+   - **계층별 서브넷 라우팅 및 DB 에어갭(Air-Gapped) 격리**: 퍼블릭 서브넷(`2a`/`2c`)은 IGW로 향하는 기본 경로(`0.0.0.0/0 -> IGW`)만 보유하여 외부 인입 ALB 및 아웃바운드 NAT 게이트웨이만 배치된다. 앱 프라이빗 서브넷(`2a`/`2c`)은 공인 IP가 없으며, 아웃바운드 통신은 각 가용영역의 독립 NAT 게이트웨이(`petclinic-nat-2a`, `petclinic-nat-2c`)로만 라우팅된다. DB 프라이빗 서브넷(`2a`/`2c`)은 인터넷 게이트웨이나 NAT 게이트웨이로 향하는 라우트가 전혀 없는 완전 격리(Air-Gapped) 라우트 테이블(`petclinic-rt-db`, 로컬 `10.0.0.0/16`만 존재)에 연결되어 외부 인터넷과의 직접적인 연결 및 원격 침해 위협이 원천 차단된다. 스크립트 실행 시 기존 DB 라우트 테이블에 인터넷 경로(`0.0.0.0/0`)가 감지되면 즉시 실패 처리(Fail-Closed)한다.
    - RDS 보안 그룹은 오직 EKS 클러스터 보안 그룹에서 오는 `TCP 3306`만 허용하며 퍼블릭 접근(`--no-publicly-accessible`)을 차단한다.
    - Amazon VPC CNI의 `enableNetworkPolicy: "true"` 및 `enablePolicyEventLogs: "true"`를 활성화한다.
    - `petclinic` 네임스페이스는 `default-deny-all`(Ingress/Egress 기본 차단) 정책을 기반으로 DNS(`53`), `nginx-gateway`→`web`(`8080`), `web`→`was`(`8080`), `Prometheus`→`web`(`9113`)/`was`(`9404`), `was`→`otel-collector`(`4317`, `4318`), `was`·`db-init`·`db-backup`→RDS(`3306`), `db-backup`→S3/STS(`443`) 통신만 명시적으로 허용한다.
@@ -414,6 +481,7 @@ sequenceDiagram
    - `monitoring` 네임스페이스의 Prometheus(`:9090`)는 `prometheus-ingress` NetworkPolicy를 통해 KEDA, Grafana, Prometheus 자체 Pod(`:9090`, `:8080`)에서의 접근만 허용하고, Alertmanager는 `alertmanager-egress` NetworkPolicy로 DNS(`53`), 피어 가십(`9094`), HTTPS(`443`, IMDS `169.254.169.254/32` 제외) 송신만 허용한다.
    - `monitoring` 네임스페이스의 `otel-collector`는 `networkpolicy-tracing.yaml`을 통해 Ingress(`was`→`4317`/`4318`, `prometheus`→`8889`)와 Egress(DNS `53`, `tempo`→`4317`)만 허용하고, `tempo`는 Ingress(`otel-collector`→`4317`/`4318`, `grafana`→`3200`)와 Egress(DNS `53`, 외부 S3/STS `443` [IMDS `169.254.169.254/32` 제외])만 허용한다 (`reportingEnabled: false`로 외부 사용량 리포팅도 비활성화).
 3. **최소 권한 IAM (IRSA) 및 IMDS 차단**:
+   - VPC 프로비저닝 및 NAT 제어 스크립트 실행 시 작업 환경 셸에 타 리전(예: `AWS_REGION=us-east-1`)이 설정되어 있더라도 서울 리전(`ap-northeast-2`) 고유의 AZ(`2a`, `2c`) 하드코딩과 충돌하거나 타 리전에 리소스가 오발주되지 않도록, `provision-aws-resources.sh`의 `vpc` 서브명령어 함수 및 `nat-start.sh`/`nat-stop.sh` 내부에서 `export AWS_REGION=ap-northeast-2 AWS_DEFAULT_REGION=ap-northeast-2`를 강제 고정한다.
    - 모든 관리형 노드 그룹(`ng-critical`, `ng-platform`)에 `disableIMDSv1: true`, `disablePodIMDS: true`를 설정하고, Karpenter `EC2NodeClass`(`np-app`)에 `httpTokens: required`, `httpPutResponseHopLimit: 1`을 설정하여 일반 Pod가 노드 IAM Role 자격증명을 탈취하지 못하게 차단한다.
    - 컨트롤러, 백업 잡 및 Tempo는 정적 AWS 액세스 키 없이 전용 IRSA ServiceAccount를 사용하며, 리소스 범위를 최소한으로 제한한다 (ESO는 `secret:petclinic/*` 읽기만, `db-backup`은 `s3:::${BACKUP_S3_BUCKET_NAME}/petclinic/*`의 `s3:PutObject`만, `monitoring/tempo`는 전용 버킷 `s3:::${TEMPO_S3_BUCKET_NAME}`의 `ListBucket` 및 `${TEMPO_S3_BUCKET_NAME}/*`의 `Put/Get/Delete/Tagging`만, Fluent Bit는 지정된 로그 그룹 쓰기만 허용).
    - CodeBuild 서비스 역할(`CodeBuildServiceRole-${EKS_CLUSTER_NAME}`)은 `codebuild-trust.json`(`codebuild.amazonaws.com` 신뢰 + `aws:SourceAccount` 조건으로 혼동된 대리인 방지)과 `codebuild-policy.json`으로 구성되며, ECR(`petclinic-web`, `petclinic-was` 2개 리포지토리 푸시/풀만 허용), S3(전용 소스 버킷 `${CODEBUILD_S3_BUCKET_NAME}` 읽기만 허용), CloudWatch Logs(전용 프로젝트 로그 그룹 쓰기만 허용)로 권한을 엄격히 한정한다. RDS, Secrets Manager, EKS 제어 권한은 일절 부여하지 않는다.
@@ -435,9 +503,10 @@ sequenceDiagram
    - CodeBuild 환경에서 빌드되는 `web` 및 `was` 이미지는 멀티스테이지 빌드를 통해 빌드 도구와 임시 파일을 배제하고, `UID 10001` 비루트 사용자로 구동되며, JMX Exporter JAR은 SHA256 체크섬 고정 검증을 거친다. 빌드 시 `--platform linux/amd64`를 강제하여 Karpenter 노드(`np-app`, `np-app-spot`)의 x86_64 아키텍처와 일치시킨다.
    - `web` 및 `was` 워크로드에 `matchLabelKeys: [pod-template-hash]` 기반 가용영역 토폴로지 분산 제약을 적용하여 롤링 업데이트 중 특정 AZ 편중으로 인한 가용성 침해(단일 AZ 장애 시 서비스 단절)를 방지함으로써 클라우드 인프라의 장애 복원력과 고가용성(HA)을 보장한다. 별도의 특권 컨트롤러(Descheduler 등)나 RBAC 권한 상승 없이 EKS 내장 스케줄러 기능으로 동작하여 공격 표면(Attack Surface) 확장을 차단하고 최소 권한 격리 규격을 유지한다.
    - 선언형 `lifecycle.preStop.sleep` 액션은 Kubelet 데몬 내부 타이머로 실행되므로 `exec` 방식(`/bin/sh -c sleep 15`)과 달리 컨테이너 내부 쉘 바이너리 실행이나 프로세스 포크, 추가 권한 요구 없이 `Restricted` PSS 및 `readOnlyRootFilesystem: true` 보안 규격을 완벽히 유지한다. 또한 `terminationGracePeriodSeconds`를 `web: 35s`, `was: 45s`로 엄격히 제한하여 15초 안전 대기 후 비정상 프로세스 지연(hang) 상태가 발생하더라도 최대 45초 이내에 SIGKILL로 강제 회수되도록 보장함으로써 노드 드레인 및 Karpenter 통폐합 시 클러스터 리소스 고갈(DoS) 위험을 차단한다.
-6. **일일 중지·기동 스크립트 최소 권한 및 무결성 보호 (`scripts/daily-stop.sh` · `scripts/daily-start.sh`)**:
+6. **일일 중지·기동 스크립트 최소 권한 및 무결성 보호 (`scripts/daily-stop.sh` · `scripts/daily-start.sh` · `nat-stop.sh` · `nat-start.sh`)**:
    - 두 스크립트는 AWS 컨트롤 플레인(`eks:DescribeCluster`, `eks:DescribeNodegroup`, `eks:UpdateNodegroupConfig`, `eks:DescribeUpdate`, `rds:DescribeDBInstances`, `rds:StopDBInstance`, `rds:StartDBInstance`)과 K8s 스케일링·롤아웃 API(`petclinic`·`nginx-gateway` 리소스 제어, 클러스터 범위 `nodepools`/`nodeclaims` 제어, `kube-system`·`external-secrets`·`keda`·`opentelemetry-operator-system` `deployments` 조회)만 사용하며, DB 비밀번호나 K8s `Secret` 값을 읽거나 출력하지 않는다.
    - 관리형 노드 그룹 스케일 백업 파일(`.daily-nodegroup-state.json`)은 `.gitignore`로 추적에서 제외하고 `umask 077`로 생성하며, 기동 시 모든 변경(RDS 시작 포함) 전에 JSON 유효성과 `minSize`/`desiredSize`/`maxSize` 정수·범위(`desiredSize >= 1`, `minSize <= desiredSize <= maxSize`)를 검증해 손상된 상태 파일이나 잘못된 환경변수로 인한 비정상 스케일링·부분 기동을 차단한다.
+   - `nat-stop.sh`는 EKS 워커 노드 등 VPC 내 잔여 EC2 인스턴스가 `pending/running/stopping` 상태로 남아 있는 경우 egress 차단으로 인한 노드 종료 장애를 막기 위해 최대 300초(`NAT_STOP_INSTANCE_WAIT`) 동안 인스턴스 완전 종료를 대기한 뒤 NAT 삭제를 진행한다 (`--force` 옵션으로 무시 가능). EIP 반납 시에는 `Project=petclinic`의 모든 주소를 무차별 해제하지 않고, 삭제 대상 NAT에 실제로 붙어 있던 할당 ID와 실패한 실행이 남긴 `petclinic-nat-2a/2c` 태그의 미연결 주소만 선별 반납하여 타 리소스의 EIP 오반납을 방지한다. 또한 VPC 프로비저닝 시 기존 자원이 다른 CIDR, 다른 AZ, 다른 라우트 테이블 연결 상태이거나 `petclinic-vpc`가 다수 감지되는 등 설정 드리프트가 감지되면 임의로 수정하지 않고 즉시 실행을 중단(Fail-Closed)한다.
 
 ---
 
@@ -500,3 +569,10 @@ sequenceDiagram
 - `grafana-public-path`: `networkpolicy-grafana.yaml`에서 `nginx-gateway` 네임스페이스 전체 대신 데이터 플레인 Pod(`gateway.networking.k8s.io/gateway-name: petclinic-gateway`)와 Prometheus Pod로만 인입을 제한함 / 동일 네임스페이스의 NGF 컨트롤 플레인 Pod나 타 Pod가 Grafana Pod(:3000)에 불필요하게 접근하는 것을 차단하여 최소 권한 네트워크 격리를 달성하기 위함 (design.md의 네임스페이스 전체 허용을 실제 데이터 플레인 Pod 선택자로 정밀화 반영)
 - `grafana-public-path`: WAF 적용을 `pre-cluster` 내 일괄 실행 대신 별도 멱등 하위 명령(`provision-aws-resources.sh grafana-waf`)으로 분리하고 `deploy-all.sh` 초입에 `grafana_waf_ready` 게이트를 추가함 / `WAF_WEB_ACL_ARN` 생성 순서 의존성을 해소하고 허용 IP 변경 시 가볍게 재실행할 수 있도록 하며, WAF 규칙 미적용 상태에서 `/grafana` 경로가 모든 외부에 무방비로 공개되는 사고를 배포 전 정적 검증으로 차단하기 위함
 - `grafana-public-path`: Alertmanager 알림 채널을 일반 Webhook에서 Slack Incoming Webhook 전용 규격(`slack_configs`, `api_url_file`)으로 정정함 / Slack Incoming Webhook은 `webhook_configs`의 일반 JSON 페이로드를 `400 no_text`로 거부하므로 Slack이 요구하는 텍스트/첨부 포맷 계약을 충족하고 평문 노출 없이 시크릿 파일에서 URL을 안전하게 읽도록 하기 위함
+- `vpc-provisioning`: 10-26 구축 당시 저장소 밖 임시 스크립트로 생성되었던 VPC·서브넷·IGW·라우트테이블을 멱등성과 서울 리전 강제 고정을 갖춘 저장소 공식 스크립트(`provision-aws-resources.sh vpc`)로 코드화하고, 일일 약 $2.83의 비용을 유발하는 NAT 게이트웨이를 온디맨드로 제어하는 전용 스크립트(`nat-stop.sh`, `nat-start.sh`) 및 `daily-stop/start` 연동을 구축함 / 저장소만으로 완전한 네트워크 인프라 재현성을 확보하고 비업무 시간 고정비를 최소화하기 위함
+- `vpc-provisioning`: 리전 강제 고정을 `provision-aws-resources.sh` 최상단 전역이 아닌 `vpc` 서브명령어 함수 내부 및 `nat-start.sh`/`nat-stop.sh` 내부로 한정함 / `pre-cluster` 등 스크립트의 타 단계는 `.env`에 정의된 `AWS_REGION` 값을 정상 활용해야 하므로 불필요한 전역 환경변수 간섭을 방지하고 서울 리전 AZ(`2a`, `2c`)가 하드코딩된 네트워크 스크립트만 안전하게 격리하기 위함 (design.md 최상단 고정 방식을 실제 서브명령어/스크립트별 격리 구현으로 정제 반영)
+- `vpc-provisioning`: 퍼블릭 및 앱 서브넷에 `kubernetes.io/role/elb` 및 `internal-elb` 태그를 부여하지 않고 10-26 실환경과 100% 동일하게 유지함 / 10-26 구축 당시 태그가 없었으며, ALB Ingress 매니페스트(`alb-ingress.yaml`)에서 서브넷 ID를 어노테이션으로 명시적 직접 지정하므로 불필요한 추가 태그 없이 실환경 정합성을 보장하기 위함 (design.md 참고 항목의 태그 부여를 실제 구현 기준으로 미부여 반영)
+- `vpc-provisioning`: 태그 기반 조회 시 기존 VPC·서브넷·IGW·라우트테이블이 다른 CIDR/AZ/연결 상태이거나 다수 존재할 경우 임의로 수정하지 않고 즉시 실행을 중단(Fail-Closed)하며, DB 라우트 테이블 재사용 시 인터넷 라우트(`0.0.0.0/0`)가 감지되면 즉시 중단하도록 구현함 / 정상 운영 중인 실환경 네트워크 설정을 조용히 변경하거나 DB 계층의 에어갭 격리가 훼손되는 사고를 방지하기 위함 (단, 삭제된 NAT를 가리키는 앱 라우트의 blackhole 경로는 replace-route로 자동 복구)
+- `vpc-provisioning`: `vpc` 서브명령어의 NAT 생성·라우트 연결 로직을 독자 구현하지 않고 `scripts/nat-start.sh`를 직접 호출하며, `nat-start.sh`는 `.env`가 아닌 태그(`Name=petclinic-vpc`)로 VPC를 탐색하도록 구현함 / 코드 중복을 제거하고 단일 책임 원칙을 준수하며 신규 VPC 프로비저닝 직후 `.env`를 채우기 전 단계에서도 NAT 기동 스크립트가 독립적으로 완결 동작하도록 보장하기 위함
+- `vpc-provisioning`: `nat-stop.sh`에 VPC 내 잔여 EC2 인스턴스 종료 대기 안전장치(`NAT_STOP_INSTANCE_WAIT`, 기본 300초)를 추가하고, EIP 반납 범위를 삭제 대상 NAT의 EIP 및 미연결 `petclinic-nat-2a/2c` 주소로만 한정함 / 노드 인스턴스가 종료되기 전에 NAT가 조기 삭제되어 노드 egress 및 EKS 통신 장애가 발생하는 것을 방지하고, 동일 프로젝트 태그를 가진 타 리소스의 EIP 오반납을 원천 차단하기 위함 (design.md의 무조건 즉시 삭제 및 EIP 일괄 반납을 실제 안전 대기 및 정밀 선별 반납으로 고도화 반영)
+- `vpc-provisioning`: `daily-stop.sh`와 `daily-start.sh`의 기존 워크플로를 보존하면서 선택적 플래그(`--stop-nat` / `--start-nat`)를 제공하고, `nat-start.sh`와 `nat-stop.sh`에 `--dry-run` 플래그를 구현함 / 일일 운영 편의성을 극대화하는 동시에 오프라인 매니페스트 정적 검증(`validate-manifests.sh`) 및 단위 테스트가 실제 AWS API 호출 없이 안전하게 실행되도록 지원하기 위함
