@@ -4,6 +4,7 @@
 #   ./infra/aws/provision-aws-resources.sh pre-cluster   # IAM, ECR, log group, backup/Tempo buckets, CodeBuild, WAF, ACM
 #   ./infra/aws/provision-aws-resources.sh cluster       # eksctl create cluster + Karpenter discovery tags
 #   ./infra/aws/provision-aws-resources.sh post-cluster  # RDS MySQL Multi-AZ + Secrets Manager secrets
+#   ./infra/aws/provision-aws-resources.sh grafana-waf   # /grafana IP allow-list (re-run when the IP changes)
 #
 # Idempotent: every step looks the resource up first and reuses (or updates) it, so a phase that
 # stopped half-way can simply be run again. Existing resources are not reconfigured beyond what
@@ -370,9 +371,62 @@ post_cluster() {
   fi
 }
 
+# /grafana is only for the operators' IPs (docs/features/grafana-public-path/design.md): an IP set
+# from GRAFANA_ALLOWED_CIDRS and a block rule at priority 0, ahead of the managed rule groups.
+# Re-run alone after the allowed IP changes. An empty list blocks /grafana for everyone.
+grafana_waf() {
+  require AWS_REGION EKS_CLUSTER_NAME WAF_WEB_ACL_ARN
+  local set_name="${EKS_CLUSTER_NAME}-grafana-allowed-ips" rule=BlockUnauthorizedGrafanaAccess
+  local cidrs=() addrs c set_id set_arn lock acl_id="${WAF_WEB_ACL_ARN##*/}" acl_name acl rules
+  IFS=',' read -r -a cidrs <<<"${GRAFANA_ALLOWED_CIDRS:-}"
+  addrs=("${cidrs[@]}"); [ "${#cidrs[@]}" -gt 0 ] || addrs=('[]')
+  for c in "${cidrs[@]}"; do
+    [[ "$c" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[12][0-9]|3[0-2])$ ]] \
+      || { echo "GRAFANA_ALLOWED_CIDRS: '$c' is not an IPv4 CIDR (e.g. 203.0.113.7/32)" >&2; exit 1; }
+  done
+
+  echo "== WAF IP set $set_name (${#cidrs[@]} CIDR)"
+  set_id=$(aws wafv2 list-ip-sets --scope REGIONAL --query "IPSets[?Name=='$set_name'].Id | [0]" --output text)
+  if [ "$set_id" = "None" ] || [ -z "$set_id" ]; then
+    set_arn=$(aws wafv2 create-ip-set --scope REGIONAL --name "$set_name" --ip-address-version IPV4 \
+      --description "Allowed source IPs for /grafana" --addresses "${addrs[@]}" \
+      --query Summary.ARN --output text)
+  else
+    lock=$(aws wafv2 get-ip-set --scope REGIONAL --name "$set_name" --id "$set_id" --query LockToken --output text)
+    aws wafv2 update-ip-set --scope REGIONAL --name "$set_name" --id "$set_id" --lock-token "$lock" \
+      --addresses "${addrs[@]}" >/dev/null
+    set_arn=$(aws wafv2 get-ip-set --scope REGIONAL --name "$set_name" --id "$set_id" --query IPSet.ARN --output text)
+  fi
+
+  echo "== WAF rule $rule (priority 0) in the WebACL"
+  acl_name=$(aws wafv2 list-web-acls --scope REGIONAL --query "WebACLs[?Id=='$acl_id'].Name | [0]" --output text)
+  acl=$(aws wafv2 get-web-acl --scope REGIONAL --name "$acl_name" --id "$acl_id")
+  # Decode and normalise the path the way NGF's nginx does (%67rafana, //grafana, /./grafana), then
+  # block it unless the client IP is in the set. The other rules keep their order behind it.
+  rules=$(jq --arg rule "$rule" --arg set "$set_arn" '
+    [.WebACL.Rules[] | select(.Name != $rule)] | sort_by(.Priority)
+    | to_entries | map(.value + {Priority: (.key + 1)})
+    | [{Name: $rule, Priority: 0, Action: {Block: {}},
+        VisibilityConfig: {SampledRequestsEnabled: true, CloudWatchMetricsEnabled: true, MetricName: $rule},
+        Statement: {AndStatement: {Statements: [
+          {ByteMatchStatement: {FieldToMatch: {UriPath: {}}, PositionalConstraint: "STARTS_WITH",
+            SearchString: "/grafana", TextTransformations: [
+              {Priority: 0, Type: "URL_DECODE"}, {Priority: 1, Type: "NORMALIZE_PATH"},
+              {Priority: 2, Type: "LOWERCASE"}]}},
+          {NotStatement: {Statement: {IPSetReferenceStatement: {ARN: $set}}}}]}}}] + .' <<<"$acl")
+  aws wafv2 update-web-acl --scope REGIONAL --name "$acl_name" --id "$acl_id" \
+    --lock-token "$(jq -r .LockToken <<<"$acl")" \
+    --default-action "$(jq -c .WebACL.DefaultAction <<<"$acl")" \
+    --visibility-config "$(jq -c .WebACL.VisibilityConfig <<<"$acl")" \
+    --rules "$rules" >/dev/null
+  aws wafv2 get-web-acl --scope REGIONAL --name "$acl_name" --id "$acl_id" \
+    --query 'WebACL.Rules[].[Priority,Name]' --output text
+}
+
 case "${1:-}" in
   pre-cluster) pre_cluster ;;
   cluster) cluster ;;
   post-cluster) post_cluster ;;
-  *) echo "usage: $0 {pre-cluster|cluster|post-cluster}" >&2; exit 1 ;;
+  grafana-waf) grafana_waf ;;
+  *) echo "usage: $0 {pre-cluster|cluster|post-cluster|grafana-waf}" >&2; exit 1 ;;
 esac
