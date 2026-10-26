@@ -313,7 +313,12 @@ post_cluster() {
 
   echo "== RDS MySQL 8.4 Multi-AZ (encrypted, private; an existing instance is reused as-is)"
   if ! aws rds describe-db-instances --db-instance-identifier "$db_id" >/dev/null 2>&1; then
-    PW="$password" jq -n '{MasterUserPassword: env.PW}' | aws rds create-db-instance --cli-input-json file:///dev/stdin \
+    # aws-cli 2.x rejects --cli-input-json from a pipe ("Invalid JSON received"), so use a 600 temp file.
+    local input
+    input=$(mktemp); chmod 600 "$input"
+    trap "rm -f '$input'" EXIT  # expanded now: $input is local and gone by the time EXIT runs
+    PW="$password" jq -n '{MasterUserPassword: env.PW}' > "$input"
+    aws rds create-db-instance --cli-input-json "file://$input" \
       --db-instance-identifier "$db_id" \
       --engine mysql --engine-version 8.4.11 \
       --db-instance-class db.t3.medium \
@@ -326,6 +331,7 @@ post_cluster() {
       --db-parameter-group-name "${db_id}-params" \
       --enable-cloudwatch-logs-exports '["error","slowquery"]' \
       --backup-retention-period 7 --copy-tags-to-snapshot --deletion-protection >/dev/null
+    rm -f "$input"
   fi
   aws rds wait db-instance-available --db-instance-identifier "$db_id"
   host=$(aws rds describe-db-instances --db-instance-identifier "$db_id" \
