@@ -20,3 +20,30 @@
 원격 빌드 흐름과 기존 Dockerfile·amd64·불변 태그 규칙은 설계대로 유지된다. 버킷 설정 충돌 시 기존 데이터 보존 정책을 변경하는 High 항목을 수정한 후 재리뷰가 필요하다.
 
 머지 가능 여부: No
+
+## Review Round 2 — 2026-10-26 (대상 커밋: a7d89e5)
+
+### Critical
+- 지적 사항 없음.
+
+### High
+- 지적 사항 없음.
+
+### Medium / Low
+- [ ] `scripts/validate-manifests.sh:346` — **Medium: buildspec 회귀 검사 두 개가 정상 실행에서 건너뛰어진다.** `post_build.on-failure == ABORT` 검사와 `pre_build` 태그 정규식 검사가 IAM 정책 파싱의 `except` 블록 안에 들여쓰기되어 있다. 정상적인 `codebuild-policy.json`에서는 두 검사가 실행되지 않으므로, buildspec에서 해당 보호 장치를 제거해도 검증이 통과한다. 두 검사를 buildspec을 처리하는 `else` 블록으로 옮기고 각각의 보호 장치를 제거했을 때 실패하는 음성 검증을 추가해야 한다. 실제 IAM 정책을 사용하는 해당 검사 블록에 `phases={'post_build': {}}`, `cmds=lambda p: ''`를 전달해 실행했으며 오류 목록이 빈 배열인 것을 확인했다. 현재 buildspec 자체에는 두 보호 장치가 있어 현재 빌드 동작을 막는 문제는 아니다.
+
+### 기존 아키텍처와의 일치
+- 신규 불일치 지적 사항 없음. 기존 Dockerfile, WAR 패키징, `linux/amd64`, ECR 불변 태그, 백업·Tempo 권한 및 버킷 분리 구조를 유지한다.
+- R1 High의 버킷 충돌 문제는 `infra/aws/provision-aws-resources.sh:63`에서 모든 AWS 변경 전에 차단되도록 수정됐고, 빌드 진입점에도 검사가 추가됐다.
+- CodeBuild의 architecture.md·다이어그램 반영은 설계 §7에 따라 머지 직전 ⑦ 단계의 후속 작업이다.
+
+### 검증
+- `git diff master...HEAD` 전체를 설계 및 아키텍처와 대조했다. 변경 코드·문서와 `docs/daily/2026-10-26.md`에서 계정 ID·ARN·엔드포인트·개인 URL 실값 노출 지적 사항 없음.
+- R1의 `[x]` 항목 3개를 실제 코드로 재확인했다. 명령줄 IMAGE_TAG·BUILD_TARGET 보존 및 실행별 UUID 소스 키가 반영됐으며, 오프라인 회귀 테스트도 통과했다.
+- `./scripts/validate-manifests.sh` 통과: daily stop/start 및 CodeBuild 오프라인 테스트, YAML 43개·워크로드 6개 검사.
+- AWS 명령 및 실제 이미지 빌드는 실행하지 않았다. 소스 코드 수정 없이 본 리뷰 파일만 추가 작성했다.
+
+### 총평
+이전 라운드의 차단 사유는 해결됐고, 현재 구현의 Critical·High 결함은 발견하지 못했다. 검증 누락 Medium 1건은 후속 보완을 권고하며, 실제 AWS 검증과 ⑦ 문서 현행화는 별도로 남아 있다.
+
+머지 가능 여부: Yes
