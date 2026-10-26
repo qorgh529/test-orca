@@ -1,0 +1,15 @@
+# Lets the /grafana HTTPRoute in nginx-gateway point at the Grafana Service here, and nothing else.
+apiVersion: gateway.networking.k8s.io/v1
+kind: ReferenceGrant
+metadata:
+  name: allow-nginx-gateway-to-grafana
+  namespace: monitoring
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      namespace: nginx-gateway
+  to:
+    - group: ""
+      kind: Service
+      name: kube-prometheus-stack-grafana

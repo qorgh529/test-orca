@@ -98,7 +98,12 @@ cp .env.example .env
 
 # 3) RDS MySQL 8.4 LTS Multi-AZ(TLS 강제) 및 Secrets Manager 시크릿(admin/app/backup, Grafana, Alertmanager) 생성
 ./infra/aws/provision-aws-resources.sh post-cluster
+
+# 4) /grafana 접근 허용 IP: .env 의 GRAFANA_ALLOWED_CIDRS(예: 203.0.113.7/32)로 WAF IP set과 차단 규칙(우선순위 0) 적용.
+#    필수 — 이 규칙이 없으면 deploy-all.sh 가 시작 전에 멈춥니다. 허용 IP가 바뀌면 이것만 다시 실행합니다.
+./infra/aws/provision-aws-resources.sh grafana-waf
 ```
+> Grafana는 `https://<DOMAIN_NAME>/grafana/` 에서 열리며, 허용 IP 밖에서는 WAF가 403을 돌려줍니다. 관리자 계정은 Secrets Manager의 `GRAFANA_ADMIN_SECRET_NAME` 입니다.
 
 ### Step 3. `web` / `was` 컨테이너 이미지 빌드 및 ECR 푸시
 ```bash

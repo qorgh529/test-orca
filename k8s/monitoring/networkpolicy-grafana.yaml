@@ -1,0 +1,24 @@
+# Grafana takes connections only from the NGF data plane (the /grafana route) and from Prometheus
+# (its own metrics). kubectl port-forward still works: it does not enter through the pod network.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: grafana-ingress
+  namespace: monitoring
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: grafana }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: nginx-gateway }
+          podSelector:
+            matchLabels: { gateway.networking.k8s.io/gateway-name: petclinic-gateway }  # data plane only
+      ports:
+        - { protocol: TCP, port: 3000 }
+    - from:
+        - podSelector:
+            matchLabels: { app.kubernetes.io/name: prometheus }
+      ports:
+        - { protocol: TCP, port: 3000 }

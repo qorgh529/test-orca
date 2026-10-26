@@ -27,6 +27,9 @@ OPEN_STABLE="${STABLE_WEIGHT:-90}" OPEN_CANARY="${CANARY_WEIGHT:-10}"
 check_weights "$OPEN_STABLE" "$OPEN_CANARY"
 
 "$ROOT/scripts/validate-manifests.sh"
+# Stop before anything changes rather than publish /grafana to every IP.
+grafana_waf_ready || { echo "WAF WebACL has no /grafana allow-list rule at priority 0:" \
+  "run ./infra/aws/provision-aws-resources.sh grafana-waf first" >&2; exit 1; }
 
 K="$ROOT/k8s"
 aws eks update-kubeconfig --region "$AWS_REGION" --name "$EKS_CLUSTER_NAME"
@@ -116,7 +119,8 @@ echo "== Monitoring (ng-platform) and logging (all nodes)"
 helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
   --version 92.11.0 -n monitoring -f <(render "$K/monitoring/kube-prometheus-values.yaml") --wait
 kubectl apply -f "$K/monitoring/servicemonitor-petclinic.yaml" -f "$K/monitoring/networkpolicy-prometheus.yaml" \
-  -f "$K/monitoring/networkpolicy-alertmanager.yaml" -f "$K/monitoring/prometheusrule-petclinic.yaml"
+  -f "$K/monitoring/networkpolicy-alertmanager.yaml" -f "$K/monitoring/prometheusrule-petclinic.yaml" \
+  -f "$K/monitoring/networkpolicy-grafana.yaml" -f "$K/monitoring/referencegrant-grafana.yaml"
 
 echo "== Tracing (ng-platform): Tempo (S3 via IRSA SA monitoring/tempo) + OTel collector"
 kubectl apply -f "$K/tracing/networkpolicy-tracing.yaml" -f "$K/monitoring/dashboard-apm-tracing.yaml"

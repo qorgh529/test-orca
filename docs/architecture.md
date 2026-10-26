@@ -6,7 +6,8 @@
 
 - **포함 범위 (In-Scope)**:
   - Route 53, ACM, AWS WAFv2, LBC 기반 internet-facing ALB(`target-type: ip`)를 통한 엣지 보안 및 TLS 종단
-  - NGINX Gateway Fabric(NGF) `Gateway` 및 `HTTPRoute`를 이용한 L7 라우팅과 헤더(`X-Canary: always`) 검증 통과 후 100:0 → 90:10으로 여는 가중치 기반 카나리(Canary) 트래픽 분할
+  - 공인 서비스 도메인의 하위 경로 `https://${DOMAIN_NAME}/grafana/`를 통한 Grafana 대시보드 안전한 외부 공개(AWS WAFv2 Priority 0 IP 화이트리스트 차단 규칙 `BlockUnauthorizedGrafanaAccess` + `GRAFANA_ALLOWED_CIDRS` IPSet, NGF Gateway API `HTTPRoute` 및 `ReferenceGrant` 기반 최장 접두사 일치 L7 라우팅, `server.serve_from_sub_path=true` 및 쿠키 `Path=/grafana/` 격리, `networkpolicy-grafana.yaml` 최소 권한 인입 격리, `deploy-all.sh` 배포 전 WAF 검증 게이트 `grafana_waf_ready`)
+  - NGINX Gateway Fabric(NGF) `Gateway` 및 `HTTPRoute`를 이용한 L7 라우팅과 헤더(`X-Canary: always`) 검증 통과 후 100:0 → 90:10으로 여는 가중치 기반 카나리(Canary) 트래픽 분할 (Gateway API 최장 접두사 일치 규칙에 의해 `/grafana` 8자가 `/` 1자 카나리 분할보다 항상 우선 평가되어 상호 무간섭 보장)
   - `web`(Nginx 1.27 정적 서빙 + 리버스 프록시)과 `was`(Tomcat 11 언패킹 WAR + JMX Exporter + OpenTelemetry Java Agent 무코드 자동 주입) 2-Tier 분리(롤링 배포 시 구버전 Pod 간섭을 차단하는 `matchLabelKeys: [pod-template-hash]` 기반 Multi-AZ 균등 분산 및 stable PDB `minAvailable: 1`) 및 각각 CPU 기반 HPA / Prometheus 요청률 기반 KEDA 오토스케일링
   - 롤링 업데이트 및 Pod 삭제 시 비동기 EndpointSlice 전파 시차(1~3초)로 인한 HTTP 502/504(Connection refused) 요청 단절을 방지하는 무중단 그레이스풀 셧다운(`lifecycle.preStop.sleep: 15s` 선언형 훅 및 `terminationGracePeriodSeconds` `web` 35초 / `was` 45초 적정 유예 시간 적용, `scripts/validate-manifests.sh` 회귀 방지 정적 검증)
   - 3-Tier 노드 분리: `np-app`(Karpenter On-Demand 기본 풀 + `np-app-spot` Spot 확장 풀), `ng-critical`(클러스터 컨트롤러·OpenTelemetry Operator 및 DB 초기화/백업 Job 전용 관리형 노드 그룹), `ng-platform`(모니터링·분산 트레이싱 스택 및 `gp3` PVC 전용 관리형 노드 그룹)
@@ -22,6 +23,9 @@
   - NGINX Gateway Fabric(NGF) 데이터 플레인 자체에 별도 `preStop` 주입 (AWS ALB의 `deregistration_delay` 및 워크로드 계층 `preStop`으로 충분)
   - `docker/web/nginx.conf`의 `proxy_next_upstream` 확장 및 `web` 컨테이너 이미지 재빌드(`v1.0.3`) 제외 (ClusterIP 가상 IP 환경에서 Service IP 재시도 한계 및 비멱등 POST 요청 중복 실행 위험 방지, WAS 계층의 `preStop`으로 상류 연결 거부 원천 차단)
   - CoreDNS TTL 강제 변경 또는 별도의 커스텀 셧다운 컨트롤러 도입 제외
+  - 신규 서브도메인(`grafana.${DOMAIN_NAME}`) 및 신규 ACM 인증서 도입 제외 (단일 도메인 `${DOMAIN_NAME}` 하위 경로 방식을 일관되게 유지, `docs/features/grafana-public-path/design.md` §1.3)
+  - 별도 ALB 생성 또는 IngressGroup을 통한 ALB 리스너 복잡화 제외 (L7 라우팅은 NGF에 전담시켜 ALB 리스너 수정 및 기존 서비스 중단 위험 방지, `docs/features/grafana-public-path/design.md` §1.3)
+  - Grafana 외부 SSO(OAuth2/OIDC/Keycloak/Cognito) 연동 제외 (AWS Secrets Manager 동기화 관리자 자격증명 `grafana-admin` 체계 유지, `docs/features/grafana-public-path/design.md` §1.3)
   - 일일 중지 시 EKS 컨트롤 플레인, NAT Gateway, ALB(`Ingress`), `gp3` EBS PVC 삭제·재생성 및 EventBridge/Lambda 기반 자동 스케줄러 구축 (`docs/features/daily-stop-start/design.md` §1.4)
   - Grafana Loki 도입, Tail-based Sampling, NGF·`web`(Nginx) 계층 트레이싱, `tempo-distributed`(마이크로서비스 모드 + Kafka) 전환 및 상용 APM 도입 (`docs/features/apm-tracing/design.md` §1.4, `docs/features/tempo-chart-migration/design.md` §1.4)
   - GitHub Webhook 및 AWS CodePipeline 자동 트리거 연동 (운영자/개발자가 검증된 태그로 필요 시 트리거하는 온디맨드 CLI 빌드 워크플로 유지, `docs/features/codebuild-image-build/design.md` §1.4)
@@ -32,14 +36,14 @@
 
 | 계층 | 구성 요소 | 역할 및 주요 특징 | 배치 위치 (네임스페이스 / 노드 티어) |
 |---|---|---|---|
-| **Edge / DNS** | Route 53, ACM, AWS WAFv2 | 도메인 A(Alias) 라우팅, 공인 TLS 인증서 발급·갱신, OWASP/SQLi/KnownBadInputs 관리형 규칙 필터링 | AWS 관리형 (`ap-northeast-2`) |
+| **Edge / DNS** | Route 53, ACM, AWS WAFv2 | 도메인 A(Alias) 라우팅, 공인 TLS 인증서 발급·갱신, 최우선순위(Priority 0) `/grafana*` 비인가 IP 차단 규칙(`BlockUnauthorizedGrafanaAccess` + `GRAFANA_ALLOWED_CIDRS` IPSet, URL 디코딩/경로 정규화) 및 OWASP/SQLi/KnownBadInputs 관리형 규칙 필터링 | AWS 관리형 (`ap-northeast-2`) |
 | **Ingress LB** | AWS ALB (AWS Load Balancer Controller) | HTTP(`80`)→HTTPS(`443`) 리다이렉트, TLS 1.3/1.2 종단, 비정상 헤더 드롭, `target-type: ip`로 NGF Pod에 직접 라우팅 | 퍼블릭 서브넷 (`2a`, `2c`) |
-| **L7 Gateway** | NGINX Gateway Fabric 2.x (`nginx-gateway`) | Gateway API(`v1.6.3`). 컨트롤 플레인(2 Replicas)이 Gateway마다 데이터 플레인 `petclinic-gateway-nginx`(2 Replicas, AZ 분산, 차트 PDB `minAvailable: 1`, `ClusterIP`)를 생성. `HTTPRoute`로 `web` / `web-canary` 트래픽 분할(배포 중 100:0, 카나리 검증 후 90:10, `X-Canary: always`는 항상 `web-canary`) | `nginx-gateway` / `np-app` (`workload-tier=app`) |
+| **L7 Gateway** | NGINX Gateway Fabric 2.x (`nginx-gateway`) | Gateway API(`v1.6.3`). 컨트롤 플레인(2 Replicas)이 Gateway마다 데이터 플레인 `petclinic-gateway-nginx`(2 Replicas, AZ 분산, 차트 PDB `minAvailable: 1`, `ClusterIP`)를 생성. `gateway.yaml`의 `allowedRoutes`를 `petclinic`과 `nginx-gateway`로 허용하고, `HTTPRoute`로 `web` / `web-canary` 트래픽 분할(배포 중 100:0, 카나리 검증 후 90:10, `X-Canary: always`는 항상 `web-canary`) 및 `/grafana` 경로 전용 `HTTPRoute`(`httproute-grafana.yaml`)를 통해 최장 접두사 일치(8자 > 1자)로 카나리 간섭 없이 `monitoring` 네임스페이스의 Grafana Service(`:80`)로 L7 라우팅 | `nginx-gateway` / `np-app` (`workload-tier=app`) |
 | **Web Tier** | `web`, `web-canary` (Nginx + Exporter) | `/resources/*`, `/webjars/*` 정적 에셋 직접 서빙 및 보안 헤더 부여, 동적 요청을 각각 `was-stable:8080`, `was-canary:8080`으로 프록시. 사이드카 `nginx-prometheus-exporter`(`:9113`) 내장. `topologySpreadConstraints` 기반 AZ 균등 분산(`topologyKey: topology.kubernetes.io/zone`, `maxSkew: 1`, `matchLabelKeys: [pod-template-hash]` — stable `DoNotSchedule`, canary `ScheduleAnyway`). CPU 60% 기준 HPA(`web` 2~10, `web-canary` 1~4), stable PDB(`minAvailable: 1`). `terminationGracePeriodSeconds: 35` 및 메인 `nginx`·사이드카 `nginx-exporter` 공통 `lifecycle.preStop.sleep: 15s` 적용으로 롤링 배포 시 엔드포인트 등록 해제 지연을 흡수하여 HTTP 502 방지 및 메트릭 수집 연속성 보장 | `petclinic` / `np-app` (`workload-tier=app`) |
 | **WAS Tier** | `was-stable`, `was-canary` (Tomcat 11 + JMX Exporter + OTel Java Agent) | 사전 언패킹된 `webapps/ROOT` 구동(`jpa` 프로필, 읽기 전용 루트 파일시스템), `WelcomeController` 기반 메인 대시보드(`/`, `/welcome` — 운영 통계 3종 및 `VisitSummary` 플랫 프로젝션 기반 최근 방문 5건 조회) 및 PetClinic 비즈니스 서블릿 처리, JMX Exporter(`:9404/metrics`) 노출 및 OpenTelemetry Operator가 주입하는 Java Agent(`autoinstrumentation-java:2.12.0`)로 HTTP·Spring MVC·Hibernate/JDBC 자동 계측(`service.version=stable\|canary`), Logback ConfigMap 마운트로 MDC `trace_id`/`span_id` 출력. `topologySpreadConstraints` 기반 AZ 균등 분산(`topologyKey: topology.kubernetes.io/zone`, `maxSkew: 1`, `matchLabelKeys: [pod-template-hash]` — stable `DoNotSchedule`, canary `ScheduleAnyway`). Prometheus 요청률 기반 KEDA `ScaledObject`(`was-stable` 2~10·fallback 4, `was-canary` 1~3·fallback 2), stable PDB(`minAvailable: 1`), Tomcat JDBC 풀 최대 10. `terminationGracePeriodSeconds: 45` 및 `lifecycle.preStop.sleep: 15s` 적용으로 롤링 배포 시 엔드포인트 등록 해제 대기 후 Catalina 종료 훅 → Spring 웹 컨텍스트 종료 → Tomcat JDBC Pool 해제 → OTel 트레이스 플러시 순차적 정상 종료 보장 | `petclinic` / `np-app` (`workload-tier=app`) |
 | **Cluster Controllers** | CoreDNS, LBC, Metrics Server, Karpenter, KEDA, ESO, EBS CSI, OpenTelemetry Operator | 클러스터 핵심 제어부, 오토스케일러·시크릿·스토리지 드라이버 및 `Instrumentation` CR 기반 Java Agent Mutating Webhook(`:9443`, `failurePolicy: Ignore`) | `kube-system`, `keda`, `external-secrets`, `opentelemetry-operator-system` / `ng-critical` (Taint: `node-role=critical:NoSchedule`) |
 | **DB Jobs** | `db-init` (Job), `db-backup` (CronJob) | 배포 시 admin 계정으로 멱등 스키마/초기 데이터 적재(`schema.sql`, `data.sql`) 및 app/backup 계정 생성·권한 부여, 매일 03:00 KST `mysqldump` 압축본을 S3(`SSE-KMS`)에 업로드 | `petclinic` / `ng-critical` (Taint: `node-role=critical:NoSchedule`) |
-| **Observability & Tracing** | Prometheus, Grafana, Alertmanager, OTel Collector, Grafana Tempo, kube-state-metrics, node-exporter, Fluent Bit | `ServiceMonitor` 기반 `web`(`:9113`)·`was`(`:9404`)·`otel-collector`(`:8889`, OpenMetrics Exemplar) 스크래핑, KEDA 스케일링 쿼리 제공, `gp3` 암호화 볼륨 영속화, Prometheus 2 Replicas(`exemplar-storage` 활성화) AZ 분산, `PrometheusRule` → Alertmanager Webhook. OTel Collector(2 Replicas AZ 분산, `:4317`/`:4318` 수신)는 트레이스를 Tempo(`:4317` 수신, `:3200` 쿼리, `gp3` 10Gi WAL + 전용 S3 IRSA)로 전달하고 RED 메트릭+Exemplar를 `:8889`로 노출. `node-exporter` 및 Fluent Bit DaemonSet은 전 노드에서 메트릭·컨테이너 로그(→ CloudWatch Logs) 수집 | `monitoring` (`ng-platform`, Taint: `node-role=platform:NoSchedule`; `node-exporter`는 전 노드 Toleration) / `amazon-cloudwatch` (Fluent Bit 전 노드 Toleration) |
+| **Observability & Tracing** | Prometheus, Grafana, Alertmanager, OTel Collector, Grafana Tempo, kube-state-metrics, node-exporter, Fluent Bit | `ServiceMonitor` 기반 `web`(`:9113`)·`was`(`:9404`)·`otel-collector`(`:8889`, OpenMetrics Exemplar) 스크래핑, KEDA 스케일링 쿼리 제공, `gp3` 암호화 볼륨 영속화, Prometheus 2 Replicas(`exemplar-storage` 활성화) AZ 분산, `PrometheusRule` → Alertmanager Webhook. Grafana는 `https://${DOMAIN_NAME}/grafana/` 하위 경로(subpath)를 통해 인가된 IP에 외부 공개(`server.serve_from_sub_path=true`, 쿠키 `Path=/grafana/` 격리, `cookie_secure`, `cookie_samesite=lax`, `allow_embedding=false`, 익명/회원가입 차단). `ReferenceGrant`로 `nginx-gateway` HTTPRoute의 접근을 허용하고, `NetworkPolicy`로 NGF 데이터 플레인 Pod(`petclinic-gateway`) 및 Prometheus 인입만 허용(:3000). Alertmanager는 `slack_configs`의 `api_url_file`로 Slack Incoming Webhook 시크릿을 읽어 알림 전송. OTel Collector(2 Replicas AZ 분산, `:4317`/`:4318` 수신)는 트레이스를 Tempo(`:4317` 수신, `:3200` 쿼리, `gp3` 10Gi WAL + 전용 S3 IRSA)로 전달하고 RED 메트릭+Exemplar를 `:8889`로 노출. `node-exporter` 및 Fluent Bit DaemonSet은 전 노드에서 메트릭·컨테이너 로그(→ CloudWatch Logs) 수집 | `monitoring` (`ng-platform`, Taint: `node-role=platform:NoSchedule`; `node-exporter`는 전 노드 Toleration) / `amazon-cloudwatch` (Fluent Bit 전 노드 Toleration) |
 | **Build & CI/CD** | AWS CodeBuild Project (`${CODEBUILD_PROJECT_NAME}`), S3 소스 버킷(`${CODEBUILD_S3_BUCKET_NAME}`), Service Role (`CodeBuildServiceRole-${EKS_CLUSTER_NAME}`) | 작업 서버(LXC)의 rootless podman 제약 없이 AWS 관리형 x86_64(`BUILD_GENERAL1_MEDIUM`, `privilegedMode: true`) 환경에서 Docker in Docker로 `web`/`was` 멀티스테이지 컨테이너 이미지를 `linux/amd64`로 빌드하여 ECR에 푸시. 불변 태그 중복 사전 검증, `latest` 차단, 실행별 고유 S3 소스 키 및 1일 만료 수명주기 적용 | AWS 관리형 (`ap-northeast-2`) |
 | **Data / Storage / Registry** | RDS MySQL 8.4 LTS, Secrets Manager, S3 (백업·Tempo·CodeBuild 소스 3개 버킷), ECR | Multi-AZ Primary/Standby RDB(`8.4.11`, `mysql8.4` 파라미터 그룹, `require_secure_transport=ON`), RDS(admin/app/backup)·Grafana·Alertmanager Webhook 시크릿 보관, DB 백업 버킷(`BACKUP_S3_BUCKET_NAME`, 버전 관리), Tempo 트레이스 전용 버킷(`TEMPO_S3_BUCKET_NAME`, 만료 Lifecycle), CodeBuild 소스 아카이브 버킷(`CODEBUILD_S3_BUCKET_NAME`, 1일 만료 Lifecycle; 3개 버킷 상호 이름 격리 검증), 불변 태그(`IMMUTABLE`) 및 KMS 암호화 컨테이너 레지스트리 | 프라이빗 DB 서브넷 (`2a`, `2c`) 및 AWS 관리형 서비스 |
 
@@ -49,7 +53,7 @@
 
 ```text
 .
-├── .env.example                          # 환경변수 템플릿 (CODEBUILD_PROJECT_NAME, CODEBUILD_S3_BUCKET_NAME, BUILD_TARGET 포함, source 검증 통과)
+├── .env.example                          # 환경변수 템플릿 (GRAFANA_ALLOWED_CIDRS, CODEBUILD_*, BUILD_TARGET 포함, source 검증 통과)
 ├── .gitattributes                        # 셸 스크립트 LF 줄바꿈 및 실행 권한 유지
 ├── .gitignore                            # 빌드 산출물, .env, 로컬 시크릿, .daily-nodegroup-state.json 제외
 ├── AGENTS.md                             # Codex 코드 리뷰어 규칙
@@ -79,7 +83,9 @@
 │       │   └── {design,review,security}.md
 │       ├── spread-on-rollout/                # 롤링 업데이트 시 AZ 균등 분산 보장(matchLabelKeys) 설계·리뷰·보안 점검
 │       │   └── {design,review,security}.md
-│       └── graceful-shutdown/                # 무중단 서비스 및 그레이스풀 셧다운(preStop.sleep, grace period) 설계·리뷰·보안 점검
+│       ├── graceful-shutdown/                # 무중단 서비스 및 그레이스풀 셧다운(preStop.sleep, grace period) 설계·리뷰·보안 점검
+│       │   └── {design,review,security}.md
+│       └── grafana-public-path/              # Grafana 하위 경로 오픈 및 WAF IP 화이트리스트 접근 제어 설계·리뷰·보안 점검
 │           └── {design,review,security}.md
 ├── app/                                  # spring-framework-petclinic 소스 코드
 │   ├── pom.xml                           # Maven WAR 빌드, MySQL/PostgreSQL/H2/HSQLDB 프로필
@@ -105,7 +111,7 @@
 │       └── setenv.sh                     # JMX Exporter -javaagent:9404 및 JDBC 드라이버 프로퍼티 설정
 ├── infra/
 │   ├── aws/
-│   │   ├── provision-aws-resources.sh    # pre-cluster(IAM/ECR/Logs/백업·Tempo·CodeBuild S3 [버킷 이름 격리 검증]/CodeBuild 프로젝트/WAF/ACM), cluster(eksctl + 누락 IRSA SA 보충), post-cluster(RDS MySQL 8.4.11 Multi-AZ [mysql8.4 파라미터 그룹]/Secrets) 멱등 프로비저닝
+│   │   ├── provision-aws-resources.sh    # pre-cluster(IAM/ECR/Logs/백업·Tempo·CodeBuild S3 [버킷 이름 격리 검증]/CodeBuild 프로젝트/WAF/ACM), cluster(eksctl + 누락 IRSA SA 보충), post-cluster(RDS MySQL 8.4.11 Multi-AZ [mysql8.4 파라미터 그룹]/Secrets), grafana-waf(WAF IPSet 및 Priority 0 차단 규칙) 멱등 프로비저닝
 │   │   └── iam-policies/                 # lbc, karpenter-controller, karpenter-node-trust, eso, fluent-bit, db-backup, tempo, codebuild 최소 권한 JSON 및 codebuild-trust.json
 │   ├── eksctl/
 │   │   └── cluster.yaml                  # EKS 1.36 ClusterConfig (VPC 서브넷, IRSA [monitoring/tempo 포함], vpc-cni NetworkPolicy, EBS CSI 버전 고정, ng-critical, ng-platform)
@@ -141,16 +147,19 @@
 │   │   └── networkpolicy.yaml            # was Ingress 허용 (web → 8080, Prometheus → 9404)
 │   ├── gateway/
 │   │   ├── alb-ingress.yaml              # LBC internet-facing ALB Ingress → petclinic-gateway-nginx:80 (HTTPS 443, ACM, WAFv2, drop_invalid_header_fields)
-│   │   ├── gateway.yaml                  # NGF Gateway (:80 HTTP)
-│   │   └── httproute-canary.yaml         # HTTPRoute (X-Canary: always → web-canary, 기본 가중치 ${STABLE_WEIGHT}:${CANARY_WEIGHT})
+│   │   ├── gateway.yaml                  # NGF Gateway (:80 HTTP, allowedRoutes: petclinic, nginx-gateway)
+│   │   ├── httproute-canary.yaml         # PetClinic HTTPRoute (X-Canary: always → web-canary, 기본 가중치 ${STABLE_WEIGHT}:${CANARY_WEIGHT})
+│   │   └── httproute-grafana.yaml        # Grafana HTTPRoute (/grafana Prefix → monitoring/kube-prometheus-stack-grafana:80)
 │   ├── monitoring/
 │   │   ├── dashboard-apm-tracing.yaml    # Grafana APM 대시보드 ConfigMap (grafana_dashboard: "1" — 버전별 요청량·에러율·p95/p99 Exemplar·Tempo 최근 트레이스)
-│   │   ├── externalsecret-alertmanager.yaml # Alertmanager Webhook URL ExternalSecret (url_file로 마운트)
+│   │   ├── externalsecret-alertmanager.yaml # Alertmanager Slack Webhook URL ExternalSecret (api_url_file로 마운트)
 │   │   ├── externalsecret-grafana.yaml   # Grafana 관리자 자격증명 ExternalSecret
-│   │   ├── kube-prometheus-values.yaml   # Prometheus(2 Replicas AZ 분산, exemplar-storage), Grafana(Tempo 데이터소스 및 exemplarTraceIdDestinations), Alertmanager 설정
+│   │   ├── kube-prometheus-values.yaml   # Prometheus(2 Replicas AZ 분산, exemplar-storage), Grafana(grafana.ini subpath 서빙 및 보안 하드닝, Tempo 연동), Alertmanager(slack_configs) 설정
 │   │   ├── networkpolicy-alertmanager.yaml # Alertmanager Egress 제한 (DNS, 피어 가십 :9094, HTTPS :443만, IMDS 제외)
+│   │   ├── networkpolicy-grafana.yaml    # Grafana Ingress 제한 (NGF 데이터 플레인 및 Prometheus → :3000)
 │   │   ├── networkpolicy-prometheus.yaml # Prometheus Ingress 제한 (KEDA·Grafana → :9090, 자기 자신 → :9090·:8080)
 │   │   ├── prometheusrule-petclinic.yaml # 백업 실패(첫 성공 없음 포함), KEDA 지표 오류, WAS 오류율 알림 규칙
+│   │   ├── referencegrant-grafana.yaml   # Gateway API ReferenceGrant (nginx-gateway의 HTTPRoute가 monitoring의 Grafana Service 참조 허용)
 │   │   └── servicemonitor-petclinic.yaml # web(:9113), was(:9404), otel-collector(:8889, OpenMetricsText1.0.0) 스크래핑 ServiceMonitor
 │   ├── tracing/
 │   │   ├── otel-operator-values.yaml     # OpenTelemetry Operator Helm values (ng-critical, 자체 서명 인증서, Pod webhook failurePolicy: Ignore)
@@ -162,17 +171,18 @@
 ├── tests/
 │   ├── monitoring/petclinic-rules.test.yaml  # PrometheusRule promtool 단위 테스트
 │   ├── scripts/daily-stop-start.test.sh  # daily-stop.sh / daily-start.sh 오프라인 회귀 테스트 (가짜 aws/kubectl, opentelemetry-operator 순서 포함)
-│   └── scripts/build-and-push.test.sh    # build-and-push.sh 오프라인 단위 테스트 (가짜 aws CLI 기반 태그/타깃/실행별 고유 소스 키/아카이브 필터/버킷 격리 검증)
+│   ├── scripts/build-and-push.test.sh    # build-and-push.sh 오프라인 단위 테스트 (가짜 aws CLI 기반 태그/타깃/실행별 고유 소스 키/아카이브 필터/버킷 격리 검증)
+│   └── scripts/grafana-waf-ready.test.sh # grafana_waf_ready 오프라인 단위 테스트 (가짜 aws CLI 기반 WebACL /grafana 규칙 순서·변환·IPSet 매핑 검증)
 └── scripts/
-    ├── lib.sh                            # 공통 환경변수 로드(.env), 필수 변수 검증, envsubst 렌더링 함수 (TEMPO_*, OTEL_*, CODEBUILD_* 포함, 명령줄 IMAGE_TAG/BUILD_TARGET 보존)
+    ├── lib.sh                            # 공통 환경변수 로드(.env), 필수 변수 검증, envsubst 렌더링 함수 (TEMPO_*, OTEL_*, CODEBUILD_* 포함, 명령줄 IMAGE_TAG/BUILD_TARGET 보존, grafana_waf_ready 사전 검증)
     ├── build-and-push.sh                 # AWS CodeBuild 원격 빌드 호출 및 상태 추적 스크립트 (소스 패키징 [.git, .env*, 키 파일 제외] → 전용 S3 업로드 [실행별 고유 키] → CodeBuild 실행 및 상태 폴링, --local 지원)
-    ├── deploy-all.sh                     # 애드온/트레이싱/매니페스트 배포, 카나리 100:0 고정 후 롤아웃, Route 53 연결, 카나리 E2E 검증 후 STABLE_WEIGHT:CANARY_WEIGHT 개방
+    ├── deploy-all.sh                     # 애드온/트레이싱/매니페스트 배포, 배포 전 WAF 검증(grafana_waf_ready), 카나리 100:0 고정 후 롤아웃, Route 53 연결, 카나리 E2E 검증 후 STABLE_WEIGHT:CANARY_WEIGHT 개방
     ├── set-canary-weight.sh              # 재배포 없이 카나리 비율 변경 (0 = 긴급 롤백, 100 = 전체 카나리)
     ├── rotate-db-secrets.sh              # Secrets Manager DB 비밀번호 변경 반영 (ESO 강제 동기화 확인 → db-init → was 재시작)
     ├── daily-stop.sh                     # 퇴근 전 앱/Karpenter 노드·RDS·관리형 노드그룹 일괄 중지 및 잔여 비용 안내 (--dry-run 지원)
     ├── daily-start.sh                    # 출근 시 RDS·관리형 노드그룹·컨트롤러(opentelemetry-operator 포함)·Karpenter·워크로드/오토스케일러/CronJob 일괄 복원 (--dry-run 지원)
     ├── test-prometheus-rules.sh          # promtool로 PrometheusRule 단위 테스트 실행
-    └── validate-manifests.sh             # YAML 문법, 고정 이미지/애드온 버전, 평문 시크릿 부재, 노드 티어/비루트, 역할별 DB 시크릿·PDB·KEDA fallback, 워크로드 리비전별 AZ 분산(matchLabelKeys: [pod-template-hash], maxSkew 1, zone), 그레이스풀 셧다운(preStop.sleep 15초 이상, web 35초 / was 45초 grace period), 트레이싱, CodeBuild(buildspec fail-fast/태그 검증/amd64, IAM 정책 최소 권한, 소스/백업/Tempo 버킷 이름 상이 검증, .env.example 정합성, build-and-push 오프라인 테스트), daily-stop/start 회귀 테스트 검증기
+    └── validate-manifests.sh             # YAML 문법, 고정 이미지/애드온 버전, 평문 시크릿 부재, 노드 티어/비루트, 역할별 DB 시크릿·PDB·KEDA fallback, 워크로드 리비전별 AZ 분산(matchLabelKeys: [pod-template-hash], maxSkew 1, zone), 그레이스풀 셧다운(preStop.sleep 15초 이상, web 35초 / was 45초 grace period), Grafana subpath/보안·ReferenceGrant·NetworkPolicy 정합성, CodeBuild, daily-stop/start 회귀 테스트 검증기
 ```
 
 ---
@@ -191,10 +201,11 @@
 
 ### 단계별 트래픽, 분산 트레이싱 및 제어 흐름 (① ~ ⑥)
 1. **① DNS 조회**: 사용자 브라우저가 서비스 도메인 질의 시 **Amazon Route 53**에서 ALB의 A(Alias) 레코드를 반환한다.
-2. **② HTTPS 접속 및 WAF 필터링**: 브라우저는 `443` 포트로 접속하며, **AWS WAFv2**(Common / SQLi / KnownBadInputs 관리형 규칙)를 통과한 요청만 **Application Load Balancer(ALB)** 에서 **AWS ACM** 공인 인증서로 TLS 종단 처리된다.
+2. **② HTTPS 접속 및 WAF 필터링**: 브라우저는 `443` 포트로 접속하며, **AWS WAFv2**의 최우선순위(Priority 0) 커스텀 규칙 `BlockUnauthorizedGrafanaAccess`에서 `/grafana`로 시작하는 요청(`URL_DECODE` → `NORMALIZE_PATH` → `LOWERCASE` 정규화 적용)이 `GRAFANA_ALLOWED_CIDRS` IPSet에 속하지 않는 경우 AWS 엣지에서 즉시 HTTP 403 Forbidden으로 차단한다. 인가된 IP의 요청 및 일반 애플리케이션 트래픽은 Priority 1~3 관리형 규칙(Common / SQLi / KnownBadInputs)을 거쳐 통과한 후 **Application Load Balancer(ALB)** 에서 **AWS ACM** 공인 인증서로 TLS 종단 처리된다.
 3. **③ ALB → NGF Gateway (`target-type: ip`)**: AWS Load Balancer Controller(LBC)가 구성한 ALB가 NodePort 없이 `np-app` 노드풀의 **NGF Gateway Pod** 프라이빗 IP(`:80`)로 직접 라우팅한다.
-4. **④ NGF Gateway → `web` / `web-canary` (`HTTPRoute` 카나리 분할)**:
-   - 배포 중에는 `web` 100%로 고정되고, 카나리 동적 경로 검증을 통과하면 `web`(90%)과 `web-canary`(10%)로 가중치 분배되며, `X-Canary: always` 헤더가 포함된 요청은 100% `web-canary`로 전달된다.
+4. **④ NGF Gateway → `web` / `web-canary` (`HTTPRoute` 카나리 분할) 및 `/grafana` (Grafana 라우팅)**:
+   - **`/grafana` 하위 경로 요청 (`https://${DOMAIN_NAME}/grafana/`)**: Gateway API 최장 접두사 일치(Longest Prefix Match) 원칙에 따라 `/grafana`(8자)가 PetClinic 카나리 라우트 `/`(1자)보다 항상 우선 평가된다. 요청 헤더에 `X-Canary: always`가 포함되어 있더라도 카나리 가중치 분할(90:10)이나 헤더 라우팅에 걸리지 않고 100% `nginx-gateway`의 `httproute-grafana.yaml`로 매칭된다. NGF는 `monitoring` 네임스페이스의 `ReferenceGrant`(`allow-nginx-gateway-to-grafana`)를 통해 교차 네임스페이스 참조 권한을 확인하고 `monitoring/kube-prometheus-stack-grafana:80` Service로 트래픽을 전달한다. `monitoring` 네임스페이스의 NetworkPolicy(`grafana-ingress`)는 인입 출발지가 `nginx-gateway`의 데이터 플레인 Pod(`gateway.networking.k8s.io/gateway-name: petclinic-gateway`) 또는 Prometheus Pod인 경우에만 Grafana 포트(`TCP 3000`)를 허용한다. Grafana는 `server.serve_from_sub_path = true` 설정에 따라 정적 에셋 및 로그인 화면을 응답하며, 세션 쿠키는 `Path=/grafana/`, `Secure`, `SameSite=Lax`로 브라우저에 격리 발급된다.
+   - **일반 애플리케이션 요청 (`https://${DOMAIN_NAME}/`, `/vets` 등)**: 배포 중에는 `web` 100%로 고정되고, 카나리 동적 경로 검증을 통과하면 `web`(90%)과 `web-canary`(10%)로 가중치 분배되며, `X-Canary: always` 헤더가 포함된 요청은 100% `web-canary`로 전달된다.
    - `web`/`web-canary` Deployment는 Metrics Server(`metrics.k8s.io`)의 CPU 사용률(60%)을 기준으로 **HPA**가 각각 2~10개 / 1~4개 Pod로 자동 수평 확장한다.
 5. **⑤ `web` → `was` 리버스 프록시 (`:8080`) 및 APM 트레이싱 · RED 메트릭 · Exemplar 수집**:
    - 정적 리소스(`/resources/*`, `/webjars/*`)는 Nginx 컨테이너에서 보안 헤더·캐시 만료 헤더와 함께 직접 응답한다.
@@ -331,10 +342,11 @@ sequenceDiagram
 | **WAS Container** | Apache Tomcat 11 + JMX Exporter + OTel Java Agent | `tomcat:11.0.2-jre21-temurin-noble`, `jmx_prometheus_javaagent:1.0.1`, `autoinstrumentation-java:2.12.0` (init container 주입) |
 | **DB Jobs** | MySQL Client / AWS CLI | `mysql:8.4.11`, `amazon/aws-cli:2.18.0` |
 | **Kubernetes** | Amazon EKS | `1.36` (AL2023 AMI `al2023@v20260930`, K8s 1.36 PodTopologySpread `matchLabelKeys` GA 및 선언형 `lifecycle.preStop.sleep` GA 활용, 새 클러스터 생성 기준) |
-| **Gateway API** | Gateway API CRDs / NGF | CRDs `v1.6.3` (standard), `nginx-gateway-fabric` Helm `2.8.0` |
+| **Gateway API** | Gateway API CRDs / NGF | CRDs `v1.6.3` (standard), `nginx-gateway-fabric` Helm `2.8.0` (`allowedRoutes: [petclinic, nginx-gateway]`, `ReferenceGrant` v1) |
+| **Edge / WAF** | AWS WAFv2 | Regional WebACL (Priority 0 커스텀 규칙 `BlockUnauthorizedGrafanaAccess` [URL 디코딩·경로 정규화 + IPSet] + 관리형 규칙 3종 [Priority 1~3]) |
 | **Autoscaling** | Karpenter / KEDA / Metrics Server | Karpenter `1.15.0` (+ `karpenter-crd`), KEDA `2.21.0`, Metrics Server Helm `3.14.0` (`v0.9.0`) |
 | **Ingress / Storage / Secrets** | LBC / EBS CSI / ESO | `aws-load-balancer-controller` Helm `3.6.1` (`v3.6.1`), `aws-ebs-csi-driver` `${EBS_CSI_ADDON_VERSION}`(환경별 고정), `external-secrets` `2.13.0` (API `v1`) |
-| **Observability** | kube-prometheus-stack / Fluent Bit | `kube-prometheus-stack` `92.11.0` (Prometheus `v3.15.0` `exemplar-storage`, Grafana 차트 `14.0.1`), `aws-for-fluent-bit` Helm `0.2.0` (이미지 `3.2.1`) |
+| **Observability** | kube-prometheus-stack / Fluent Bit | `kube-prometheus-stack` `92.11.0` (Prometheus `v3.15.0` `exemplar-storage`, Grafana 차트 `14.0.1` [App `13.2.4`, `grafana.ini` subpath 서빙 및 보안 하드닝], Alertmanager `slack_configs`), `aws-for-fluent-bit` Helm `0.2.0` (이미지 `3.2.1`) |
 | **APM Tracing** | OpenTelemetry Operator / Collector / Grafana Tempo | `opentelemetry-operator` Helm `0.105.0` (`0.144.0`, `kube-rbac-proxy:v0.20.0`), `opentelemetry-collector` Helm `0.116.0` (`otel/opentelemetry-collector-contrib:0.120.0`), `grafana-community/tempo` Helm `3.2.1` (`grafana/tempo:3.1.1`) |
 | **Database** | Amazon RDS for MySQL | `8.4.11` LTS (`db.t3.medium`, Multi-AZ, `gp3` 20GB 암호화, `mysql8.4` 파라미터 그룹) |
 
@@ -353,12 +365,12 @@ sequenceDiagram
 |---|---|---|
 | **AWS / 클러스터** | `AWS_REGION`, `AWS_ACCOUNT_ID`, `EKS_CLUSTER_NAME`, `EBS_CSI_ADDON_VERSION` | 리전, 계정 ID, EKS 클러스터 식별자, EBS CSI 애드온 고정 버전 |
 | **VPC 서브넷** | `VPC_ID`, `PUBLIC_SUBNET_A_ID`, `PUBLIC_SUBNET_C_ID`, `APP_PRIVATE_SUBNET_A_ID`, `APP_PRIVATE_SUBNET_C_ID`, `DB_PRIVATE_SUBNET_A_ID`, `DB_PRIVATE_SUBNET_C_ID` | `2a`/`2c` 퍼블릭(ALB), 앱 프라이빗(EKS 노드), DB 프라이빗(RDS) 서브넷 ID |
-| **엣지 / 도메인** | `DOMAIN_NAME`, `ROUTE53_HOSTED_ZONE_ID`, `ACM_CERTIFICATE_ARN`, `WAF_WEB_ACL_ARN` | Route 53 도메인·호스팅 영역, ACM 인증서 ARN, WAFv2 WebACL ARN |
+| **엣지 / 도메인** | `DOMAIN_NAME`, `ROUTE53_HOSTED_ZONE_ID`, `ACM_CERTIFICATE_ARN`, `WAF_WEB_ACL_ARN`, `GRAFANA_ALLOWED_CIDRS` | Route 53 도메인·호스팅 영역, ACM 인증서 ARN, WAFv2 WebACL ARN, Grafana 웹 UI(`https://${DOMAIN_NAME}/grafana/`) 접속 허용 소스 IPv4 CIDR 목록 (쉼표 구분, 예: `203.0.113.7/32`, 공백 허용). 빈 값일 경우 WAF에서 `/grafana` 경로 접근 전체 차단 (`provision-aws-resources.sh grafana-waf`로 멱등 적용) |
 | **컨테이너 이미지 / 카나리** | `ECR_WEB_REPOSITORY_URI`, `ECR_WAS_REPOSITORY_URI`, `IMAGE_TAG`, `STABLE_IMAGE_TAG`, `CANARY_IMAGE_TAG`, `STABLE_WEIGHT`, `CANARY_WEIGHT` | `web`/`was` ECR 리포지토리 URI, 빌드 태그, stable/canary 배포 태그, 카나리 검증 통과 후 여는 `HTTPRoute` 가중치(비우면 90:10, 합 100). 검증 전에는 항상 100:0이며, 배포 후 비율 변경은 `scripts/set-canary-weight.sh` |
 | **CodeBuild (이미지 빌드)** | `CODEBUILD_PROJECT_NAME`, `CODEBUILD_S3_BUCKET_NAME`, `BUILD_TARGET` | CodeBuild 프로젝트명(기본 `${EKS_CLUSTER_NAME}-image-build`), 소스 아카이브용 전용 S3 버킷명(기본 `${EKS_CLUSTER_NAME}-codebuild-${AWS_ACCOUNT_ID}`, 1일 만료 Lifecycle), 빌드 대상 이미지(`all`, `web`, `was` / 기본값 `all`). `scripts/build-and-push.sh`는 호출 시점에 지정된 `IMAGE_TAG` 및 `BUILD_TARGET`을 `.env`의 빈 기본값보다 우선 보존함 |
 | **애플리케이션** | `SPRING_PROFILES_ACTIVE`, `JAVA_OPTS`, `WAS_UPSTREAM_HOST`, `WAS_UPSTREAM_PORT` | Spring 런타임 프로필(`jpa`), JVM 옵션, Nginx 업스트림 호스트/포트 |
 | **DB / 시크릿** | `RDS_SECRET_NAME`, `RDS_APP_SECRET_NAME`, `RDS_BACKUP_SECRET_NAME`, `RDS_HOST`, `RDS_PORT`, `RDS_DB_NAME`, `JDBC_URL`, `JDBC_USERNAME`, `JDBC_PASSWORD`, `JDBC_DRIVER_CLASS_NAME` | admin/app/backup 계정별 Secrets Manager 시크릿 경로(`petclinic/*`), ESO가 생성하는 시크릿 키 및 MySQL JDBC 드라이버 클래스명 |
-| **관측성 / 백업** | `CW_LOG_GROUP_NAME`, `PROMETHEUS_SERVER_URL`, `GRAFANA_ADMIN_SECRET_NAME`, `ALERTMANAGER_WEBHOOK_SECRET_NAME`, `ALERTMANAGER_WEBHOOK_URL`, `BACKUP_S3_BUCKET_NAME` | CloudWatch 로그 그룹, Prometheus 쿼리 URL, Grafana·Alertmanager Webhook 시크릿 경로(`petclinic/*`), Webhook URL(post-cluster에서 시크릿 생성 시에만 사용), 백업용 S3 버킷명 |
+| **관측성 / 백업** | `CW_LOG_GROUP_NAME`, `PROMETHEUS_SERVER_URL`, `GRAFANA_ADMIN_SECRET_NAME`, `ALERTMANAGER_WEBHOOK_SECRET_NAME`, `ALERTMANAGER_WEBHOOK_URL`, `BACKUP_S3_BUCKET_NAME` | CloudWatch 로그 그룹, Prometheus 쿼리 URL, Grafana 관리자 시크릿(`petclinic/grafana-admin`), Alertmanager Slack Incoming Webhook 시크릿(`petclinic/alertmanager-webhook`, ESO가 동기화하여 `slack_configs`의 `api_url_file`로 마운트), Slack Incoming Webhook URL(post-cluster에서 시크릿 생성 시에만 사용; Alertmanager는 `slack_configs` 전용이며 일반 webhook 미지원), 백업용 S3 버킷명 |
 | **분산 트레이싱 (APM)** | `TEMPO_S3_BUCKET_NAME`, `TEMPO_RETENTION_DAYS`, `OTEL_TRACES_SAMPLER_ARG`, `OTEL_DEPLOYMENT_ENVIRONMENT` (및 `deploy-all.sh`가 파생하는 `TEMPO_RETENTION_HOURS`) | Tempo 트레이스 블록 저장용 전용 S3 버킷명(`BACKUP_S3_BUCKET_NAME`과 중복 금지), S3 만료 Lifecycle 및 Tempo 블록 보존 일수(기본 `14`일 → `336h`), OTel Java Agent 헤드 샘플링 비율(`0`~`1`, 기본 `0.1`), `deployment.environment` 리소스 속성(기본 `production`) |
 | **일일 중지·기동 (선택)** | `RDS_INSTANCE_ID`, `NG_CRITICAL_DESIRED_SIZE`, `NG_PLATFORM_DESIRED_SIZE` (및 `NG_CRITICAL_MIN_SIZE`, `NG_CRITICAL_MAX_SIZE`, `NG_PLATFORM_MIN_SIZE`, `NG_PLATFORM_MAX_SIZE`) | `daily-stop.sh` / `daily-start.sh` 대상 RDS 식별자(기본 `${EKS_CLUSTER_NAME}-mysql`) 및 `.daily-nodegroup-state.json` 미존재 시 관리형 노드 그룹 복원 기본 용량(기본 `2 / 2 / 4`) |
 
@@ -369,15 +381,15 @@ sequenceDiagram
 - **AWS 관리형 서비스**:
   - **AWS CodeBuild (`${CODEBUILD_PROJECT_NAME}`)**: 온디맨드 컨테이너 이미지 빌드 서비스 (`BUILD_GENERAL1_MEDIUM`, Docker in Docker, AL2023/x86_64 표준 컨테이너 환경, 전용 CloudWatch Logs 그룹 `/aws/codebuild/${CODEBUILD_PROJECT_NAME}` 보존 기간 30일)
   - **Amazon RDS for MySQL (`8.4.11` LTS)**: 애플리케이션 영속 데이터 저장소 (`:3306`, Multi-AZ, `mysql8.4` 파라미터 그룹, `require_secure_transport=ON`, `error`/`slowquery` CloudWatch 로그 내보내기, 삭제 보호 활성화, 일일 중지 후 7일 경과 시 AWS 정책에 따라 자동 재시작)
-  - **AWS Secrets Manager**: RDS 계정별 접속 정보(`$RDS_SECRET_NAME` admin, `$RDS_APP_SECRET_NAME` app, `$RDS_BACKUP_SECRET_NAME` backup), Grafana 관리자 자격증명(`$GRAFANA_ADMIN_SECRET_NAME`), Alertmanager Webhook URL(`$ALERTMANAGER_WEBHOOK_SECRET_NAME`) 보관
+  - **AWS Secrets Manager**: RDS 계정별 접속 정보(`$RDS_SECRET_NAME` admin, `$RDS_APP_SECRET_NAME` app, `$RDS_BACKUP_SECRET_NAME` backup), Grafana 관리자 자격증명(`$GRAFANA_ADMIN_SECRET_NAME`), Alertmanager Slack Webhook URL(`$ALERTMANAGER_WEBHOOK_SECRET_NAME`) 보관
   - **Amazon S3**:
     - **DB 백업 버킷 (`$BACKUP_S3_BUCKET_NAME`)**: `db-backup` CronJob의 `mysqldump` 백업 파일 저장소 (퍼블릭 액세스 완전 차단, SSE-KMS 기본 암호화, 버전 관리 활성화)
     - **Tempo 트레이스 전용 버킷 (`$TEMPO_S3_BUCKET_NAME`)**: Grafana Tempo 트레이스 블록 저장소 (퍼블릭 액세스 완전 차단, SSE-KMS 기본 암호화, 비버전 관리, `${TEMPO_RETENTION_DAYS:-14}`일 만료 및 미완료 멀티파트 1일 중단 Lifecycle 규칙)
     - **CodeBuild 임시 소스 버킷 (`$CODEBUILD_S3_BUCKET_NAME`)**: `scripts/build-and-push.sh`가 업로드하는 소스 zip 아카이브 임시 보관소 (퍼블릭 액세스 완전 차단, SSE-S3 AES256 기본 암호화, 비버전 관리, 1일 만료 및 미완료 멀티파트 1일 중단 Lifecycle 규칙, 백업·Tempo 버킷과 이름 상호 격리 필수)
   - **Amazon ECR**: `petclinic-web`, `petclinic-was` 컨테이너 이미지 저장소 (`IMMUTABLE` 태그, 푸시 시 자동 스캔, KMS 암호화)
   - **Amazon CloudWatch Logs**: Fluent Bit가 전송하는 클러스터 컨테이너 로그(`trace_id`/`span_id` MDC 포함) 및 RDS 에러/슬로우쿼리 로그 보관 (보존 기간 30일)
-  - **알림 수신처 (Webhook)**: Alertmanager가 HTTPS(`443`)로 알림을 전송하는 Slack/PagerDuty 등 외부 Webhook
-  - **Amazon Route 53 / AWS Certificate Manager (ACM) / AWS WAFv2**: DNS 관리, DNS 검증 기반 TLS 인증서, 리전 WebACL(`AWSManagedRulesCommonRuleSet`, `AWSManagedRulesSQLiRuleSet`, `AWSManagedRulesKnownBadInputsRuleSet`)
+  - **알림 수신처 (Slack Incoming Webhook)**: Alertmanager가 HTTPS(`443`)로 알림을 전송하는 전용 Slack Incoming Webhook 채널 (`slack_configs` 전용 계약으로 전송, generic `webhook_configs` 미사용)
+  - **Amazon Route 53 / AWS Certificate Manager (ACM) / AWS WAFv2**: DNS 관리, DNS 검증 기반 TLS 인증서, 리전 WebACL(최우선순위 Priority 0 `BlockUnauthorizedGrafanaAccess` 규칙 [`URL_DECODE` → `NORMALIZE_PATH` → `LOWERCASE` 정규화 + `GRAFANA_ALLOWED_CIDRS` IPSet 차단] 및 관리형 규칙 3종 `AWSManagedRulesCommonRuleSet`, `AWSManagedRulesSQLiRuleSet`, `AWSManagedRulesKnownBadInputsRuleSet`)
 - **외부 아티팩트 / Helm 차트 레지스트리 (빌드·배포 시점)**:
   - Maven Central (`com.mysql:mysql-connector-j:8.4.0`, `io.prometheus.jmx:jmx_prometheus_javaagent:1.0.1` SHA256 검증 포함, WebJars)
   - GitHub Releases / GHCR (`gateway-api` `v1.6.3` `standard-install.yaml`, `ghcr.io/open-telemetry/opentelemetry-operator/{opentelemetry-operator:0.144.0,autoinstrumentation-java:2.12.0}`)
@@ -390,11 +402,15 @@ sequenceDiagram
 1. **엣지 및 전송 구간 암호화 (TLS Everywhere)**:
    - 외부 트래픽은 ALB에서 ACM 인증서(`ELBSecurityPolicy-TLS13-1-2-2021-06`)로 TLS 종단하며 HTTP(`80`)는 HTTPS(`443`)로 강제 리다이렉트한다.
    - ALB에 `routing.http.drop_invalid_header_fields.enabled=true` 및 AWS WAFv2 WebACL을 적용하고, Nginx(`web`)에서 `server_tokens off`와 보안 응답 헤더(`X-Content-Type-Options: nosniff`, `X-Frame-Options: SAMEORIGIN`, `Referrer-Policy: strict-origin-when-cross-origin`)를 일관되게 반환한다.
+   - AWS WAFv2 WebACL 최우선순위(Priority 0)에 `BlockUnauthorizedGrafanaAccess` 규칙(`URL_DECODE` → `NORMALIZE_PATH` → `LOWERCASE` 3단계 정규화 + `GRAFANA_ALLOWED_CIDRS` IPSet)을 적용하여 비인가 외부 IP의 `/grafana*` 접근을 AWS 엣지에서 즉시 HTTP 403 Forbidden으로 원천 차단하며, 인가된 IP의 요청만 Priority 1~3 관리형 규칙의 정밀 검사를 통과하도록 다층 방어한다.
+   - Grafana가 PetClinic과 동일 출처(`https://${DOMAIN_NAME}:443`)를 공유함에 따라 발생할 수 있는 동일 출처 정책(Same-Origin) 위험을 완화하기 위해 `server.serve_from_sub_path = true`를 활성화하여 모든 세션 쿠키를 `Path=/grafana/`로 자동 격리하고, `cookie_secure = true`, `cookie_samesite = lax`를 강제하여 쿠키 유출 및 CSRF 공격을 차단한다. 또한 `allow_embedding = false`를 적용하여 `X-Frame-Options: deny` 및 CSP `frame-ancestors`를 강제함으로써 iframe을 통한 클릭재킹을 원천 방어한다.
    - RDS MySQL은 `mysql8.4` 파라미터 그룹에서 `require_secure_transport=ON`을 강제하고, `was`(`sslMode=REQUIRED`), `db-init`(`--ssl-mode=REQUIRED`), `db-backup`(`--ssl-mode=REQUIRED`) 모두 암호화 연결만 사용한다. Tempo → S3 구간도 HTTPS(`insecure: false`)와 `SSE-KMS` 암호화를 강제하며, CodeBuild 소스 버킷도 SSE-S3(`AES256`) 암호화 및 HTTPS 전송을 강제한다.
 2. **네트워크 격리 (VPC SG & Kubernetes NetworkPolicy)**:
    - RDS 보안 그룹은 오직 EKS 클러스터 보안 그룹에서 오는 `TCP 3306`만 허용하며 퍼블릭 접근(`--no-publicly-accessible`)을 차단한다.
    - Amazon VPC CNI의 `enableNetworkPolicy: "true"` 및 `enablePolicyEventLogs: "true"`를 활성화한다.
    - `petclinic` 네임스페이스는 `default-deny-all`(Ingress/Egress 기본 차단) 정책을 기반으로 DNS(`53`), `nginx-gateway`→`web`(`8080`), `web`→`was`(`8080`), `Prometheus`→`web`(`9113`)/`was`(`9404`), `was`→`otel-collector`(`4317`, `4318`), `was`·`db-init`·`db-backup`→RDS(`3306`), `db-backup`→S3/STS(`443`) 통신만 명시적으로 허용한다.
+   - `monitoring` 네임스페이스의 Grafana(`:3000`)는 `networkpolicy-grafana.yaml`(`grafana-ingress`)을 통해 오직 `nginx-gateway` 네임스페이스의 데이터 플레인 Pod(`gateway.networking.k8s.io/gateway-name: petclinic-gateway`)와 Prometheus Pod로부터의 인입만 허용하고, 동일 네임스페이스의 컨트롤 플레인 Pod나 타 워크로드의 불필요한 접근을 최소 권한으로 격리한다.
+   - Kubernetes Gateway API `ReferenceGrant`(`allow-nginx-gateway-to-grafana`)를 통해 `nginx-gateway` 네임스페이스의 HTTPRoute가 `monitoring` 네임스페이스의 `kube-prometheus-stack-grafana` Service만을 안전하게 참조하도록 교차 네임스페이스 권한을 명시적으로 제어하며, Gateway 리스너의 `allowedRoutes`도 `petclinic`과 `nginx-gateway` 네임스페이스로 엄격히 한정한다.
    - `monitoring` 네임스페이스의 Prometheus(`:9090`)는 `prometheus-ingress` NetworkPolicy를 통해 KEDA, Grafana, Prometheus 자체 Pod(`:9090`, `:8080`)에서의 접근만 허용하고, Alertmanager는 `alertmanager-egress` NetworkPolicy로 DNS(`53`), 피어 가십(`9094`), HTTPS(`443`, IMDS `169.254.169.254/32` 제외) 송신만 허용한다.
    - `monitoring` 네임스페이스의 `otel-collector`는 `networkpolicy-tracing.yaml`을 통해 Ingress(`was`→`4317`/`4318`, `prometheus`→`8889`)와 Egress(DNS `53`, `tempo`→`4317`)만 허용하고, `tempo`는 Ingress(`otel-collector`→`4317`/`4318`, `grafana`→`3200`)와 Egress(DNS `53`, 외부 S3/STS `443` [IMDS `169.254.169.254/32` 제외])만 허용한다 (`reportingEnabled: false`로 외부 사용량 리포팅도 비활성화).
 3. **최소 권한 IAM (IRSA) 및 IMDS 차단**:
@@ -406,7 +422,9 @@ sequenceDiagram
    - 소스 코드, `pom.xml`의 모든 프로필, `Dockerfile`, K8s 매니페스트, Tempo Helm values 어디에도 평문 패스워드나 정적 `access_key`/`secret_key`를 저장하지 않으며(`scripts/validate-manifests.sh`로 검증), AWS CLI 호출 시에도 비밀번호가 프로세스 인자(`argv`)에 노출되지 않도록 `jq` 표준 입력(`file:///dev/stdin`)으로 전달한다.
    - `provision-aws-resources.sh` 및 `deploy-all.sh`는 `TEMPO_S3_BUCKET_NAME != BACKUP_S3_BUCKET_NAME`, `TEMPO_RETENTION_DAYS` 양의 정수, `OTEL_TRACES_SAMPLER_ARG`(`0`~`1` 소수), `OTEL_DEPLOYMENT_ENVIRONMENT`(`^[A-Za-z0-9._-]+$`)를 사전에 검증하여 백업 버킷 오염이나 매니페스트/속성 인젝션을 차단한다. 또한 `provision-aws-resources.sh` 및 `build-and-push.sh`는 `CODEBUILD_S3_BUCKET_NAME`이 백업 및 Tempo 버킷과 상이한지 사전에 강제 검증하여 소스 버킷의 1일 만료 Lifecycle 및 SSE-S3 암호화가 백업/트레이스 데이터를 조기 삭제하거나 암호화 설정을 덮어쓰는 위험을 원천 차단한다.
    - `buildspec.yml`과 `build-and-push.sh`는 `IMAGE_TAG` 정규식(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`) 및 `latest` 차단을 이중 검증하며, `build`와 `post_build` 단계에 `on-failure: ABORT`를 적용하여 단일 이미지 빌드/푸시 실패 시 부분 릴리스를 방지한다. 소스 패키징 시에도 `.env*`, `*.secret`, `*.key`, `*.pem`, `id_*`, `*.pfx`, `*.p12` 등 모든 자격증명·개인키 파일을 배제한다.
-   - ESO가 AWS Secrets Manager의 시크릿을 주기적으로 동기화하여 `petclinic-rds-admin-secret`(db-init 전용), `petclinic-rds-secret`(was), `petclinic-rds-backup-secret`(db-backup), `grafana-admin`, `alertmanager-webhook`을 생성한다. Alertmanager Webhook URL은 Helm values나 Alertmanager 설정에 들어가지 않고 Secret 파일(`url_file`)로만 읽는다.
+   - `scripts/deploy-all.sh`는 배포 전 `grafana_waf_ready` 게이트를 실행하여 WebACL 내 최우선순위(Priority 0) `BlockUnauthorizedGrafanaAccess` 규칙(Block 액션, UriPath STARTS_WITH `/grafana`, AND 하위 NOT IPSet 매핑)의 존재 및 구조적 정합성을 확인하고, 규칙 부재 시 배포를 중단하여 `/grafana` 경로가 비인가 IP에 무방비로 공개되는 사고를 원천 방지한다.
+   - ESO가 AWS Secrets Manager의 시크릿을 주기적으로 동기화하여 `petclinic-rds-admin-secret`(db-init 전용), `petclinic-rds-secret`(was), `petclinic-rds-backup-secret`(db-backup), `grafana-admin`, `alertmanager-webhook`을 생성한다. Alertmanager Webhook URL은 Slack Incoming Webhook 전용 규격에 맞춰 `slack_configs`의 `api_url_file: /etc/alertmanager/secrets/alertmanager-webhook/url`로 읽어 generic webhook 불일치 오류(`400 no_text`)를 방지한다.
+   - Grafana 인증 보안: 익명 접속 차단(`auth.anonymous.enabled=false`), 회원가입 차단(`users.allow_sign_up=false`), Grafana 내장 무차별 대입 방어(`security.disable_brute_force_login_protection=false`, 5분 내 5회 실패 시 계정 임시 잠금), 세션 비활성 수명(`login_maximum_inactive_lifetime_duration: 4h`), 최대 세션 수명(`login_maximum_lifetime_duration: 24h`)을 강제한다. 초기 관리자 패스워드는 기존과 동일하게 AWS Secrets Manager에서 ESO(`externalsecret-grafana.yaml`)를 통해 동기화되는 `grafana-admin` Secret을 사용한다.
    - DB 계정은 역할별로 분리한다: admin(스키마 관리, db-init만 사용), app(`SELECT/INSERT/UPDATE/DELETE`), backup(`SELECT, SHOW VIEW, TRIGGER, LOCK TABLES, PROCESS`). 모든 계정은 MySQL 8.4 기본 규격인 `caching_sha2_password` 인증 및 `REQUIRE SSL`이 적용되며(TLS 터널 상에서 동작하므로 별도 RSA 공개키 교환 불필요), 비밀번호 변경은 `scripts/rotate-db-secrets.sh`로 반영한다(ESO 동기화가 확인되지 않으면 db-init 전에 중단).
    - 대시보드(`welcome.jsp`)에 출력되는 보호자 성명·연락처, 반려동물 및 진료 메모 등 개인정보(PII)는 JSTL `<c:out value="..."/>` 및 Spring 태그 `htmlEscape="true"`를 철저히 적용하여 Cross-Site Scripting(XSS)을 원천 차단한다.
    - 대시보드 조회(`GET /`, `/welcome`)는 외부 사용자 파라미터 수신 없이 정해진 상한(`limit=5`)으로 실행되며, 모든 쿼리는 JPA 파라미터 바인딩 및 JDBC NamedParameter 바인딩을 적용해 SQL Injection을 방어한다. 또한 `Pet.visits` EAGER 연관 로딩으로 인한 N+1 다중 쿼리 및 대규모 엔티티 그래프 메모리 점유(CWE-400 리소스 고갈)를 방어하기 위해 전용 프로젝션 DTO(`VisitSummary`)를 사용하여 단 1회의 바운디드 쿼리로 DB 커넥션 풀(최대 10)과 WAS 힙 메모리를 보호한다.
@@ -475,3 +493,10 @@ sequenceDiagram
 - `graceful-shutdown`: `web` Nginx에 `proxy_next_upstream`을 추가하거나 Nginx 이미지를 재빌드(`v1.0.3`)하지 않고 K8s 워크로드 수명주기 제어만으로 해결함 / Kubernetes ClusterIP 가상 IP 환경에서 Nginx 자체 재시도만으로는 iptables 목적지 Pod 전환을 제어하기 어렵고 비멱등(`POST`) 요청 중복 실행 위험이 있으며, WAS 계층의 `preStop.sleep`으로 Nginx가 종료 중인 Pod로 연결을 시도하는 상황 자체가 원천 차단되기 때문
 - `graceful-shutdown`: WAS 프로세스 종료 시 Spring Boot 및 HikariCP 가정 대신 실제 패키징인 외부 Tomcat 11 WAR 및 Tomcat JDBC Pool(`org.apache.tomcat.jdbc.pool.DataSource`) 수명주기에 맞춰 Catalina 셧다운 훅 → 웹 컨텍스트 `DispatcherServlet` 종료 → `DataSource.close()` 풀 정리 → OTel Java Agent JVM 셧다운 훅 플러시 경로를 기준으로 45초 유예 시간을 산정함 / 실제 런타임 아키텍처(Spring Framework 7.x WAR 배포)에 정확히 부합하는 정상 드레인 순서를 확립하고 남은 유예 시간(30초) 동안 안전한 트랜잭션 완료와 트레이스 플러시를 보장하기 위함 (design.md 초기 기술의 Spring Boot/HikariCP 가정을 실제 구현 기준으로 정정 반영)
 - `graceful-shutdown`: `scripts/validate-manifests.sh`에 `lifecycle.preStop.sleep.seconds` 15초 이상 및 `terminationGracePeriodSeconds`(`web` 35초, `was` 45초) 정적 검증 규칙(§11)을 추가함 / 배포 전 매니페스트 레벨에서 셧다운 지연 누락이나 grace period 역전(grace period <= preStop)으로 인한 조기 SIGKILL 강제 종료 결함을 사전에 차단하기 위함
+- `grafana-public-path`: 별도 서브도메인 대신 기존 도메인 하위 경로(`https://${DOMAIN_NAME}/grafana/`)와 NGF `HTTPRoute` + Gateway API `ReferenceGrant` 방식을 채택함 / 신규 ACM 인증서 발급이나 Route 53 레코드 추가 없이 기존 엔드포인트를 재활용하고, ALB IngressGroup 방식과 달리 기존 ALB 리스너를 변경하지 않아 메인 서비스 중단 위험을 배제하며 Gateway API 표준 교차 네임스페이스 접근 제어를 준수하기 위함
+- `grafana-public-path`: Gateway API 최장 접두사 일치(Longest Prefix Match) 원칙에 따라 `/grafana`(8자)를 `/`(1자) 카나리 라우트와 분리하고, WAF 최우선순위(Priority 0)에 IPSet 기반 차단 규칙(`BlockUnauthorizedGrafanaAccess`)을 배치함 / `X-Canary: always` 헤더나 카나리 가중치 분할(90:10)과 상호 간섭 없이 100% Grafana로 독립 라우팅되도록 보장하고, 비인가 IP 요청을 AWS 엣지에서 즉시 403으로 차단하며 인가된 요청만 Managed Rules를 거치도록 다층 방어하기 위함
+- `grafana-public-path`: WAF 경로 비교 시 `URL_DECODE` → `NORMALIZE_PATH` → `LOWERCASE` 3단계 텍스트 변환을 순차 적용하고 SearchString을 raw(`--cli-binary-format raw-in-base64-out`)로 전송함 / NGF(Nginx)가 `%67rafana`, `//grafana`, `/./grafana` 등을 모두 `/grafana`로 정규화하여 프록시하므로 단순 대소문자 무시만으로는 발생할 수 있는 인코딩/경로 우회 취약점을 원천 차단하고 AWS CLI v2의 base64 오변환을 방지하기 위함 (design.md 초기 안의 대소문자 무시를 실제 Nginx 동작 기준 정규화로 고도화 반영)
+- `grafana-public-path`: Grafana 로그인 시도 제한은 비표준 `auth.max_login_attempts` 대신 Grafana 내장 무차별 대입 방어(`security.disable_brute_force_login_protection = false`, 5분 내 5회 실패 시 계정 임시 잠금)를 사용하고 `users.auto_assign_org_role`은 생략함 / Grafana 설정 스펙에 존재하지 않는 무효 키를 제거하고 회원가입 차단(`allow_sign_up = false`) 상태에 부합하도록 설정을 정제하기 위함 (design.md의 `auth.max_login_attempts` 설정을 실제 Grafana 지원 설정 기준으로 정정 반영)
+- `grafana-public-path`: `networkpolicy-grafana.yaml`에서 `nginx-gateway` 네임스페이스 전체 대신 데이터 플레인 Pod(`gateway.networking.k8s.io/gateway-name: petclinic-gateway`)와 Prometheus Pod로만 인입을 제한함 / 동일 네임스페이스의 NGF 컨트롤 플레인 Pod나 타 Pod가 Grafana Pod(:3000)에 불필요하게 접근하는 것을 차단하여 최소 권한 네트워크 격리를 달성하기 위함 (design.md의 네임스페이스 전체 허용을 실제 데이터 플레인 Pod 선택자로 정밀화 반영)
+- `grafana-public-path`: WAF 적용을 `pre-cluster` 내 일괄 실행 대신 별도 멱등 하위 명령(`provision-aws-resources.sh grafana-waf`)으로 분리하고 `deploy-all.sh` 초입에 `grafana_waf_ready` 게이트를 추가함 / `WAF_WEB_ACL_ARN` 생성 순서 의존성을 해소하고 허용 IP 변경 시 가볍게 재실행할 수 있도록 하며, WAF 규칙 미적용 상태에서 `/grafana` 경로가 모든 외부에 무방비로 공개되는 사고를 배포 전 정적 검증으로 차단하기 위함
+- `grafana-public-path`: Alertmanager 알림 채널을 일반 Webhook에서 Slack Incoming Webhook 전용 규격(`slack_configs`, `api_url_file`)으로 정정함 / Slack Incoming Webhook은 `webhook_configs`의 일반 JSON 페이로드를 `400 no_text`로 거부하므로 Slack이 요구하는 텍스트/첨부 포맷 계약을 충족하고 평문 노출 없이 시크릿 파일에서 URL을 안전하게 읽도록 하기 위함
