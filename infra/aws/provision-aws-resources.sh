@@ -378,7 +378,8 @@ grafana_waf() {
   require AWS_REGION EKS_CLUSTER_NAME WAF_WEB_ACL_ARN
   local set_name="${EKS_CLUSTER_NAME}-grafana-allowed-ips" rule=BlockUnauthorizedGrafanaAccess
   local cidrs=() addrs c set_id set_arn lock acl_id="${WAF_WEB_ACL_ARN##*/}" acl_name acl rules
-  IFS=',' read -r -a cidrs <<<"${GRAFANA_ALLOWED_CIDRS:-}"
+  local list="${GRAFANA_ALLOWED_CIDRS:-}"
+  IFS=',' read -r -a cidrs <<<"${list//[[:space:]]/}"  # "a/32, b/32" is fine too
   addrs=("${cidrs[@]}"); [ "${#cidrs[@]}" -gt 0 ] || addrs=('[]')
   for c in "${cidrs[@]}"; do
     [[ "$c" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[12][0-9]|3[0-2])$ ]] \

@@ -426,7 +426,8 @@ def one(f, kind):
 values = next(iter(docs.get(root / "k8s/monitoring/kube-prometheus-values.yaml", [])), {})
 gini = (values.get("grafana") or {}).get("grafana.ini") or {}
 want = {("server", "root_url"): "https://${DOMAIN_NAME}/grafana/", ("server", "serve_from_sub_path"): True,
-        ("security", "cookie_secure"): True, ("security", "allow_embedding"): False,
+        ("security", "cookie_secure"): True, ("security", "cookie_samesite"): "lax",
+        ("security", "allow_embedding"): False,
         ("users", "allow_sign_up"): False, ("auth.anonymous", "enabled"): False}
 for (sec, key), val in want.items():
     if (gini.get(sec) or {}).get(key) != val:
