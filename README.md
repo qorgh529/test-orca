@@ -89,7 +89,7 @@ cp .env.example .env
 ### Step 2. AWS 주변 인프라 및 EKS 클러스터 프로비저닝
 각 단계는 멱등(Idempotent)하게 동작하므로 중간에 중단되더라도 안전하게 재실행할 수 있습니다.
 ```bash
-# 1) IAM Policy/Role, ECR 리포지토리, CloudWatch Log Group, 백업용·Tempo용 S3 버킷, WAFv2 WebACL, ACM 인증서 생성
+# 1) IAM Policy/Role, ECR 리포지토리, CloudWatch Log Group, 백업용·Tempo용 S3 버킷, CodeBuild(소스 버킷·서비스 역할·프로젝트), WAFv2 WebACL, ACM 인증서 생성
 ./infra/aws/provision-aws-resources.sh pre-cluster
 # 출력된 ECR_*_REPOSITORY_URI, WAF_WEB_ACL_ARN, ACM_CERTIFICATE_ARN을 .env에 반영
 
@@ -104,6 +104,7 @@ cp .env.example .env
 ```bash
 IMAGE_TAG=v1.0.0 ./scripts/build-and-push.sh
 ```
+> 이미지는 AWS CodeBuild에서 빌드됩니다. 스크립트가 작업 트리(커밋 안 된 변경 포함, `.gitignore` 대상과 `.env*` 제외)를 zip으로 묶어 CodeBuild 소스 버킷(1일 후 자동 삭제)에 올리고, `buildspec.yml` 로 `linux/amd64` 빌드 → ECR 푸시까지 진행 상황을 따라갑니다. 같은 태그가 이미 ECR에 있으면 빌드 전에 멈춥니다. 한 이미지만 빌드하려면 `BUILD_TARGET=web` 또는 `was`, 로컬 Docker로 빌드하려면 `--local` 을 붙입니다. 실패하면 출력된 CloudWatch Logs 그룹(`/aws/codebuild/<프로젝트명>`)에서 원인을 확인합니다.
 
 ### Step 4. 클러스터 애드온·워크로드 전체 배포 및 카나리 검증
 ```bash
