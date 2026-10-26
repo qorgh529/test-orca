@@ -1,0 +1,46 @@
+# AWS CodeBuild spec for the web/was images (docs/features/codebuild-image-build/design.md).
+# Started by scripts/build-and-push.sh, which passes IMAGE_TAG, ECR_*_REPOSITORY_URI, AWS_ACCOUNT_ID
+# and BUILD_TARGET (all|web|was) as environment overrides. np-app nodes are amd64.
+version: 0.2
+
+env:
+  shell: bash
+
+phases:
+  pre_build:
+    on-failure: ABORT
+    commands:
+      - echo "== Validating parameters"
+      - '[ -n "${IMAGE_TAG:-}" ] || { echo "IMAGE_TAG is required" >&2; exit 1; }'
+      - '[ "$IMAGE_TAG" != "latest" ] || { echo "IMAGE_TAG must not be latest" >&2; exit 1; }'
+      - '[[ "$IMAGE_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || { echo "IMAGE_TAG is not a valid tag" >&2; exit 1; }'
+      - 'case "${BUILD_TARGET:-all}" in all|web|was) ;; *) echo "BUILD_TARGET must be all, web or was" >&2; exit 1 ;; esac'
+      - echo "== Logging in to Amazon ECR"
+      - aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+  build:
+    # Without ABORT, post_build would still run (and push nothing useful) after a failed build.
+    on-failure: ABORT
+    commands:
+      - echo "== Building container images (linux/amd64)"
+      - |
+        if [ "${BUILD_TARGET:-all}" = "all" ] || [ "${BUILD_TARGET}" = "was" ]; then
+          docker build --platform linux/amd64 -f docker/was/Dockerfile -t "${ECR_WAS_REPOSITORY_URI}:${IMAGE_TAG}" .
+        fi
+      - |
+        if [ "${BUILD_TARGET:-all}" = "all" ] || [ "${BUILD_TARGET}" = "web" ]; then
+          docker build --platform linux/amd64 -f docker/web/Dockerfile -t "${ECR_WEB_REPOSITORY_URI}:${IMAGE_TAG}" .
+        fi
+  post_build:
+    # A failed was push must not be followed by a web push (no half-released tag).
+    on-failure: ABORT
+    commands:
+      - echo "== Pushing images to ECR"
+      - |
+        if [ "${BUILD_TARGET:-all}" = "all" ] || [ "${BUILD_TARGET}" = "was" ]; then
+          docker push "${ECR_WAS_REPOSITORY_URI}:${IMAGE_TAG}"
+        fi
+      - |
+        if [ "${BUILD_TARGET:-all}" = "all" ] || [ "${BUILD_TARGET}" = "web" ]; then
+          docker push "${ECR_WEB_REPOSITORY_URI}:${IMAGE_TAG}"
+        fi
+      - echo "== Build and push completed for tag ${IMAGE_TAG}"

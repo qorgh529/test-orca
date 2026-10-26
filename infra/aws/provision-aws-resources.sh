@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Provision AWS resources around the EKS cluster. The VPC and its subnets are inputs (.env).
 #
-#   ./infra/aws/provision-aws-resources.sh pre-cluster   # IAM, ECR, log group, backup/Tempo buckets, WAF, ACM
+#   ./infra/aws/provision-aws-resources.sh pre-cluster   # IAM, ECR, log group, backup/Tempo buckets, CodeBuild, WAF, ACM
 #   ./infra/aws/provision-aws-resources.sh cluster       # eksctl create cluster + Karpenter discovery tags
 #   ./infra/aws/provision-aws-resources.sh post-cluster  # RDS MySQL Multi-AZ + Secrets Manager secrets
 #
@@ -59,6 +59,10 @@ pre_cluster() {
   # The Tempo lifecycle deletes objects: it must never land on the backup bucket.
   [ "$TEMPO_S3_BUCKET_NAME" != "$BACKUP_S3_BUCKET_NAME" ] \
     || { echo "TEMPO_S3_BUCKET_NAME must differ from BACKUP_S3_BUCKET_NAME" >&2; exit 1; }
+  # The CodeBuild bucket gets a 1-day expiry and SSE-S3, and the build role may read it: never a shared bucket.
+  export CODEBUILD_S3_BUCKET_NAME="${CODEBUILD_S3_BUCKET_NAME:-${EKS_CLUSTER_NAME}-codebuild-${AWS_ACCOUNT_ID}}"
+  [ "$CODEBUILD_S3_BUCKET_NAME" != "$BACKUP_S3_BUCKET_NAME" ] && [ "$CODEBUILD_S3_BUCKET_NAME" != "$TEMPO_S3_BUCKET_NAME" ] \
+    || { echo "CODEBUILD_S3_BUCKET_NAME must differ from BACKUP_S3_BUCKET_NAME and TEMPO_S3_BUCKET_NAME" >&2; exit 1; }
   local retention="${TEMPO_RETENTION_DAYS:-14}"
   [[ "$retention" =~ ^[1-9][0-9]*$ ]] || { echo "TEMPO_RETENTION_DAYS must be a positive integer" >&2; exit 1; }
   local dir="$ROOT/infra/aws/iam-policies" name arn doc v
@@ -129,6 +133,8 @@ pre_cluster() {
     "$(jq -n --argjson days "$retention" '{Rules: [{ID: "tempo-retention", Status: "Enabled", Filter: {},
         Expiration: {Days: $days}, AbortIncompleteMultipartUpload: {DaysAfterInitiation: 1}}]}')"
 
+  codebuild
+
   echo "== WAFv2 WebACL (regional, AWS managed rules; an existing ACL is reused as-is)"
   local acl_name="${EKS_CLUSTER_NAME}-web-acl" acl_arn rules
   acl_arn=$(aws wafv2 list-web-acls --scope REGIONAL \
@@ -169,6 +175,73 @@ pre_cluster() {
   echo "$cert_arn"
 
   echo "Set ECR_*_REPOSITORY_URI, WAF_WEB_ACL_ARN and ACM_CERTIFICATE_ARN in .env from the output above."
+}
+
+# Image builds (docs/features/codebuild-image-build/design.md): source bucket, service role, project.
+# Runs inside pre-cluster, before the ACM wait, so builds work while DNS delegation is still pending.
+codebuild() {
+  export CODEBUILD_PROJECT_NAME="${CODEBUILD_PROJECT_NAME:-${EKS_CLUSTER_NAME}-image-build}"
+  export CODEBUILD_S3_BUCKET_NAME="${CODEBUILD_S3_BUCKET_NAME:-${EKS_CLUSTER_NAME}-codebuild-${AWS_ACCOUNT_ID}}"
+  local dir="$ROOT/infra/aws/iam-policies" role="CodeBuildServiceRole-${EKS_CLUSTER_NAME}"
+  local policy="${EKS_CLUSTER_NAME}-codebuild-policy" arn doc log_group="/aws/codebuild/${CODEBUILD_PROJECT_NAME}" v
+
+  # Source archives are throwaway: CodeBuild reads each one once.
+  echo "== CodeBuild source bucket (private, encrypted, expires after 1 day)"
+  if ! aws s3api head-bucket --bucket "$CODEBUILD_S3_BUCKET_NAME" 2>/dev/null; then
+    aws s3api create-bucket --bucket "$CODEBUILD_S3_BUCKET_NAME" \
+      --create-bucket-configuration "LocationConstraint=$AWS_REGION" >/dev/null
+  fi
+  aws s3api put-public-access-block --bucket "$CODEBUILD_S3_BUCKET_NAME" \
+    --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+  aws s3api put-bucket-encryption --bucket "$CODEBUILD_S3_BUCKET_NAME" \
+    --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+  aws s3api put-bucket-lifecycle-configuration --bucket "$CODEBUILD_S3_BUCKET_NAME" --lifecycle-configuration \
+    '{"Rules":[{"ID":"codebuild-source-expiry","Status":"Enabled","Filter":{},"Expiration":{"Days":1},"AbortIncompleteMultipartUpload":{"DaysAfterInitiation":1}}]}'
+
+  echo "== CodeBuild log group"
+  tolerate ResourceAlreadyExistsException aws logs create-log-group --log-group-name "$log_group"
+  aws logs put-retention-policy --log-group-name "$log_group" --retention-in-days 30
+
+  echo "== CodeBuild service role (ECR push to web/was, source bucket read, own log group)"
+  if ! aws iam get-role --role-name "$role" >/dev/null 2>&1; then
+    aws iam create-role --role-name "$role" \
+      --assume-role-policy-document "$(envsubst '${AWS_ACCOUNT_ID}' < "$dir/codebuild-trust.json")" >/dev/null
+  fi
+  arn="arn:aws:iam::${AWS_ACCOUNT_ID}:policy/${policy}"
+  doc=$(envsubst < "$dir/codebuild-policy.json")
+  if aws iam get-policy --policy-arn "$arn" >/dev/null 2>&1; then
+    for v in $(aws iam list-policy-versions --policy-arn "$arn" \
+        --query 'Versions[?!IsDefaultVersion].VersionId' --output text); do
+      aws iam delete-policy-version --policy-arn "$arn" --version-id "$v"
+    done
+    aws iam create-policy-version --policy-arn "$arn" --policy-document "$doc" --set-as-default >/dev/null
+  else
+    aws iam create-policy --policy-name "$policy" --policy-document "$doc" >/dev/null
+  fi
+  aws iam attach-role-policy --role-name "$role" --policy-arn "$arn"
+
+  echo "== CodeBuild project $CODEBUILD_PROJECT_NAME"
+  # build-and-push.sh overrides the source location per build; this one only has to be valid.
+  local args=(--name "$CODEBUILD_PROJECT_NAME"
+    --source "type=S3,location=${CODEBUILD_S3_BUCKET_NAME}/source/build.zip,buildspec=buildspec.yml"
+    --artifacts type=NO_ARTIFACTS
+    --environment "type=LINUX_CONTAINER,image=aws/codebuild/amazonlinux2-x86_64-standard:5.0,computeType=BUILD_GENERAL1_MEDIUM,privilegedMode=true"
+    --service-role "arn:aws:iam::${AWS_ACCOUNT_ID}:role/${role}"
+    --logs-config "cloudWatchLogs={status=ENABLED,groupName=${log_group}}"
+    --timeout-in-minutes 30)
+  local verb=create-project out _
+  if [ "$(aws codebuild batch-get-projects --names "$CODEBUILD_PROJECT_NAME" \
+      --query 'length(projects)' --output text)" != "0" ]; then
+    verb=update-project
+  fi
+  # A new role takes a few seconds before CodeBuild may assume it.
+  for _ in 1 2 3 4 5 6; do
+    out=$(aws codebuild "$verb" "${args[@]}" --query project.name --output text 2>&1) && { echo "$out"; return 0; }
+    grep -q 'not authorized to perform: sts:AssumeRole' <<<"$out" || break
+    sleep 10
+  done
+  echo "$out" >&2
+  return 1
 }
 
 cluster() {
