@@ -352,27 +352,27 @@ CodeBuild 프로젝트가 사용하는 IAM Role(`CodeBuildServiceRole-${EKS_CLUS
 
 Claude는 아래 체크리스트 순서에 따라 단계별로 구현하고 커밋을 진행한다. `[위험]` 표시가 된 단계는 실제 AWS 클라우드 자원에 영향을 미치는 작업이므로 반드시 실행 전 멈추고 사용자 컨펌을 받아야 한다.
 
-- [ ] **Step 1: CodeBuild 실행 명세서(`buildspec.yml`) 작성**
+- [x] **Step 1: CodeBuild 실행 명세서(`buildspec.yml`) 작성** (`bae1a2a`)
   - 프로젝트 루트에 `buildspec.yml` 생성.
   - `pre_build` (ECR 로그인, 태그 유효성 검사), `build` (target별 `docker build --platform linux/amd64`), `post_build` (ECR 푸시) 단계 구현.
   - 커밋: `feat: add buildspec for codebuild image build`
 
-- [ ] **Step 2: CodeBuild 서비스 역할 전용 IAM 정책(`infra/aws/iam-policies/codebuild-policy.json`) 작성**
+- [x] **Step 2: CodeBuild 서비스 역할 전용 IAM 정책(`infra/aws/iam-policies/codebuild-policy.json`) 작성** (`46f3e20`)
   - ECR(web/was 한정), S3(CodeBuild 버킷 한정), CloudWatch Logs(프로젝트 로그그룹 한정) 최소 권한 정책 작성.
   - 커밋: `feat: add iam policy for codebuild service role`
 
-- [ ] **Step 3: 프로비저닝 스크립트(`infra/aws/provision-aws-resources.sh`)에 CodeBuild 리소스 추가**
+- [x] **Step 3: 프로비저닝 스크립트(`infra/aws/provision-aws-resources.sh`)에 CodeBuild 리소스 추가** (`853ac60`)
   - `pre_cluster()` 함수 내에 CodeBuild 전용 S3 버킷(`${CODEBUILD_S3_BUCKET_NAME}`) 멱등 생성 및 퍼블릭 차단, 1일 만료 Lifecycle 적용 로직 추가.
   - CodeBuild 서비스 역할(`CodeBuildServiceRole-${EKS_CLUSTER_NAME}`) 생성 및 `codebuild-policy.json` 연결 로직 추가.
   - AWS CodeBuild Project(`${CODEBUILD_PROJECT_NAME}`) 멱등 생성/업데이트(`aws codebuild create-project` / `update-project`) 로직 추가 (`LINUX_CONTAINER`, `BUILD_GENERAL1_MEDIUM`, `privilegedMode: true`).
   - 커밋: `feat: provision codebuild project, s3 bucket, and iam role in pre-cluster`
 
-- [ ] **Step 4: 환경변수 템플릿 및 공통 스크립트 갱신 (`.env.example`, `scripts/lib.sh`)**
+- [x] **Step 4: 환경변수 템플릿 및 공통 스크립트 갱신 (`.env.example`, `scripts/lib.sh`)** (`ab08cf7`)
   - `.env.example`에 `CODEBUILD_PROJECT_NAME`, `CODEBUILD_S3_BUCKET_NAME` 템플릿 항목 추가.
   - `scripts/lib.sh`의 `TEMPLATE_VARS`에 `CODEBUILD_PROJECT_NAME`, `CODEBUILD_S3_BUCKET_NAME` 등록.
   - 커밋: `feat: add codebuild variables to env example and lib.sh`
 
-- [ ] **Step 5: 이미지 빌드 스크립트(`scripts/build-and-push.sh`) 개편**
+- [x] **Step 5: 이미지 빌드 스크립트(`scripts/build-and-push.sh`) 개편** (`321b6fa`)
   - 필수 환경변수 확인 (`AWS_REGION`, `AWS_ACCOUNT_ID`, `ECR_WEB_REPOSITORY_URI`, `ECR_WAS_REPOSITORY_URI`, `IMAGE_TAG`).
   - `CODEBUILD_PROJECT_NAME` 기본값(`${EKS_CLUSTER_NAME}-image-build`), `CODEBUILD_S3_BUCKET_NAME` 기본값(`${EKS_CLUSTER_NAME}-codebuild-${AWS_ACCOUNT_ID}`) 설정.
   - 소스 아카이브 패키징 (`.git`, `.env`, `target/` 등 제외) → S3 업로드 로직 구현.
@@ -381,13 +381,13 @@ Claude는 아래 체크리스트 순서에 따라 단계별로 구현하고 커�
   - (옵션: `--local` 플래그 전달 시 기존 로컬 도커 빌드로 동작하는 fallback 로직 보존).
   - 커밋: `feat: rewrite build-and-push.sh to use aws codebuild`
 
-- [ ] **Step 6: 검증 스크립트(`scripts/validate-manifests.sh`) 및 정적 검사 보강**
+- [x] **Step 6: 검증 스크립트(`scripts/validate-manifests.sh`) 및 정적 검사 보강** (`6759062`)
   - `buildspec.yml` YAML 유효성 및 태그/이미지 규칙 검사 추가.
   - `infra/aws/iam-policies/codebuild-policy.json` 유효성 검사 추가.
   - `.env.example` source 검증 통과 확인.
   - 커밋: `test: add validation checks for codebuild specs and policies`
 
-- [ ] **Step 7: 로컬 오프라인 검증 실행**
+- [x] **Step 7: 로컬 오프라인 검증 실행** (`6759062`)
   - `./scripts/validate-manifests.sh` 실행하여 전체 정적 검사 및 셸 스크립트 문법 검사 통과 확인.
   - `.env.example` 문법 확인.
 
@@ -427,3 +427,12 @@ Claude는 아래 체크리스트 순서에 따라 단계별로 구현하고 커�
 ---
 
 ## 8. 구현 중 질문
+
+- (Claude, 참고·결정 불필요) 구현하면서 설계 범위 안에서 정한 세부 사항:
+  - 소스 패키징: 작업 서버에 `zip` 명령이 없어 `git ls-files --cached --others --exclude-standard` + Python `zipfile` 로 묶음. `.gitignore` 대상(`.env`, `target/`, `.daily-nodegroup-state.json`)이 빠지고, `.env*`(`.env.example` 제외)·`*.secret` 은 한 번 더 제외
+  - 신뢰 정책 파일 `infra/aws/iam-policies/codebuild-trust.json` 추가 — `codebuild.amazonaws.com` + `aws:SourceAccount` 조건(confused deputy 방지)
+  - `buildspec.yml` 의 `pre_build`·`build` 에 `on-failure: ABORT` — CodeBuild는 기본적으로 build 실패 후에도 post_build(푸시)를 실행하므로
+  - `build-and-push.sh` 가 빌드 전에 ECR에 같은 태그가 있는지 확인하고 있으면 멈춤(불변 태그라 어차피 푸시 단계에서 실패하므로 빌드 시간 절약)
+  - CodeBuild 리소스는 `pre_cluster` 안의 `codebuild()` 함수로, ACM 대기보다 먼저 실행
+  - 확인 필요(Step 9에서): Dockerfile 베이스 이미지가 Docker Hub에서 익명으로 받아지므로 CodeBuild 공용 IP에서 pull 횟수 제한(429)에 걸릴 수 있음. 걸리면 ECR Public 미러나 Docker Hub 자격 증명(Secrets Manager) 중 하나가 필요 — 설계 판단 사항
+
