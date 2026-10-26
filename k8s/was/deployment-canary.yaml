@@ -32,9 +32,14 @@ spec:
         fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
+      # Covers the 15s preStop below plus the process drain (docs/features/graceful-shutdown/design.md).
+      terminationGracePeriodSeconds: 45
       containers:
         - name: tomcat
           image: ${ECR_WAS_REPOSITORY_URI}:${CANARY_IMAGE_TAG}
+          lifecycle:
+            # Keep serving until NGF and kube-proxy drop this pod, then stop.
+            preStop: { sleep: { seconds: 15 } }
           ports:
             - { name: http, containerPort: 8080 }
             - { name: metrics, containerPort: 9404 }
