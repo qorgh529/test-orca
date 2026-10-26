@@ -23,6 +23,7 @@ spec:
           whenUnsatisfiable: DoNotSchedule
           labelSelector:
             matchLabels: { app: web, track: stable }
+          matchLabelKeys: [pod-template-hash]
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -93,6 +94,7 @@ spec:
           whenUnsatisfiable: ScheduleAnyway
           labelSelector:
             matchLabels: { app: web, track: canary }
+          matchLabelKeys: [pod-template-hash]
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001

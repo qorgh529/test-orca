@@ -24,6 +24,7 @@ spec:
           whenUnsatisfiable: DoNotSchedule
           labelSelector:
             matchLabels: { app: was, track: stable }
+          matchLabelKeys: [pod-template-hash]
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
