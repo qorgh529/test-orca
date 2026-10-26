@@ -17,7 +17,7 @@
   - Spring Boot 내장 톰캣 JAR로의 전환 (외부 Tomcat 11 컨테이너 배포 구조 유지)
   - 멀티 리전 액티브-액티브 구성 (`ap-northeast-2` 단일 리전 Multi-AZ에 집중)
   - 기존 EKS 1.31 클러스터의 제자리 업그레이드 절차 (현재 구성은 1.36 새 클러스터 생성 기준, `docs/features/production-hardening/design.md` §1.3)
-  - 비즈니스 도메인 모델 변경 (단, 외부 RDS 환경변수 바인딩 및 flatpickr `yyyy/MM/dd` 날짜 형식 호환 패치는 반영)
+  - 비즈니스 도메인 엔티티 스키마 및 DB 테이블(DDL) 변경 (단, 외부 RDS 환경변수 바인딩, flatpickr `yyyy/MM/dd` 날짜 형식 호환 패치, 대시보드 전용 읽기 전용 `VisitSummary` 프로젝션 DTO 도입은 반영)
   - 일일 중지 시 EKS 컨트롤 플레인, NAT Gateway, ALB(`Ingress`), `gp3` EBS PVC 삭제·재생성 및 EventBridge/Lambda 기반 자동 스케줄러 구축 (`docs/features/daily-stop-start/design.md` §1.4)
   - Grafana Loki 도입, Tail-based Sampling, NGF·`web`(Nginx) 계층 트레이싱, `tempo-distributed`(마이크로서비스 모드 + Kafka) 전환 및 상용 APM 도입 (`docs/features/apm-tracing/design.md` §1.4, `docs/features/tempo-chart-migration/design.md` §1.4)
   - GitHub Webhook 및 AWS CodePipeline 자동 트리거 연동 (운영자/개발자가 검증된 태그로 필요 시 트리거하는 온디맨드 CLI 빌드 워크플로 유지, `docs/features/codebuild-image-build/design.md` §1.4)
@@ -32,7 +32,7 @@
 | **Ingress LB** | AWS ALB (AWS Load Balancer Controller) | HTTP(`80`)→HTTPS(`443`) 리다이렉트, TLS 1.3/1.2 종단, 비정상 헤더 드롭, `target-type: ip`로 NGF Pod에 직접 라우팅 | 퍼블릭 서브넷 (`2a`, `2c`) |
 | **L7 Gateway** | NGINX Gateway Fabric 2.x (`nginx-gateway`) | Gateway API(`v1.6.3`). 컨트롤 플레인(2 Replicas)이 Gateway마다 데이터 플레인 `petclinic-gateway-nginx`(2 Replicas, AZ 분산, 차트 PDB `minAvailable: 1`, `ClusterIP`)를 생성. `HTTPRoute`로 `web` / `web-canary` 트래픽 분할(배포 중 100:0, 카나리 검증 후 90:10, `X-Canary: always`는 항상 `web-canary`) | `nginx-gateway` / `np-app` (`workload-tier=app`) |
 | **Web Tier** | `web`, `web-canary` (Nginx + Exporter) | `/resources/*`, `/webjars/*` 정적 에셋 직접 서빙 및 보안 헤더 부여, 동적 요청을 각각 `was-stable:8080`, `was-canary:8080`으로 프록시. 사이드카 `nginx-prometheus-exporter`(`:9113`) 내장. CPU 60% 기준 HPA(`web` 2~10, `web-canary` 1~4), stable PDB(`minAvailable: 1`) | `petclinic` / `np-app` (`workload-tier=app`) |
-| **WAS Tier** | `was-stable`, `was-canary` (Tomcat 11 + JMX Exporter + OTel Java Agent) | 사전 언패킹된 `webapps/ROOT` 구동(`jpa` 프로필, 읽기 전용 루트 파일시스템), JMX Exporter(`:9404/metrics`) 노출 및 OpenTelemetry Operator가 주입하는 Java Agent(`autoinstrumentation-java:2.12.0`)로 HTTP·Spring MVC·Hibernate/JDBC 자동 계측(`service.version=stable\|canary`), Logback ConfigMap 마운트로 MDC `trace_id`/`span_id` 출력. Prometheus 요청률 기반 KEDA `ScaledObject`(`was-stable` 2~10·fallback 4, `was-canary` 1~3·fallback 2), stable PDB(`minAvailable: 1`), Tomcat JDBC 풀 최대 10 | `petclinic` / `np-app` (`workload-tier=app`) |
+| **WAS Tier** | `was-stable`, `was-canary` (Tomcat 11 + JMX Exporter + OTel Java Agent) | 사전 언패킹된 `webapps/ROOT` 구동(`jpa` 프로필, 읽기 전용 루트 파일시스템), `WelcomeController` 기반 메인 대시보드(`/`, `/welcome` — 운영 통계 3종 및 `VisitSummary` 플랫 프로젝션 기반 최근 방문 5건 조회) 및 PetClinic 비즈니스 서블릿 처리, JMX Exporter(`:9404/metrics`) 노출 및 OpenTelemetry Operator가 주입하는 Java Agent(`autoinstrumentation-java:2.12.0`)로 HTTP·Spring MVC·Hibernate/JDBC 자동 계측(`service.version=stable\|canary`), Logback ConfigMap 마운트로 MDC `trace_id`/`span_id` 출력. Prometheus 요청률 기반 KEDA `ScaledObject`(`was-stable` 2~10·fallback 4, `was-canary` 1~3·fallback 2), stable PDB(`minAvailable: 1`), Tomcat JDBC 풀 최대 10 | `petclinic` / `np-app` (`workload-tier=app`) |
 | **Cluster Controllers** | CoreDNS, LBC, Metrics Server, Karpenter, KEDA, ESO, EBS CSI, OpenTelemetry Operator | 클러스터 핵심 제어부, 오토스케일러·시크릿·스토리지 드라이버 및 `Instrumentation` CR 기반 Java Agent Mutating Webhook(`:9443`, `failurePolicy: Ignore`) | `kube-system`, `keda`, `external-secrets`, `opentelemetry-operator-system` / `ng-critical` (Taint: `node-role=critical:NoSchedule`) |
 | **DB Jobs** | `db-init` (Job), `db-backup` (CronJob) | 배포 시 admin 계정으로 멱등 스키마/초기 데이터 적재(`schema.sql`, `data.sql`) 및 app/backup 계정 생성·권한 부여, 매일 03:00 KST `mysqldump` 압축본을 S3(`SSE-KMS`)에 업로드 | `petclinic` / `ng-critical` (Taint: `node-role=critical:NoSchedule`) |
 | **Observability & Tracing** | Prometheus, Grafana, Alertmanager, OTel Collector, Grafana Tempo, kube-state-metrics, node-exporter, Fluent Bit | `ServiceMonitor` 기반 `web`(`:9113`)·`was`(`:9404`)·`otel-collector`(`:8889`, OpenMetrics Exemplar) 스크래핑, KEDA 스케일링 쿼리 제공, `gp3` 암호화 볼륨 영속화, Prometheus 2 Replicas(`exemplar-storage` 활성화) AZ 분산, `PrometheusRule` → Alertmanager Webhook. OTel Collector(2 Replicas AZ 분산, `:4317`/`:4318` 수신)는 트레이스를 Tempo(`:4317` 수신, `:3200` 쿼리, `gp3` 10Gi WAL + 전용 S3 IRSA)로 전달하고 RED 메트릭+Exemplar를 `:8889`로 노출. `node-exporter` 및 Fluent Bit DaemonSet은 전 노드에서 메트릭·컨테이너 로그(→ CloudWatch Logs) 수집 | `monitoring` (`ng-platform`, Taint: `node-role=platform:NoSchedule`; `node-exporter`는 전 노드 Toleration) / `amazon-cloudwatch` (Fluent Bit 전 노드 Toleration) |
@@ -69,17 +69,24 @@
 │       ├── tempo-chart-migration/{design,review,security}.md
 │       ├── architecture-pod-diagram/design.md   # 다이어그램 Pod 단위 상세화 설계 (Pod 배치 표, 선 규칙)
 │       ├── codebuild-image-build/{design,review,security}.md  # CodeBuild 기반 컨테이너 이미지 빌드·푸시 설계·리뷰·보안 점검
-│       └── rds-mysql-84/{design,review,security}.md           # RDS MySQL 8.4 LTS 전환 설계·리뷰·보안 점검
+│       ├── rds-mysql-84/{design,review,security}.md           # RDS MySQL 8.4 LTS 전환 설계·리뷰·보안 점검
+│       └── staff-dashboard/                  # 스태프 운영 대시보드(WelcomeController, VisitSummary) 설계·목업·리뷰·보안 점검
+│           ├── mockup/main.html              # UI 프로토타입 원본
+│           └── {design,review,security}.md
 ├── app/                                  # spring-framework-petclinic 소스 코드
 │   ├── pom.xml                           # Maven WAR 빌드, MySQL/PostgreSQL/H2/HSQLDB 프로필
 │   └── src/
 │       ├── main/
-│       │   ├── java/org/springframework/samples/petclinic/...
+│       │   ├── java/org/springframework/samples/petclinic/
+│       │   │   ├── model/VisitSummary.java   # 대시보드 최근 방문 읽기 전용 플랫 프로젝션 DTO (EAGER 연관 N+1 방지)
+│       │   │   ├── repository/{Owner,Pet,Visit}Repository.java # count 쿼리 및 findRecentVisits(limit) 지원 (jdbc, jpa, springdatajpa 3종 구현체)
+│       │   │   ├── service/ClinicService{,Impl}.java # 대시보드 통계 및 최근 방문 읽기 전용(@Transactional(readOnly = true)) 서비스 파사드
+│       │   │   └── web/WelcomeController.java # 메인 대시보드(/, /welcome) 라우팅 및 모델 바인딩
 │       │   ├── resources/
 │       │   │   ├── db/mysql/{schema.sql,data.sql}
-│       │   │   └── spring/{data-access.properties,datasource-config.xml,...}
-│       │   └── webapp/                   # 정적 리소스(resources/) 및 JSP 뷰(WEB-INF/jsp/)
-│       └── test/...
+│       │   │   └── spring/{mvc-core-config.xml,data-access.properties,datasource-config.xml,...}
+│       │   └── webapp/                   # 정적 리소스(resources/) 및 JSP 뷰(WEB-INF/jsp/ — welcome.jsp 대시보드 포함)
+│       └── test/...                      # WelcomeControllerTests 및 AbstractClinicServiceTests 3종 프로필 회귀 테스트
 ├── docker/
 │   ├── web/
 │   │   ├── Dockerfile                    # Stage 1: Maven webjars/정적 에셋 추출 → Stage 2: nginx:1.27.2-alpine (UID 10001, linux/amd64)
@@ -184,13 +191,14 @@
 5. **⑤ `web` → `was` 리버스 프록시 (`:8080`) 및 APM 트레이싱 · RED 메트릭 · Exemplar 수집**:
    - 정적 리소스(`/resources/*`, `/webjars/*`)는 Nginx 컨테이너에서 보안 헤더·캐시 만료 헤더와 함께 직접 응답한다.
    - 동적 서블릿 요청은 `web` → `was-stable:8080`, `web-canary` → `was-canary:8080`으로 각각 프록시된다.
+   - 메인 화면(`/` 및 `/welcome`) 요청 시 기존 정적 뷰 컨트롤러 대신 `WelcomeController`가 `ClinicService` 파사드를 호출하여 통계 지표(보호자 수, 반려동물 및 종류 수, 총 방문 수, 활성 수의사 명단)와 최근 방문 목록을 조회한다. 이때 최근 방문은 `Pet.visits`의 `FetchType.EAGER` 컬렉션으로 인한 N+1 SELECT 부하를 방지하기 위해 읽기 전용 플랫 프로젝션 DTO인 `VisitSummary`로 상한 5건(`limit=5`)을 단일 바운디드 쿼리로 조회한 뒤 `welcome.jsp` 대시보드로 렌더링된다.
    - `ng-platform`의 **Prometheus**가 `was` JMX Exporter(`:9404/metrics`) 지표를 수집하고, `ng-critical`의 **KEDA**가 PromQL 요청률(`> 50 req/s`)을 조회하여 `was-stable`을 2~10개, `was-canary`를 1~3개 Pod로 수평 확장한다. Prometheus 조회가 3회 연속 실패하면 fallback 레플리카(4 / 2)를 유지한다.
    - `ng-critical`의 **OpenTelemetry Operator**(`:9443` Mutating Webhook)가 `was-stable`/`was-canary` Pod 생성 시 `Instrumentation` CR(`petclinic-java`)에 따라 `autoinstrumentation-java:2.12.0` init container와 `JAVA_TOOL_OPTIONS`를 무코드·무재빌드로 주입한다.
    - Java Agent는 `parentbased_traceidratio`(`${OTEL_TRACES_SAMPLER_ARG}`, 기본 `0.1` = 10%)로 헤드 샘플링된 HTTP·Spring MVC·Hibernate/JDBC 트레이스 스팬과, 샘플링 없이 **100% 전수 집계된 RED 메트릭**(`http.server.request.duration` + 샘플링된 트레이스에 한해 부착되는 `trace_based` Exemplar `trace_id`)을 OTLP HTTP(`:4318`)로 `ng-platform`의 **OpenTelemetry Collector**(2 Replicas AZ 분산)에 전송한다.
    - **OpenTelemetry Collector**는 `memory_limiter` → `batch` 처리 후 트레이스를 **Grafana Tempo**(`:4317` OTLP gRPC)로 전달하고, RED 메트릭과 Exemplar는 Prometheus Exporter(`:8889/metrics`, `enable_open_metrics: true`, `resource_to_telemetry_conversion.enabled: true`)로 노출하여 **Prometheus**(`enableFeatures: [exemplar-storage]`, `OpenMetricsText1.0.0`)가 스크래핑한다.
    - **Grafana Tempo**(단일 바이너리)는 Live-Store 로컬 WAL(`gp3` 10Gi PVC `/var/tempo`)을 거쳐 IRSA(`monitoring/tempo`)로 전용 **Amazon S3** 버킷(`${TEMPO_S3_BUCKET_NAME}`)에 트레이스 블록을 적재하고 `backend_scheduler`·`backend_worker`로 보존 기간(`${TEMPO_RETENTION_HOURS}`)을 관리하며, **Grafana**의 `PetClinic APM - Service & Canary Tracing` 대시보드(`service_version="stable|canary"`별 요청량·5xx 에러율·p95/p99 지연)에서 Exemplar 점(Dot)을 클릭하면 `trace_id`로 Tempo(`:3200`)의 해당 트레이스 워터폴로 즉시 이동한다.
 6. **⑥ `was` 및 DB 관리 워크로드 → RDS MySQL 8.4 LTS (`:3306` TLS)**:
-   - `was`는 **ESO**가 **AWS Secrets Manager**에서 동기화한 app 계정 시크릿 `petclinic-rds-secret`(SELECT/INSERT/UPDATE/DELETE 권한)을 주입받아 프라이빗 DB 서브넷의 **RDS MySQL Primary**에 TLS(`require_secure_transport=ON`, `sslMode=REQUIRED`)로 연결한다 (`caching_sha2_password` 기본 인증, Connector/J `8.4.0`).
+   - `was`는 **ESO**가 **AWS Secrets Manager**에서 동기화한 app 계정 시크릿 `petclinic-rds-secret`(SELECT/INSERT/UPDATE/DELETE 권한)을 주입받아 프라이빗 DB 서브넷의 **RDS MySQL Primary**에 TLS(`require_secure_transport=ON`, `sslMode=REQUIRED`)로 연결한다 (`caching_sha2_password` 기본 인증, Connector/J `8.4.0`). 대시보드 통계 및 최근 방문 조회를 포함한 모든 읽기 로직은 `ClinicServiceImpl`의 `@Transactional(readOnly = true)`로 격리되어 최소 권한 원칙 하에 안전하게 수행된다.
    - `ng-critical`의 `db-init` Job(`mysql:8.4.11`)은 admin 계정 시크릿(`petclinic-rds-admin-secret`)으로 스키마·초기 데이터를 적재하고 app/backup 계정을 생성(`caching_sha2_password` 및 `REQUIRE SSL`)하며, `db-backup` CronJob(`mysql:8.4.11`)은 읽기 전용 backup 계정 시크릿(`petclinic-rds-backup-secret`)으로 일일 `mysqldump` 후 **Amazon S3** 백업 버킷(`BACKUP_S3_BUCKET_NAME`, `SSE-KMS`)에 업로드한다. 모두 TLS로만 연결한다.
    - `was`는 ConfigMap(`petclinic-was-logback`)을 `/etc/petclinic-logging/logback.xml`로 마운트하여 컨테이너 표준 출력 로그에 `[trace_id=... span_id=...]`를 함께 기록하며, 모든 노드의 컨테이너 로그와 RDS 에러/슬로우쿼리 로그는 **Fluent Bit DaemonSet** 및 RDS 로그 내보내기를 통해 **Amazon CloudWatch Logs**로 수집된다.
 
@@ -340,6 +348,8 @@ sequenceDiagram
    - `buildspec.yml`과 `build-and-push.sh`는 `IMAGE_TAG` 정규식(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`) 및 `latest` 차단을 이중 검증하며, `build`와 `post_build` 단계에 `on-failure: ABORT`를 적용하여 단일 이미지 빌드/푸시 실패 시 부분 릴리스를 방지한다. 소스 패키징 시에도 `.env*`, `*.secret`, `*.key`, `*.pem`, `id_*`, `*.pfx`, `*.p12` 등 모든 자격증명·개인키 파일을 배제한다.
    - ESO가 AWS Secrets Manager의 시크릿을 주기적으로 동기화하여 `petclinic-rds-admin-secret`(db-init 전용), `petclinic-rds-secret`(was), `petclinic-rds-backup-secret`(db-backup), `grafana-admin`, `alertmanager-webhook`을 생성한다. Alertmanager Webhook URL은 Helm values나 Alertmanager 설정에 들어가지 않고 Secret 파일(`url_file`)로만 읽는다.
    - DB 계정은 역할별로 분리한다: admin(스키마 관리, db-init만 사용), app(`SELECT/INSERT/UPDATE/DELETE`), backup(`SELECT, SHOW VIEW, TRIGGER, LOCK TABLES, PROCESS`). 모든 계정은 MySQL 8.4 기본 규격인 `caching_sha2_password` 인증 및 `REQUIRE SSL`이 적용되며(TLS 터널 상에서 동작하므로 별도 RSA 공개키 교환 불필요), 비밀번호 변경은 `scripts/rotate-db-secrets.sh`로 반영한다(ESO 동기화가 확인되지 않으면 db-init 전에 중단).
+   - 대시보드(`welcome.jsp`)에 출력되는 보호자 성명·연락처, 반려동물 및 진료 메모 등 개인정보(PII)는 JSTL `<c:out value="..."/>` 및 Spring 태그 `htmlEscape="true"`를 철저히 적용하여 Cross-Site Scripting(XSS)을 원천 차단한다.
+   - 대시보드 조회(`GET /`, `/welcome`)는 외부 사용자 파라미터 수신 없이 정해진 상한(`limit=5`)으로 실행되며, 모든 쿼리는 JPA 파라미터 바인딩 및 JDBC NamedParameter 바인딩을 적용해 SQL Injection을 방어한다. 또한 `Pet.visits` EAGER 연관 로딩으로 인한 N+1 다중 쿼리 및 대규모 엔티티 그래프 메모리 점유(CWE-400 리소스 고갈)를 방어하기 위해 전용 프로젝션 DTO(`VisitSummary`)를 사용하여 단 1회의 바운디드 쿼리로 DB 커넥션 풀(최대 10)과 WAS 힙 메모리를 보호한다.
    - 운영 로그(CloudWatch Logs)에 고객 개인정보(Owner 이름·주소·전화번호)가 포함된 SQL문이 유출되지 않도록 `jpa.showSql=false`를 기본값으로 유지하고, OTel Java Agent의 JDBC 스팬도 파라미터화된 쿼리(`?`)만 기록하며 DB 비밀번호는 별도 `JDBC_PASSWORD` 환경변수로 분리한다.
 5. **컨테이너 및 네임스페이스 하드닝**:
    - 모든 네임스페이스에 워크로드 특성에 맞는 Pod Security Standards(`petclinic`·`opentelemetry-operator-system`: `enforce: restricted`, `nginx-gateway`/`external-secrets`/`keda`: `enforce: baseline`, `monitoring`/`amazon-cloudwatch`: `enforce: privileged`) 레이블을 적용한다.
@@ -389,3 +399,7 @@ sequenceDiagram
 - `rds-mysql-84`: 서울 리전(`ap-northeast-2`)에서 8.0.39 신규 생성이 불가능하고 MySQL 8.0 표준 지원이 2026-07 종료됨에 따라, RDS MySQL 엔진 버전을 5년간 표준 지원이 보장되는 최신 8.4 LTS(`8.4.11`)로 고정하고 DB 파라미터 그룹 패밀리를 `mysql8.4`로 전환함 / Extended Support 추가 과금을 방지하고 2029년 7월까지 장기적인 운영 안정성을 확보하기 위함
 - `rds-mysql-84`: MySQL 8.4에서 `mysql_native_password`가 기본 비활성화됨에 따라 기본 인증 방식인 `caching_sha2_password`를 적용하고, 애플리케이션 JDBC 드라이버를 `mysql-connector-j` `8.4.0`으로 상향함 / 전 구간 TLS(`require_secure_transport=ON`, `sslMode=REQUIRED`, `REQUIRE SSL`)가 강제되므로 추가 RSA 공개키 교환(`allowPublicKeyRetrieval=true`) 없이 안전하고 호환성 높은 인증을 달성하기 위함
 - `rds-mysql-84`: `db-init` Job 및 `db-backup` CronJob의 클라이언트 컨테이너 이미지를 RDS 엔진과 일치하는 `mysql:8.4.11`로 변경하고 `scripts/validate-manifests.sh`에 엔진·파라미터 그룹·이미지·드라이버 정적 검증을 추가함 / 클라이언트-서버 간 메이저 버전 불일치로 인한 프로토콜 경고 및 mysqldump 호환성 문제를 방지하고 버전 드리프트를 배포 전 차단하기 위함
+- `staff-dashboard`: 메인 화면(`/` 및 `/welcome`)을 정적 뷰 컨트롤러(`<mvc:view-controller>`)에서 `@Controller` 기반 `WelcomeController`로 전환하고 `ClinicService` 파사드를 통해 핵심 통계 3종(보호자·반려동물·방문 수)과 수의사 명단, 보호자 검색 폼을 제공하는 운영 대시보드로 개편함 / 병원 스태프가 첫 화면에서 병원 운영 지표와 최근 진료 흐름을 즉시 파악하고 신속 검색과 방문 등록으로 바로 연계할 수 있는 콘솔을 제공하기 위함
+- `staff-dashboard`: 대시보드 최근 방문 목록(`findRecentVisits`) 조회 시 `Visit` 엔티티 대신 읽기 전용 플랫 프로젝션 DTO(`VisitSummary`)를 도입함 / `Pet.visits` 컬렉션의 `FetchType.EAGER` 매핑으로 인해 fetch join 시에도 반려동물별 전체 방문 이력이 N+1 추가 조회되는 부하를 원천 차단하고 단 1회의 상한 제한(`limit=5`) 쿼리로만 필요한 필드를 로딩하기 위함 (design.md의 `List<Visit>` 엔티티 그래프 대신 `VisitSummary` 프로젝션 적용)
+- `staff-dashboard`: DB 스키마(DDL) 변경 없이 기존 테이블 구조를 유지하고, 목업의 담당 수의사(Assigned Vet)·당직 상태(On Duty) 및 당일 방문(Visits Today) 대신 수의사 전문 분야 명단과 전체 누적 방문 수로 대체함 / 사용자 요구사항에 따라 DB 스키마 수정을 일절 배제하고 과거 시점(2008~2011) 샘플 데이터 환경에서도 빈 화면 없이 일관된 통계를 제공하기 위함
+- `staff-dashboard`: 목업의 전역 신규 방문/반려동물 등록 버튼 대신 최근 방문 행별 개별 등록 링크(`/owners/{ownerId}/pets/{petId}/visits/new`)를 제공함 / PetClinic 도메인 구조상 방문 등록은 반드시 특정 보호자 및 반려동물 컨텍스트 하에서만 유효하여 유효하지 않은 전역 엔드포인트 오류를 방지하기 위함
