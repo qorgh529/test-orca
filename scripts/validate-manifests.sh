@@ -367,8 +367,8 @@ for job in ("k8s/jobs/job-db-init.yaml", "k8s/jobs/cronjob-db-backup.yaml"):
     imgs = re.findall(r"image:\s*(mysql:\S+)", (root / job).read_text(encoding="utf-8"))
     if not imgs or any(i != f"mysql:{MYSQL}" for i in imgs):
         err(f"{job}: mysql client image must be mysql:{MYSQL} (got {imgs})")
-if not re.search(r"<mysql-driver\.version>8\.4\.\d+</mysql-driver\.version>", pom):
-    err("app/pom.xml: mysql-driver.version must be Connector/J 8.4.x")
+if "<mysql-driver.version>8.4.0</mysql-driver.version>" not in pom:
+    err("app/pom.xml: mysql-driver.version must be Connector/J 8.4.0")
 
 if errors:
     print("\n".join("FAIL " + e for e in errors))
