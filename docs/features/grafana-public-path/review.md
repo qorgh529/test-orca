@@ -4,15 +4,15 @@
 지적 사항 없음.
 
 ### High
-- [ ] `scripts/deploy-all.sh:145`, `infra/aws/provision-aws-resources.sh:148`, `infra/aws/provision-aws-resources.sh:377` — 기본 배포 경로가 IP 제한을 보장하지 않는다. README의 pre-cluster → cluster → post-cluster → deploy-all 순서를 따르면 WebACL은 DefaultAction Allow와 관리형 규칙만 가진 채 생성되고, deploy-all은 `/grafana` HTTPRoute까지 공개한다. 새 `grafana-waf` 하위 명령은 이 흐름에서 호출되지 않으며 배포 전 해당 규칙·IPSet 검증도 없다. 따라서 빈 `GRAFANA_ALLOWED_CIDRS`가 모든 외부 접근을 막는다는 설계 §1.2·§5.2와 달리 정상 로그인 요청은 모든 IP에서 Grafana에 도달한다. 별도 명령 방식은 유지할 수 있지만, 공개 라우트 적용 전에 대상 WebACL의 차단 규칙·IPSet 연결을 검증하여 누락 시 배포를 중단하고 README의 필수 실행 순서에도 명시해야 한다. AWS 호출을 모킹한 오프라인 시험으로 규칙 미적용 시 라우트가 공개되지 않는지 확인할 것을 제안한다.
+- [x] (b709524) `scripts/deploy-all.sh:145`, `infra/aws/provision-aws-resources.sh:148`, `infra/aws/provision-aws-resources.sh:377` — 기본 배포 경로가 IP 제한을 보장하지 않는다. README의 pre-cluster → cluster → post-cluster → deploy-all 순서를 따르면 WebACL은 DefaultAction Allow와 관리형 규칙만 가진 채 생성되고, deploy-all은 `/grafana` HTTPRoute까지 공개한다. 새 `grafana-waf` 하위 명령은 이 흐름에서 호출되지 않으며 배포 전 해당 규칙·IPSet 검증도 없다. 따라서 빈 `GRAFANA_ALLOWED_CIDRS`가 모든 외부 접근을 막는다는 설계 §1.2·§5.2와 달리 정상 로그인 요청은 모든 IP에서 Grafana에 도달한다. 별도 명령 방식은 유지할 수 있지만, 공개 라우트 적용 전에 대상 WebACL의 차단 규칙·IPSet 연결을 검증하여 누락 시 배포를 중단하고 README의 필수 실행 순서에도 명시해야 한다. AWS 호출을 모킹한 오프라인 시험으로 규칙 미적용 시 라우트가 공개되지 않는지 확인할 것을 제안한다.
 
 변경 코드·문서(docs/daily 포함)에서 계정 ID·ARN·엔드포인트·개인 URL 실값 노출은 발견하지 못했다.
 
 ### Medium / Low
-- [ ] `scripts/validate-manifests.sh:442` — Low: Grafana NetworkPolicy 검증은 명시된 포트만 순회하므로 `ingress: [{}]`처럼 모든 출처·포트를 허용하는 정책도 통과한다. 실제 정책의 메모리 사본으로 이 조건을 실행해 오류가 검출되지 않음을 확인했다. podSelector, policyTypes, 두 허용 출처(namespaceSelector와 podSelector의 결합 포함), 각 ports의 존재와 TCP/3000을 구조적으로 검사하고 전체 허용·출처 제거·포트 제거에 대한 음성 시험을 추가할 것을 제안한다. 현재 매니페스트 자체의 선택자와 포트는 설계 의도에 부합한다.
+- [x] (b709524) `scripts/validate-manifests.sh:442` — Low: Grafana NetworkPolicy 검증은 명시된 포트만 순회하므로 `ingress: [{}]`처럼 모든 출처·포트를 허용하는 정책도 통과한다. 실제 정책의 메모리 사본으로 이 조건을 실행해 오류가 검출되지 않음을 확인했다. podSelector, policyTypes, 두 허용 출처(namespaceSelector와 podSelector의 결합 포함), 각 ports의 존재와 TCP/3000을 구조적으로 검사하고 전체 허용·출처 제거·포트 제거에 대한 음성 시험을 추가할 것을 제안한다. 현재 매니페스트 자체의 선택자와 포트는 설계 의도에 부합한다.
 
 ### 기존 아키텍처와의 불일치
-- [ ] `k8s/monitoring/kube-prometheus-values.yaml:57` — Medium: Grafana 공개 경로와 별도로 Alertmanager의 일반 `webhook_configs`를 `slack_configs`로 교체했다. architecture.md §6은 Slack/PagerDuty 등 일반 Webhook 수신처를 허용하고 §7은 `url_file`을 명시하지만, 이제 기존 URL 시크릿의 수신처가 Slack Incoming Webhook이어야 하며 일반 Webhook/PagerDuty용 JSON 계약은 유지되지 않는다. 실제 Slack 수신처에 대한 수정 의도는 이해되지만, 지원 범위를 Slack으로 한정하는 결정을 설계·아키텍처·설정 가이드에 반영하거나 수신처에 맞게 통합 방식을 선택할 수 있도록 해야 한다.
+- [x] (02c1e78) `k8s/monitoring/kube-prometheus-values.yaml:57` — Medium: Grafana 공개 경로와 별도로 Alertmanager의 일반 `webhook_configs`를 `slack_configs`로 교체했다. architecture.md §6은 Slack/PagerDuty 등 일반 Webhook 수신처를 허용하고 §7은 `url_file`을 명시하지만, 이제 기존 URL 시크릿의 수신처가 Slack Incoming Webhook이어야 하며 일반 Webhook/PagerDuty용 JSON 계약은 유지되지 않는다. 실제 Slack 수신처에 대한 수정 의도는 이해되지만, 지원 범위를 Slack으로 한정하는 결정을 설계·아키텍처·설정 가이드에 반영하거나 수신처에 맞게 통합 방식을 선택할 수 있도록 해야 한다.
 - `k8s/gateway/httproute-grafana.yaml:18`, `k8s/monitoring/referencegrant-grafana.yaml:8`, `k8s/monitoring/networkpolicy-grafana.yaml:14` — NGF에서 monitoring Service로 직접 연결하는 변경은 기능 설계에서 승인한 확장이다. ALB TLS/WAF → NGF L7 분기, 기존 앱 stable/canary 경로, 노드 티어와 시크릿 전달 구조의 추가 이탈은 발견하지 못했다. 데이터 플레인 Pod로 출처를 좁힌 구현도 설계 의도와 일치한다.
 
 ### 검증
