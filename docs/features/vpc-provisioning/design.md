@@ -333,6 +333,7 @@ VPC 프로비저닝 및 NAT 게이트웨이 라이프사이클 관리에 필요�
 - `ec2:DescribeAddresses`, `ec2:AllocateAddress`, `ec2:ReleaseAddress`
 - `ec2:DescribeNatGateways`, `ec2:CreateNatGateway`, `ec2:DeleteNatGateway`
 - `ec2:CreateTags`, `ec2:DescribeTags`
+- `ec2:DescribeInstances` (`nat-stop.sh` 가 VPC 안에 남은 EC2가 없는지 확인할 때)
 불필요한 IAM, S3, RDS 수정 권한은 이 스크립트 실행에 요구되지 않습니다.
 
 ### 5.2 계층별 네트워크 격리 및 서브넷 라우팅 보안
@@ -462,5 +463,5 @@ VPC 프로비저닝 및 NAT 게이트웨이 라이프사이클 관리에 필요�
 - **Q2. ELB 서브넷 태그 미부여** — §3.2 (참고)의 `kubernetes.io/role/elb` / `internal-elb` 태그는 넣지 않았다. 10-26 실환경 서브넷에 없고(요구사항: 실환경과 동일), ALB는 `alb-ingress.yaml` 의 `alb.ingress.kubernetes.io/subnets` 어노테이션으로 서브넷을 직접 지정하므로 필요 없다.
 - **Q3. 다른 설정으로 이미 있는 리소스** — 같은 Name 태그의 VPC·서브넷이 다른 CIDR/AZ이거나, 서브넷이 다른 라우트 테이블에 연결돼 있거나, IGW가 다른 VPC에 붙어 있거나, `petclinic-vpc` 가 2개 이상이면 **고치지 않고 멈춘다**(실환경을 조용히 바꾸지 않기 위해). 기본 경로(0.0.0.0/0)만 대상이 다르면 `replace-route` 로 바로잡는다(삭제된 NAT를 가리키는 blackhole 경로 복구).
 - **Q4. NAT 생성 코드 공유** — `vpc` 단계의 NAT·EIP·앱 라우트 설정은 따로 구현하지 않고 마지막에 `scripts/nat-start.sh` 를 호출한다. `nat-start.sh` 는 VPC를 `.env` 가 아니라 `Name=petclinic-vpc` 태그로 찾으므로 `.env` 를 채우기 전(새 VPC 직후)에도 동작한다. NAT가 이미 있어도 앱 라우트가 그 NAT를 가리키는지 확인하고, 실패한 실행이 남긴 미연결 EIP(`petclinic-nat-2<az>` 태그)는 재사용한다.
-- **Q5. nat-stop 안전장치 추가** — 설계에 없던 보호: VPC 안에 `pending/running/stopping` EC2가 있으면 멈춘다(노드 egress 차단 방지, `--force` 로 무시). 10-26 마감처럼 마지막 노드가 `Terminating:Wait` 에 걸려 있으면 `daily-stop.sh --stop-nat` 은 노드 그룹 축소 후 이 단계에서 실패하므로, 노드가 사라진 뒤 `nat-stop.sh` 를 다시 실행한다. 이미 `deleting` 인 NAT도 삭제 완료를 기다리며, EIP는 **연결되지 않은 것만** 반납한다(연결된 것은 개수만 안내).
+- **Q5. nat-stop 안전장치 추가** — 설계에 없던 보호: VPC 안에 `pending/running/stopping` EC2가 남아 있으면 최대 `NAT_STOP_INSTANCE_WAIT`(기본 300초) 동안 10초 간격으로 종료를 기다린 뒤, 그래도 남아 있으면 멈춘다(노드 egress 차단 방지, `--force` 로 무시). 10-26 마감처럼 마지막 노드가 `Terminating:Wait` 에 오래 걸려 있으면 `daily-stop.sh --stop-nat` 은 이 단계에서 실패하므로, 노드가 사라진 뒤 `nat-stop.sh` 를 다시 실행한다. 이미 `deleting` 인 NAT도 삭제 완료를 기다린다. EIP는 **삭제한 NAT에 붙어 있던 주소**와, 실패한 `nat-start` 가 남긴 `petclinic-nat-2a/2c` 이름의 미연결 주소만 반납한다(같은 Project의 다른 EIP는 건드리지 않음, review/security R1 High).
 - **Q6. 두 스크립트의 `--dry-run`** — `daily-*.sh --dry-run` 과 `validate-manifests.sh` 가 오프라인으로 돌 수 있도록 `nat-start.sh`/`nat-stop.sh` 에 `--dry-run`(AWS 호출 전에 계획만 출력하고 종료)을 넣었다.
