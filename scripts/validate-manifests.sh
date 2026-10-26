@@ -461,8 +461,10 @@ if sorted(allowed) != ["nginx-gateway", "petclinic"]:
     err("gateway.yaml: routes allowed only from petclinic and nginx-gateway")
 if not re.search(r"^GRAFANA_ALLOWED_CIDRS=$", (root / ".env.example").read_text(encoding="utf-8"), re.M):
     err(".env.example: GRAFANA_ALLOWED_CIDRS= must be present and empty")
-if "grafana-waf) grafana_waf" not in prov or '"URL_DECODE"' not in prov or '"NORMALIZE_PATH"' not in prov:
-    err("provision-aws-resources.sh: grafana-waf must block /grafana after URL_DECODE + NORMALIZE_PATH")
+if ("grafana-waf) grafana_waf" not in prov or '"URL_DECODE"' not in prov or '"NORMALIZE_PATH"' not in prov
+        or "update-web-acl --scope REGIONAL --name \"$acl_name\" --id \"$acl_id\" --cli-binary-format raw-in-base64-out" not in prov):
+    err("provision-aws-resources.sh: grafana-waf must block /grafana after URL_DECODE + NORMALIZE_PATH,"
+        " sending SearchString raw (--cli-binary-format raw-in-base64-out)")
 
 if errors:
     print("\n".join("FAIL " + e for e in errors))

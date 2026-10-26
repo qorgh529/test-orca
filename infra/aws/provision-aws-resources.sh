@@ -415,7 +415,8 @@ grafana_waf() {
               {Priority: 0, Type: "URL_DECODE"}, {Priority: 1, Type: "NORMALIZE_PATH"},
               {Priority: 2, Type: "LOWERCASE"}]}},
           {NotStatement: {Statement: {IPSetReferenceStatement: {ARN: $set}}}}]}}}] + .' <<<"$acl")
-  aws wafv2 update-web-acl --scope REGIONAL --name "$acl_name" --id "$acl_id" \
+  # SearchString is a blob: CLI v2 would base64-decode "/grafana" into bytes that never match.
+  aws wafv2 update-web-acl --scope REGIONAL --name "$acl_name" --id "$acl_id" --cli-binary-format raw-in-base64-out \
     --lock-token "$(jq -r .LockToken <<<"$acl")" \
     --default-action "$(jq -c .WebACL.DefaultAction <<<"$acl")" \
     --visibility-config "$(jq -c .WebACL.VisibilityConfig <<<"$acl")" \
