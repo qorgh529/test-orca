@@ -324,6 +324,10 @@ else:
         err("buildspec.yml: build must run two docker builds (was, web) with --platform linux/amd64")
     if (phases.get("build") or {}).get("on-failure") != "ABORT":
         err("buildspec.yml: build phase must set on-failure: ABORT (no push after a failed build)")
+    if (phases.get("post_build") or {}).get("on-failure") != "ABORT":
+        err("buildspec.yml: post_build must set on-failure: ABORT (no web push after a failed was push)")
+    if "=~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$" not in cmds("pre_build"):
+        err("buildspec.yml: pre_build must check IMAGE_TAG against the docker tag grammar")
 try:
     pol = json.loads((root / "infra/aws/iam-policies/codebuild-policy.json").read_text(encoding="utf-8"))
     for st in pol["Statement"]:
@@ -343,10 +347,6 @@ try:
                 err(f"codebuild-policy.json: ECR access outside petclinic-web/was: {r}")
 except (OSError, ValueError, KeyError) as e:
     err(f"infra/aws/iam-policies/codebuild-policy.json: {e}")
-    if (phases.get("post_build") or {}).get("on-failure") != "ABORT":
-        err("buildspec.yml: post_build must set on-failure: ABORT (no web push after a failed was push)")
-    if "=~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$" not in cmds("pre_build"):
-        err("buildspec.yml: pre_build must check IMAGE_TAG against the docker tag grammar")
 # The CodeBuild bucket gets a 1-day expiry: provisioning must refuse a name shared with backup/Tempo.
 prov = (root / "infra/aws/provision-aws-resources.sh").read_text(encoding="utf-8")
 if not re.search(r'"\$CODEBUILD_S3_BUCKET_NAME" != "\$BACKUP_S3_BUCKET_NAME" \] && \[ "\$CODEBUILD_S3_BUCKET_NAME" != "\$TEMPO_S3_BUCKET_NAME"', prov):
