@@ -5,6 +5,7 @@
 #   5. stable/canary tags, DB secret per role, JDBC pool cap, KEDA fallback, Prometheus HA, PDBs
 #   6. scripts/daily-{stop,start}.sh syntax, offline --dry-run, tests/scripts/daily-stop-start.test.sh (needs jq)
 #   7. tracing: placement, IRSA-only Tempo (grafana-community chart, pinned image), was agent injection / service.version / resources
+#   8. codebuild: buildspec tag guards + linux/amd64, least-privilege service role policy, .env.example variables
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
@@ -22,7 +23,7 @@ for s in daily-stop daily-start; do
     echo "FAIL scripts/$s.sh --dry-run"; echo "$out"; exit 1
   fi
 done
-for s in infra/aws/provision-aws-resources.sh scripts/deploy-all.sh; do
+for s in infra/aws/provision-aws-resources.sh scripts/deploy-all.sh scripts/build-and-push.sh; do
   bash -n "$ROOT/$s" || { echo "FAIL $s: bash syntax"; exit 1; }
 done
 # Real-mode branches (lookup errors, RDS stopping, state file, maxSize) against fake aws/kubectl.
@@ -304,6 +305,45 @@ for track in ("stable", "canary"):
         err(f"Deployment/was-{track}: memory must be >= 1280Mi request / 2Gi limit (Java agent overhead)")
     if not (c.get("readinessProbe") or {}).get("initialDelaySeconds"):
         err(f"Deployment/was-{track}: readinessProbe.initialDelaySeconds must be set")
+
+# 8. CodeBuild image build (docs/features/codebuild-image-build/design.md)
+import json
+bs = docs.get(root / "buildspec.yml", [None])[0]
+if not isinstance(bs, dict) or str(bs.get("version")) != "0.2":
+    err("buildspec.yml: missing or not version 0.2")
+else:
+    phases = bs.get("phases") or {}
+    cmds = lambda ph: "\n".join(str(c) for c in (phases.get(ph) or {}).get("commands") or [])
+    if '"$IMAGE_TAG" != "latest"' not in cmds("pre_build"):
+        err("buildspec.yml: pre_build must reject IMAGE_TAG=latest")
+    builds = re.findall(r"docker build\b[^\n]*", cmds("build"))
+    if len(builds) != 2 or any("--platform linux/amd64" not in b for b in builds):
+        err("buildspec.yml: build must run two docker builds (was, web) with --platform linux/amd64")
+    if (phases.get("build") or {}).get("on-failure") != "ABORT":
+        err("buildspec.yml: build phase must set on-failure: ABORT (no push after a failed build)")
+try:
+    pol = json.loads((root / "infra/aws/iam-policies/codebuild-policy.json").read_text(encoding="utf-8"))
+    for st in pol["Statement"]:
+        acts = st["Action"] if isinstance(st["Action"], list) else [st["Action"]]
+        res = st["Resource"] if isinstance(st["Resource"], list) else [st["Resource"]]
+        if "*" in res and acts != ["ecr:GetAuthorizationToken"]:
+            err(f"codebuild-policy.json: {st.get('Sid')}: only ecr:GetAuthorizationToken may use Resource *")
+        if any(a.endswith("*") for a in acts):
+            err(f"codebuild-policy.json: {st.get('Sid')}: wildcard action")
+        for a in acts:
+            if a.startswith("s3:") and a not in ("s3:GetObject", "s3:GetObjectVersion", "s3:GetBucketLocation"):
+                err(f"codebuild-policy.json: {a}: CodeBuild only reads the source bucket")
+        for r in res:
+            if r.startswith("arn:aws:s3:::") and "${CODEBUILD_S3_BUCKET_NAME}" not in r:
+                err(f"codebuild-policy.json: S3 access outside the CodeBuild bucket: {r}")
+            if r.startswith("arn:aws:ecr:") and not r.endswith(("repository/petclinic-web", "repository/petclinic-was")):
+                err(f"codebuild-policy.json: ECR access outside petclinic-web/was: {r}")
+except (OSError, ValueError, KeyError) as e:
+    err(f"infra/aws/iam-policies/codebuild-policy.json: {e}")
+env_example = (root / ".env.example").read_text(encoding="utf-8")
+for v in ("CODEBUILD_PROJECT_NAME", "CODEBUILD_S3_BUCKET_NAME"):
+    if not re.search(rf"^{v}=", env_example, re.M):
+        err(f".env.example: missing {v}")
 
 if errors:
     print("\n".join("FAIL " + e for e in errors))
