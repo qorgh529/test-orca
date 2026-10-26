@@ -35,10 +35,10 @@
 지적 사항 없음. 변경 코드·문서(`docs/daily` 포함)에서 계정 ID·ARN·엔드포인트·개인 URL 실값 노출은 발견하지 못했다.
 
 ### Medium / Low
-- [ ] `scripts/lib.sh:56`, `tests/scripts/grafana-waf-ready.test.sh:39` — Medium: 배포 전 WAF 검사는 규칙 이름·Block 액션·IPSet 참조 개수만 확인한다. 예를 들어 해당 이름의 규칙이 `Statement: {IPSetReferenceStatement: ...}`를 직접 가지면 허용 IP를 오히려 차단하고 비허용 IP는 통과시키지만 검사 결과는 true다(현재 jq 식에 메모리 JSON을 넣어 재현). 현재 프로비저닝 코드가 생성하는 규칙은 올바르므로 기본 실행 경로의 새 노출 버그는 아니다. 다만 사전 검사가 보장한다고 설명한 의미를 만족하려면 `/grafana` UriPath 비교 및 변환, AND 아래 NOT IPSet 참조와 대상 IPSet을 구조적으로 확인하고, NOT 제거·다른 경로·다른 IPSet에 대한 음성 시험을 추가해야 한다.
+- [x] (4c2f666) `scripts/lib.sh:56`, `tests/scripts/grafana-waf-ready.test.sh:39` — Medium: 배포 전 WAF 검사는 규칙 이름·Block 액션·IPSet 참조 개수만 확인한다. 예를 들어 해당 이름의 규칙이 `Statement: {IPSetReferenceStatement: ...}`를 직접 가지면 허용 IP를 오히려 차단하고 비허용 IP는 통과시키지만 검사 결과는 true다(현재 jq 식에 메모리 JSON을 넣어 재현). 현재 프로비저닝 코드가 생성하는 규칙은 올바르므로 기본 실행 경로의 새 노출 버그는 아니다. 다만 사전 검사가 보장한다고 설명한 의미를 만족하려면 `/grafana` UriPath 비교 및 변환, AND 아래 NOT IPSet 참조와 대상 IPSet을 구조적으로 확인하고, NOT 제거·다른 경로·다른 IPSet에 대한 음성 시험을 추가해야 한다.
 
 ### 기존 아키텍처와의 불일치
-- [ ] `k8s/monitoring/kube-prometheus-values.yaml:57`, `docs/architecture.md:380`, `.env.example:72` — Medium (Round 1 재지적): Slack 전용 `slack_configs` 전환은 유지되지만 architecture.md §6은 여전히 Slack/PagerDuty 등 일반 Webhook 지원을 기술하고 §7은 `url_file`을 명시한다. `.env.example:74`에는 Slack 전용 설명이 추가됐으나 바로 앞 72행은 Slack/PagerDuty를 계속 안내한다. 따라서 `[x] (02c1e78)` 항목은 부분 해결 상태다. 아키텍처의 지원 수신처를 Slack Incoming Webhook으로 한정하고 파일 설정 이름을 `api_url_file`로 맞추며 환경변수 주석도 일치시켜야 한다. 일반 Webhook을 계속 지원하려면 수신처별 설정 선택이 필요하다.
+- [x] (777ae11, architecture.md §6·§7은 ⑦에서 실제 설정 기준으로 정정) `k8s/monitoring/kube-prometheus-values.yaml:57`, `docs/architecture.md:380`, `.env.example:72` — Medium (Round 1 재지적): Slack 전용 `slack_configs` 전환은 유지되지만 architecture.md §6은 여전히 Slack/PagerDuty 등 일반 Webhook 지원을 기술하고 §7은 `url_file`을 명시한다. `.env.example:74`에는 Slack 전용 설명이 추가됐으나 바로 앞 72행은 Slack/PagerDuty를 계속 안내한다. 따라서 `[x] (02c1e78)` 항목은 부분 해결 상태다. 아키텍처의 지원 수신처를 Slack Incoming Webhook으로 한정하고 파일 설정 이름을 `api_url_file`로 맞추며 환경변수 주석도 일치시켜야 한다. 일반 Webhook을 계속 지원하려면 수신처별 설정 선택이 필요하다.
 - NGF → monitoring 직접 라우팅은 기능 설계에서 승인한 확장이다. ALB TLS/WAF → NGF 분기, 기존 앱 stable/canary 경로, 노드 티어 및 ESO 기반 시크릿 전달 구조에서 추가 불일치는 발견하지 못했다.
 
 ### 이전 라운드 및 검증
