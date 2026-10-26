@@ -16,6 +16,7 @@
 package org.springframework.samples.petclinic.service;
 
 import java.util.Collection;
+import java.util.List;
 
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.samples.petclinic.model.Owner;
@@ -106,6 +107,30 @@ public class ClinicServiceImpl implements ClinicService {
 	public Collection<Visit> findVisitsByPetId(int petId) {
 		return visitRepository.findByPetId(petId);
 	}
+
+    @Override
+    @Transactional(readOnly = true)
+    public long countOwners() {
+        return ownerRepository.countOwners();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public long countPets() {
+        return petRepository.countPets();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public long countVisits() {
+        return visitRepository.countVisits();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<Visit> findRecentVisits(int limit) {
+        return visitRepository.findRecentVisits(limit);
+    }
 
 
 }

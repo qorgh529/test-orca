@@ -16,6 +16,7 @@
 package org.springframework.samples.petclinic.service;
 
 import java.util.Collection;
+import java.util.List;
 
 import org.springframework.samples.petclinic.model.Owner;
 import org.springframework.samples.petclinic.model.Pet;
@@ -48,5 +49,13 @@ public interface ClinicService {
     Collection<Owner> findOwnerByLastName(String lastName);
 
 	Collection<Visit> findVisitsByPetId(int petId);
+
+    long countOwners();
+
+    long countPets();
+
+    long countVisits();
+
+    List<Visit> findRecentVisits(int limit);
 
 }
