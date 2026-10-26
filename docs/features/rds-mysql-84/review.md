@@ -7,7 +7,7 @@
 지적 사항 없음. 변경된 코드·문서 및 일일 기록에서 계정 ID·ARN·엔드포인트·개인 URL 실값 노출은 발견하지 못했다.
 
 ### Medium / Low
-- [ ] `scripts/validate-manifests.sh:370` — Low: Connector/J 검사가 설계 §6 4단계의 고정 버전 `8.4.0` 대신 모든 `8.4.x`를 허용한다. 실제로 존재하지 않는 `8.4.999`도 정규식을 통과하므로 드라이버 버전 오입력을 검출하지 못한다. `8.4.0`을 정확히 비교하고 오류 메시지도 고정 버전에 맞출 것을 제안한다. 현재 pom.xml의 실제 버전은 설계와 일치한다.
+- [x] `scripts/validate-manifests.sh:370` — Low: Connector/J 검사가 설계 §6 4단계의 고정 버전 `8.4.0` 대신 모든 `8.4.x`를 허용한다. 실제로 존재하지 않는 `8.4.999`도 정규식을 통과하므로 드라이버 버전 오입력을 검출하지 못한다. `8.4.0`을 정확히 비교하고 오류 메시지도 고정 버전에 맞출 것을 제안한다. 현재 pom.xml의 실제 버전은 설계와 일치한다. (`a645975`)
 
 ### 기존 아키텍처와의 차이
 - `infra/aws/provision-aws-resources.sh:297`, `infra/aws/provision-aws-resources.sh:311`, `k8s/jobs/job-db-init.yaml:35`, `k8s/jobs/cronjob-db-backup.yaml:40` — 기존 architecture.md의 MySQL 8.0/클라이언트 8.0.39와 달리 엔진·클라이언트를 8.4.11, 파라미터 그룹을 mysql8.4로 변경했다. 기능 설계 §2.1·§4.1에서 승인한 변경이며, Multi-AZ·프라이빗 DB·TLS 강제·역할별 계정·백업 흐름의 추가 이탈은 발견하지 못했다. 워크플로 ⑦에서 architecture.md와 다이어그램의 버전 표기를 현행화해야 한다.
