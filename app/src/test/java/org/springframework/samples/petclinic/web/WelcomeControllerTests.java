@@ -8,7 +8,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.samples.petclinic.model.PetType;
 import org.springframework.samples.petclinic.model.Vet;
-import org.springframework.samples.petclinic.model.Visit;
+import org.springframework.samples.petclinic.model.VisitSummary;
 import org.springframework.samples.petclinic.service.ClinicService;
 import org.springframework.test.context.junit.jupiter.web.SpringJUnitWebConfig;
 import org.springframework.test.web.servlet.MockMvc;
@@ -43,7 +43,7 @@ class WelcomeControllerTests {
         given(this.clinicService.countVisits()).willReturn(4L);
         given(this.clinicService.findPetTypes()).willReturn(Lists.newArrayList(new PetType(), new PetType()));
         given(this.clinicService.findRecentVisits(WelcomeController.RECENT_VISITS_LIMIT))
-            .willReturn(List.of(new Visit()));
+            .willReturn(List.of(new VisitSummary(1, null, "check", 7, "Samantha", null, "cat", 6, "Jean", "Coleman", "6085552654")));
         given(this.clinicService.findVets()).willReturn(Lists.newArrayList(new Vet()));
     }
 

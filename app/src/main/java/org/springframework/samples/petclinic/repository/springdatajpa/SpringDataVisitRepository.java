@@ -22,6 +22,7 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.Repository;
 import org.springframework.samples.petclinic.model.Visit;
+import org.springframework.samples.petclinic.model.VisitSummary;
 import org.springframework.samples.petclinic.repository.VisitRepository;
 
 /**
@@ -37,10 +38,10 @@ public interface SpringDataVisitRepository extends VisitRepository, Repository<V
     long countVisits();
 
     @Override
-    default List<Visit> findRecentVisits(int limit) {
+    default List<VisitSummary> findRecentVisits(int limit) {
         return findRecent(PageRequest.of(0, limit));
     }
 
-    @Query("SELECT visit FROM Visit visit JOIN FETCH visit.pet pet JOIN FETCH pet.type JOIN FETCH pet.owner ORDER BY visit.date DESC, visit.id DESC")
-    List<Visit> findRecent(Pageable pageable);
+    @Query("SELECT new org.springframework.samples.petclinic.model.VisitSummary(visit.id, visit.date, visit.description, pet.id, pet.name, pet.birthDate, type.name, owner.id, owner.firstName, owner.lastName, owner.telephone) FROM Visit visit JOIN visit.pet pet JOIN pet.type type JOIN pet.owner owner ORDER BY visit.date DESC, visit.id DESC")
+    List<VisitSummary> findRecent(Pageable pageable);
 }

@@ -19,6 +19,7 @@ import java.util.List;
 
 import org.springframework.samples.petclinic.model.BaseEntity;
 import org.springframework.samples.petclinic.model.Visit;
+import org.springframework.samples.petclinic.model.VisitSummary;
 
 /**
  * Repository class for <code>Visit</code> domain objects All method names are compliant with Spring Data naming
@@ -44,10 +45,10 @@ public interface VisitRepository {
     long countVisits();
 
     /**
-     * Newest visits first, with pet, pet type and owner loaded.
+     * Newest visits first, as flat rows (no entity graph is loaded).
      *
      * @param limit maximum number of visits returned
      */
-    List<Visit> findRecentVisits(int limit);
+    List<VisitSummary> findRecentVisits(int limit);
 
 }

@@ -21,6 +21,7 @@ import jakarta.persistence.EntityManager;
 import jakarta.persistence.Query;
 
 import org.springframework.samples.petclinic.model.Visit;
+import org.springframework.samples.petclinic.model.VisitSummary;
 import org.springframework.samples.petclinic.repository.VisitRepository;
 import org.springframework.stereotype.Repository;
 
@@ -68,11 +69,13 @@ public class JpaVisitRepositoryImpl implements VisitRepository {
     }
 
     @Override
-    public List<Visit> findRecentVisits(int limit) {
-        // one query for the visit, its pet, type and owner; setMaxResults becomes a SQL LIMIT (no collection fetch)
+    public List<VisitSummary> findRecentVisits(int limit) {
+        // A projection, not entities: Pet.visits is EAGER and would pull every pet's whole history.
         return this.em.createQuery(
-                "SELECT v FROM Visit v JOIN FETCH v.pet p JOIN FETCH p.type JOIN FETCH p.owner ORDER BY v.date DESC, v.id DESC",
-                Visit.class)
+                "SELECT new org.springframework.samples.petclinic.model.VisitSummary(v.id, v.date, v.description, "
+                    + "p.id, p.name, p.birthDate, t.name, o.id, o.firstName, o.lastName, o.telephone) "
+                    + "FROM Visit v JOIN v.pet p JOIN p.type t JOIN p.owner o ORDER BY v.date DESC, v.id DESC",
+                VisitSummary.class)
             .setMaxResults(limit)
             .getResultList();
     }

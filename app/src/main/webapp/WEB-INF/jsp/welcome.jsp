@@ -54,20 +54,20 @@
                             <c:forEach items="${recentVisits}" var="visit">
                                 <tr>
                                     <td class="fw-semibold"><petclinic:localDate date="${visit.date}" pattern="yyyy-MM-dd"/></td>
-                                    <td><strong><c:out value="${visit.pet.name}"/></strong><br>
-                                        <small class="text-muted"><c:out value="${visit.pet.type.name}"/>
-                                            (DOB: <petclinic:localDate date="${visit.pet.birthDate}" pattern="yyyy-MM-dd"/>)</small></td>
+                                    <td><strong><c:out value="${visit.petName}"/></strong><br>
+                                        <small class="text-muted"><c:out value="${visit.petType}"/>
+                                            (DOB: <petclinic:localDate date="${visit.petBirthDate}" pattern="yyyy-MM-dd"/>)</small></td>
                                     <td>
                                         <spring:url value="/owners/{ownerId}" var="ownerUrl" htmlEscape="true">
-                                            <spring:param name="ownerId" value="${visit.pet.owner.id}"/>
+                                            <spring:param name="ownerId" value="${visit.ownerId}"/>
                                         </spring:url>
-                                        <a href="${ownerUrl}"><c:out value="${visit.pet.owner.firstName} ${visit.pet.owner.lastName}"/></a><br>
-                                        <small class="text-muted"><c:out value="${visit.pet.owner.telephone}"/></small></td>
+                                        <a href="${ownerUrl}"><c:out value="${visit.ownerFirstName} ${visit.ownerLastName}"/></a><br>
+                                        <small class="text-muted"><c:out value="${visit.ownerTelephone}"/></small></td>
                                     <td><c:out value="${visit.description}"/></td>
                                     <td>
                                         <spring:url value="/owners/{ownerId}/pets/{petId}/visits/new" var="visitUrl" htmlEscape="true">
-                                            <spring:param name="ownerId" value="${visit.pet.owner.id}"/>
-                                            <spring:param name="petId" value="${visit.pet.id}"/>
+                                            <spring:param name="ownerId" value="${visit.ownerId}"/>
+                                            <spring:param name="petId" value="${visit.petId}"/>
                                         </spring:url>
                                         <a href="${visitUrl}" class="btn btn-outline-primary btn-sm">+ Add Visit</a>
                                     </td>

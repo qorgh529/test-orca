@@ -18,13 +18,13 @@ package org.springframework.samples.petclinic.repository.jdbc;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.jdbc.core.simple.SimpleJdbcInsert;
-import org.springframework.samples.petclinic.model.Owner;
-import org.springframework.samples.petclinic.model.PetType;
 import org.springframework.samples.petclinic.model.Visit;
+import org.springframework.samples.petclinic.model.VisitSummary;
 import org.springframework.samples.petclinic.repository.VisitRepository;
 import org.springframework.stereotype.Repository;
 
 import javax.sql.DataSource;
+import java.time.LocalDate;
 import java.util.List;
 
 /**
@@ -104,11 +104,11 @@ public class JdbcVisitRepositoryImpl implements VisitRepository {
     }
 
     @Override
-    public List<Visit> findRecentVisits(int limit) {
+    public List<VisitSummary> findRecentVisits(int limit) {
         return this.jdbcClient.sql("""
                 SELECT visits.id as visit_id, visit_date, description,
-                       pets.id, pets.name, birth_date, type_id, owner_id, types.name as type_name,
-                       first_name, last_name, address, city, telephone
+                       pets.id as pet_id, pets.name as pet_name, birth_date, types.name as type_name,
+                       owners.id as owner_id, first_name, last_name, telephone
                 FROM visits
                 JOIN pets ON pets.id = visits.pet_id
                 JOIN types ON types.id = pets.type_id
@@ -117,24 +117,11 @@ public class JdbcVisitRepositoryImpl implements VisitRepository {
                 LIMIT :limit
                 """)
             .param("limit", limit)
-            .query((rs, row) -> {
-                Visit visit = new JdbcVisitRowMapper().mapRow(rs, row);
-                JdbcPet pet = new JdbcPetRowMapper().mapRow(rs, row);
-                PetType type = new PetType();
-                type.setId(pet.getTypeId());
-                type.setName(rs.getString("type_name"));
-                pet.setType(type);
-                Owner owner = new Owner();
-                owner.setId(pet.getOwnerId());
-                owner.setFirstName(rs.getString("first_name"));
-                owner.setLastName(rs.getString("last_name"));
-                owner.setAddress(rs.getString("address"));
-                owner.setCity(rs.getString("city"));
-                owner.setTelephone(rs.getString("telephone"));
-                owner.addPet(pet);
-                visit.setPet(pet);
-                return visit;
-            })
+            .query((rs, row) -> new VisitSummary(
+                rs.getInt("visit_id"), rs.getObject("visit_date", LocalDate.class), rs.getString("description"),
+                rs.getInt("pet_id"), rs.getString("pet_name"), rs.getObject("birth_date", LocalDate.class),
+                rs.getString("type_name"), rs.getInt("owner_id"), rs.getString("first_name"),
+                rs.getString("last_name"), rs.getString("telephone")))
             .list();
     }
 

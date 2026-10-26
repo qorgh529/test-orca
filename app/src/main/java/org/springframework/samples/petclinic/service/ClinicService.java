@@ -23,6 +23,7 @@ import org.springframework.samples.petclinic.model.Pet;
 import org.springframework.samples.petclinic.model.PetType;
 import org.springframework.samples.petclinic.model.Vet;
 import org.springframework.samples.petclinic.model.Visit;
+import org.springframework.samples.petclinic.model.VisitSummary;
 
 
 /**
@@ -56,6 +57,6 @@ public interface ClinicService {
 
     long countVisits();
 
-    List<Visit> findRecentVisits(int limit);
+    List<VisitSummary> findRecentVisits(int limit);
 
 }

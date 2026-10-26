@@ -28,6 +28,7 @@ import org.springframework.samples.petclinic.model.Pet;
 import org.springframework.samples.petclinic.model.PetType;
 import org.springframework.samples.petclinic.model.Vet;
 import org.springframework.samples.petclinic.model.Visit;
+import org.springframework.samples.petclinic.model.VisitSummary;
 import org.springframework.samples.petclinic.util.EntityUtils;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.transaction.annotation.Transactional;
@@ -209,17 +210,20 @@ abstract class AbstractClinicServiceTests {
 
     @Test
     void shouldFindRecentVisitsNewestFirstWithPetAndOwner() {
-        List<Visit> visits = this.clinicService.findRecentVisits(2);
+        List<VisitSummary> visits = this.clinicService.findRecentVisits(2);
         assertThat(visits).hasSize(2);
         assertThat(visits.get(0).getDate()).isEqualTo(LocalDate.of(2013, 1, 4));
         assertThat(visits.get(1).getDate()).isEqualTo(LocalDate.of(2013, 1, 3));
-        Pet pet = visits.get(0).getPet();
-        assertThat(pet.getId()).isEqualTo(7);
-        assertThat(pet.getName()).isEqualTo("Samantha");
-        assertThat(pet.getType().getName()).isEqualTo("cat");
-        assertThat(pet.getOwner().getId()).isEqualTo(6);
-        assertThat(pet.getOwner().getLastName()).isEqualTo("Coleman");
-        assertThat(pet.getOwner().getTelephone()).isNotBlank();
+        VisitSummary newest = visits.get(0);
+        assertThat(newest.getDescription()).isEqualTo("spayed");
+        assertThat(newest.getPetId()).isEqualTo(7);
+        assertThat(newest.getPetName()).isEqualTo("Samantha");
+        assertThat(newest.getPetBirthDate()).isNotNull();
+        assertThat(newest.getPetType()).isEqualTo("cat");
+        assertThat(newest.getOwnerId()).isEqualTo(6);
+        assertThat(newest.getOwnerFirstName()).isEqualTo("Jean");
+        assertThat(newest.getOwnerLastName()).isEqualTo("Coleman");
+        assertThat(newest.getOwnerTelephone()).isNotBlank();
     }
 
     @Test
