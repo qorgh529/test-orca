@@ -31,3 +31,47 @@ tests:
           - exp_labels: { severity: critical, namespace: petclinic, cronjob: db-backup }
             exp_annotations: { summary: "petclinic db-backup has not succeeded for over 26h" }
       - { eval_time: 28h, alertname: PetClinicDBBackupFailed, exp_alerts: [] }
+
+  # PetClinicHttp5xxRateHigh. 4xx only: 30% 404s (70 x 200 + 30 x 404 per minute) never count as 5xx.
+  - interval: 1m
+    input_series:
+      - series: 'http_server_request_duration_seconds_count{service_name="petclinic-was", http_response_status_code="200"}'
+        values: '0+70x15'
+      - series: 'http_server_request_duration_seconds_count{service_name="petclinic-was", http_response_status_code="404"}'
+        values: '0+30x15'
+    alert_rule_test:
+      - { eval_time: 5m, alertname: PetClinicHttp5xxRateHigh, exp_alerts: [] }
+      - { eval_time: 10m, alertname: PetClinicHttp5xxRateHigh, exp_alerts: [] }
+
+  # Low traffic, as on 2026-10-27 after daily-start: ~0.17 req/s with 30% 404s (7 x 200 + 3 x 404 per minute).
+  - interval: 1m
+    input_series:
+      - series: 'http_server_request_duration_seconds_count{service_name="petclinic-was", http_response_status_code="200"}'
+        values: '0+7x15'
+      - series: 'http_server_request_duration_seconds_count{service_name="petclinic-was", http_response_status_code="404"}'
+        values: '0+3x15'
+    alert_rule_test:
+      - { eval_time: 5m, alertname: PetClinicHttp5xxRateHigh, exp_alerts: [] }
+      - { eval_time: 10m, alertname: PetClinicHttp5xxRateHigh, exp_alerts: [] }
+
+  # Actual 5xx: 10% 500s (90 x 200 + 10 x 500 per minute) until t=10m. Pending from t=1m, fires after 5m,
+  # clears once the 500s have left the 5m window.
+  - interval: 1m
+    input_series:
+      - series: 'http_server_request_duration_seconds_count{service_name="petclinic-was", http_response_status_code="200"}'
+        values: '0+90x20'
+      - series: 'http_server_request_duration_seconds_count{service_name="petclinic-was", http_response_status_code="500"}'
+        values: '0+10x10 100x10'
+    alert_rule_test:
+      - { eval_time: 5m, alertname: PetClinicHttp5xxRateHigh, exp_alerts: [] }
+      - eval_time: 6m
+        alertname: PetClinicHttp5xxRateHigh
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations: { summary: "petclinic WAS 5xx error responses above 5% for 5m" }
+      - eval_time: 10m
+        alertname: PetClinicHttp5xxRateHigh
+        exp_alerts:
+          - exp_labels: { severity: critical }
+            exp_annotations: { summary: "petclinic WAS 5xx error responses above 5% for 5m" }
+      - { eval_time: 16m, alertname: PetClinicHttp5xxRateHigh, exp_alerts: [] }
