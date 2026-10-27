@@ -153,3 +153,44 @@ Tomcat `RewriteValve`를 통한 두 단계 릴리스(1차: `/` 프로브 호환 
 그러나 **(1) 구버전 web 롤백 시 엣지 WAF 보호 공백으로 인한 내부 시스템 및 개인정보 대외 노출 위험**이 설계 문서 상 필수 통제 절차로 수립되지 않았고, **(2) Nginx `/was` 리다이렉트 시 내부 포트 8080 및 HTTP 다운그레이드 결함(`absolute_redirect`)**이 존재하므로, 해당 항목들에 대한 보완 조치가 완료되기 전까지 프로덕션 배포는 불가하다.
 
 배포 가능 여부: No
+
+
+## Security Round 5 — 2026-10-27 (대상 커밋: 40b9f2a)
+
+점검 범위: `git diff master...HEAD` 전체 및 R4 피드백 반영 커밋(`8c22f6d`, `b895549`, `40b9f2a`), `docs/architecture.md`, `docs/features/landing-page/design.md`.
+
+### 점검 항목별 요약
+- **시크릿/자격증명 하드코딩 및 `.env` 커밋 여부**: 이상 없음 (`.env` 파일은 `.gitignore`에 등록되어 커밋에서 안전하게 제외되며, 하드코딩된 API Key, DB 패스워드, AWS 자격증명 없음. DB 암호는 Kubernetes Secret `petclinic-rds-secret`의 `secretKeyRef` 참조 방식 유지).
+- **문서(`docs/daily` 포함) 내 계정 ID·ARN·엔드포인트·개인 URL 실값 노출 여부**: 양호 (`docs/features/landing-page/security.md`, `design.md`, `docs/daily/2026-10-27.md` 전반에 걸쳐 12자리 AWS 계정 ID, 실존 IAM/WAF ARN, 개인 엔드포인트 실값 노출 없음. R4에서 지적된 보안 점검 문서 내 도메인 실값도 `${DOMAIN_NAME}` 플레이스홀더로 교체 완료됨. 정적 랜딩 페이지 내 이메일은 공식 데모 연락처 용도로 사용자 승인 하에 유지).
+- **IAM/권한 과다 부여, 최소 권한 원칙 위반**: 이상 없음 (신규 IAM 역할이나 과다 권한 생성 없음. WAF IPSet 및 NGINX Gateway Fabric 라우팅을 통한 최소 권한 네트워크 접근 제어 유지).
+- **네트워크 노출 (열린 포트, 0.0.0.0/0, 공개 버킷)**: 양호 (Nginx `absolute_redirect off;` 적용으로 `/was` 리다이렉트 시 비암호화 내부 포트 8080 및 HTTP 다운그레이드 결함 해결 완료. WAF Priority 0 `BlockUnauthorizedStaffAccess` 차단 규칙 및 403 보안 응답 헤더(`Cache-Control: no-store`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`) 유지, WAS 포트 8005 비활성화 유지).
+- **입력 검증 누락 (인젝션, 경로 조작, SSRF)**: 이상 없음 (WAF 경로 일치 규칙의 `URL_DECODE` -> `NORMALIZE_PATH` -> `LOWERCASE` 3단계 텍스트 변환 파이프라인 유지 및 `STAFF_WAF_SCOPE=all` 경로 매칭에도 동일 변환 파이프라인 적용됨. 단위 테스트 전건 통과).
+- **의존성 취약점 및 고정되지 않은 버전**: 이상 없음 (Tomcat `11.0.2-jdk21-temurin-noble`, Maven `3.9.9-eclipse-temurin-21`, Nginx `1.27.2-alpine`, JMX Exporter `1.0.1` SHA256 체크섬 등 불변 고정 태그 준수 및 `latest` 태그 미사용).
+- **Dockerfile/IaC (root 실행, latest 태그, 암호화 미설정)**: 양호 (UID 10001 비루트 전용 계정 구동, `readOnlyRootFilesystem: true`, `allowPrivilegeEscalation: false`, `capabilities.drop: ["ALL"]` 보안 컨텍스트 강제 적용 유지. WAS `server.xml` `port="-1"` 및 `autoDeploy="false"` 유지).
+- **design.md 의 보안 요구사항 및 architecture.md 의 보안 구조 준수 여부**: 보완 필요 (R4 피드백에 따라 `STAFF_WAF_SCOPE=all`을 통한 롤백 전 사이트 전체 차단 절차가 `design.md` Q9에 반영되었으나, 롤백 후 수정 버전 재배포 시 새 web 롤아웃 전에 전체 차단을 선해제하도록 절차가 기술되어 있고 `staff_waf_ready` 게이트가 전체 차단 상태를 거부하여, 재배포 도중 구버전 web이 내부 앱 및 개인정보를 외부에 무방비로 노출하는 심각한 보안 공백 발생).
+
+---
+
+### Critical
+지적 사항 없음.
+
+### High
+- [ ] `docs/features/landing-page/design.md:661` — **롤백 후 재배포 과정에서 WAF 사이트 전체 차단 조기 해제 및 배포 게이트 거부로 인한 내부 시스템(PetClinic) 및 개인정보 대외 노출 위험.**
+  `design.md:661`에서는 롤백 후 수정 이미지를 재배포할 때 `STAFF_WAF_SCOPE` 없이 `grafana-waf`를 다시 실행해 전체 차단을 먼저 풀도록 기술하고 있다. 그러나 롤백된 상태의 클러스터는 `/` 및 `/owners` 등 전체 경로를 WAS로 프록시하는 구버전 web을 실행 중이므로, 새 web이 완전히 롤아웃되기 전에 WAF를 `/grafana`·`/was` 차단 범위(`STAFF_WAF_SCOPE=staff`)로 환원하면 재배포 및 검증이 진행되는 수 분 동안 비인가 인터넷 사용자에게 내부 직원용 PetClinic 시스템 및 고객/반려동물 진료 정보가 전면 공개되는 심각한 보안 노출 공백이 발생한다.
+  또한 `scripts/lib.sh:67-69`의 배포 게이트 `staff_waf_ready`가 `STAFF_WAF_SCOPE=all` 상태(전체 차단)를 허용하지 않고 차단(blocked)하도록 구현되어 있어, 운영자가 취약한 조기 해제를 수행하지 않고는 `deploy-all.sh`를 실행할 수 없도록 강제하고 있다.
+  따라서 (1) `scripts/lib.sh`의 `staff_waf_ready`가 정상 범위(`staff`)뿐 아니라 사이트 전체 차단 범위(`all`) 상태에서도 유효한 보안 배포 상태로 통과할 수 있도록 검증 조건을 보완하고, (2) `design.md` Q9의 재배포 절차를 "전체 차단(`STAFF_WAF_SCOPE=all`) 상태를 유지한 채 새 web 및 WAS 롤아웃·사전 검증을 완료한 후, 안전하게 WAF를 직원 범위(`STAFF_WAF_SCOPE=staff`)로 축소"하도록 순서를 정정해야 한다.
+
+### Medium
+지적 사항 없음.
+
+### Low
+- [-] (⑦ 단계에서 Antigravity가 갱신) `docs/architecture.md:9` — **아키텍처 문서 동기화 필요 (Step ⑦ 수행 과제).**
+  신규 `BlockUnauthorizedStaffAccess` WAF 규칙, 정적 랜딩 페이지(`/`), 그리고 `/was/` 서블릿 컨텍스트 구조에 대한 개요 다이어그램 및 본문 동기화가 필요하며, 이는 머지 직전 ⑦ 단계(Antigravity 아키텍처 문서 갱신)에서 최종 반영되어야 한다.
+
+---
+
+### 총평
+Round 4에서 지적되었던 Nginx `/was` 리다이렉트 시 비암호화 내부 포트(:8080) 노출 결함(`absolute_redirect off;`)과 `security.md` 내 도메인 실값 노출은 완벽하게 수정되었다.  
+그러나 **롤백 후 수정 버전 재배포 시 엣지 WAF 사이트 전체 차단을 새 web 배포 완료 전에 미리 해제하도록 절차가 수립되어 있고 배포 게이트(`staff_waf_ready`) 역시 전체 차단 상태를 거부함으로써, 재배포 진행 구간 동안 구버전 web을 통해 내부 PetClinic 관리 시스템 및 개인정보가 외부 인터넷에 무방비로 노출되는 중대한 보안 통제 공백**이 존재하므로, 해당 High 항목에 대한 보완 조치가 완료되기 전까지 프로덕션 배포는 불가하다.
+
+배포 가능 여부: No
