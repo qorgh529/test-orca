@@ -46,6 +46,8 @@ ACL=$(acl "$(rule '.Statement.AndStatement.Statements[0].OrStatement.Statements[
   check "SearchString printed raw" ready
 ACL=$(acl "$managed") check "no staff rule" blocked
 ACL=$(acl "$(rule '.Name = "BlockUnauthorizedGrafanaAccess"'),$managed") check "old /grafana-only rule name" blocked
+ACL=$(acl "$(rule '.Statement.AndStatement.Statements[0] = {NotStatement: {Statement: .Statement.AndStatement.Statements[0].OrStatement.Statements[0]}}'),$managed") \
+  check "site-wide rollback scope (STAFF_WAF_SCOPE=all) is not a deploy state" blocked
 ACL=$(acl "$(rule '.Statement.AndStatement.Statements[0].OrStatement.Statements |= .[:1]'),$managed") \
   check "/was missing from the OR" blocked
 ACL=$(acl "$(rule '.Statement.AndStatement.Statements[0].OrStatement.Statements |= .[1:]'),$managed") \

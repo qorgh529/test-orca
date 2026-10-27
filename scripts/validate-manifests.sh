@@ -497,9 +497,10 @@ if ("org.apache.catalina.valves.RemoteIpValve" not in sx or 'protocolHeader="x-f
 ngx = (root / "docker/web/nginx.conf").read_text(encoding="utf-8")
 was_loc = re.search(r"location /was/ \{(.*?)\n    \}", ngx, re.S)  # ${VAR} braces inside
 if (not was_loc or "proxy_set_header X-Forwarded-Proto https;" not in was_loc.group(1)
-        or "location = / {" not in ngx or "error_page 404 /404.html;" not in ngx
+        or "location = / {" not in ngx or "error_page 404 /404.html;" not in ngx or "absolute_redirect off;" not in ngx
         or re.search(r"location / \{[^}]*proxy_pass", ngx, re.S)):
-    err("docker/web/nginx.conf: / is static (index.html, 404 page) and only /was/ is proxied, with X-Forwarded-Proto https")
+    err("docker/web/nginx.conf: / is static (index.html, 404 page), only /was/ is proxied with X-Forwarded-Proto https,"
+        " and Nginx's own redirects are relative (absolute_redirect off)")
 for page in ("docker/web/static/index.html", "docker/web/static/404.html"):
     if not (root / page).is_file():
         err(f"{page}: missing")

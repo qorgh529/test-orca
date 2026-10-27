@@ -6,6 +6,7 @@
 #   ./infra/aws/provision-aws-resources.sh cluster       # eksctl create cluster + Karpenter discovery tags
 #   ./infra/aws/provision-aws-resources.sh post-cluster  # RDS MySQL Multi-AZ + Secrets Manager secrets
 #   ./infra/aws/provision-aws-resources.sh grafana-waf   # /grafana + /was IP allow-list (re-run when the IP changes)
+#   STAFF_WAF_SCOPE=all ... grafana-waf                   # whole site behind the allow-list (before rolling back web)
 #
 # Idempotent: every step looks the resource up first and reuses (or updates) it, so a phase that
 # stopped half-way can simply be run again. Existing resources are not reconfigured beyond what
@@ -507,8 +508,13 @@ post_cluster() {
 # priority 0, ahead of the managed rule groups, answering with the designed 403 page (waf-staff-403.html;
 # its image comes from web Nginx's public /resources/). The IP set keeps its original grafana name.
 # Re-run alone after the allowed IP changes. An empty list blocks /grafana and /was for everyone.
+# STAFF_WAF_SCOPE=all puts every path except /resources/ (the 403 page's image) behind the allow-list:
+# a web image from before /was proxies / to the staff app, so it goes first in that rollback
+# (docs/features/landing-page/design.md Q8). Run again without it to go back to /grafana + /was.
 grafana_waf() {
   require AWS_REGION EKS_CLUSTER_NAME WAF_WEB_ACL_ARN
+  local scope="${STAFF_WAF_SCOPE:-staff}"
+  [[ "$scope" =~ ^(staff|all)$ ]] || { echo "STAFF_WAF_SCOPE must be staff or all (got $scope)" >&2; exit 1; }
   local set_name="${EKS_CLUSTER_NAME}-grafana-allowed-ips" rule=BlockUnauthorizedStaffAccess
   local old_rule=BlockUnauthorizedGrafanaAccess body_key=petclinic-staff-403 bodies
   local cidrs=() addrs c set_id set_arn lock acl_id="${WAF_WEB_ACL_ARN##*/}" acl_name acl rules
@@ -533,13 +539,13 @@ grafana_waf() {
     set_arn=$(aws wafv2 get-ip-set --scope REGIONAL --name "$set_name" --id "$set_id" --query IPSet.ARN --output text)
   fi
 
-  echo "== WAF rule $rule (priority 0) in the WebACL"
+  echo "== WAF rule $rule (priority 0, scope $scope) in the WebACL"
   acl_name=$(aws wafv2 list-web-acls --scope REGIONAL --query "WebACLs[?Id=='$acl_id'].Name | [0]" --output text)
   acl=$(aws wafv2 get-web-acl --scope REGIONAL --name "$acl_name" --id "$acl_id")
   # Decode and normalise the path the way NGF's nginx does (%67rafana, //was, /./grafana), then
   # block it unless the client IP is in the set. The other rules keep their order behind it; the
   # /grafana-only rule this one replaces is dropped.
-  rules=$(jq --arg rule "$rule" --arg old "$old_rule" --arg set "$set_arn" --arg key "$body_key" '
+  rules=$(jq --arg rule "$rule" --arg old "$old_rule" --arg set "$set_arn" --arg key "$body_key" --arg scope "$scope" '
     def path($p): {ByteMatchStatement: {FieldToMatch: {UriPath: {}}, PositionalConstraint: "STARTS_WITH",
       SearchString: $p, TextTransformations: [
         {Priority: 0, Type: "URL_DECODE"}, {Priority: 1, Type: "NORMALIZE_PATH"},
@@ -553,7 +559,8 @@ grafana_waf() {
             {Name: "X-Content-Type-Options", Value: "nosniff"}]}}},
         VisibilityConfig: {SampledRequestsEnabled: true, CloudWatchMetricsEnabled: true, MetricName: $rule},
         Statement: {AndStatement: {Statements: [
-          {OrStatement: {Statements: [path("/grafana"), path("/was")]}},
+          if $scope == "all" then {NotStatement: {Statement: path("/resources/")}}
+          else {OrStatement: {Statements: [path("/grafana"), path("/was")]}} end,
           {NotStatement: {Statement: {IPSetReferenceStatement: {ARN: $set}}}}]}}}] + .' <<<"$acl")
   # Other response bodies in the WebACL are kept. WAF sets Content-Type from ContentType.
   bodies=$(jq -c --arg key "$body_key" --rawfile html "$ROOT/infra/aws/waf-staff-403.html" \
