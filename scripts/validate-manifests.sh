@@ -488,8 +488,10 @@ for f in ("k8s/was/deployment-stable.yaml", "k8s/was/deployment-canary.yaml"):
                 err(f"{f}: {c.get('name')} {probe} must GET / until phase 2 (old and new images both answer it)")
 was_df = (root / "docker/was/Dockerfile").read_text(encoding="utf-8")
 if ("webapps/was" not in was_df or "webapps/ROOT" in was_df or "COPY docker/was/server.xml conf/server.xml" not in was_df
-        or "COPY docker/was/rewrite.config conf/Catalina/localhost/rewrite.config" not in was_df):
-    err("docker/was/Dockerfile: deploy the app as webapps/was (not ROOT) with server.xml and the phase 1 rewrite.config")
+        or "COPY docker/was/rewrite.config /opt/petclinic/rewrite.config" not in was_df
+        or "conf/Catalina/localhost/rewrite.config" not in (root / "docker/was/setenv.sh").read_text(encoding="utf-8")):
+    err("docker/was/Dockerfile: deploy the app as webapps/was (not ROOT) with server.xml; setenv.sh puts the phase 1"
+        " rewrite.config under conf/Catalina (an emptyDir in k8s)")
 sx = (root / "docker/was/server.xml").read_text(encoding="utf-8")
 if ("org.apache.catalina.valves.RemoteIpValve" not in sx or 'protocolHeader="x-forwarded-proto"' not in sx
         or 'internalProxies="10\\.' not in sx or "org.apache.catalina.valves.rewrite.RewriteValve" not in sx):

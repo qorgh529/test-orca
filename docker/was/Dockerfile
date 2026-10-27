@@ -34,7 +34,8 @@ COPY --from=build /jmx_prometheus_javaagent.jar /opt/jmx/jmx_prometheus_javaagen
 COPY docker/was/jmx-exporter-config.yaml /opt/jmx/config.yaml
 COPY docker/was/setenv.sh bin/setenv.sh
 COPY docker/was/server.xml conf/server.xml
-COPY docker/was/rewrite.config conf/Catalina/localhost/rewrite.config
+# conf/Catalina is an emptyDir in k8s, so setenv.sh copies this into place at start.
+COPY docker/was/rewrite.config /opt/petclinic/rewrite.config
 
 # Tomcat writes only runtime state (mounted as emptyDir in k8s; owned by 10001 for plain docker run).
 RUN chmod 0755 bin/setenv.sh \
