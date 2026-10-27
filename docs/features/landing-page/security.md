@@ -76,3 +76,43 @@ Round 1에서 지적되었던 설계 문서 내 실제 도메인 노출 제거, 
 그러나 긴급 롤백 시 probe 경로 불일치로 인한 복구 불능 위험, 카나리 사전 검증 전 stable 선적용 문제, WAF 배포 게이트의 Priority 0 검증 누락이 확인되었으므로 보완 조치가 완료되기 전까지 배포는 불가하다.
 
 배포 가능 여부: No
+
+## Security Round 3 — 2026-10-27 (대상 커밋: 6e247a2)
+
+점검 범위: `git diff master...HEAD` 전체 및 R2 피드백 반영 커밋(`1f0c2b6`, `9b577a6`, `6e247a2`), `docs/architecture.md`, `docs/features/landing-page/design.md`.
+
+### 점검 항목별 요약
+- **시크릿/자격증명 하드코딩 및 `.env` 커밋 여부**: 이상 없음 (`.env` 파일은 `.gitignore`에 등록되어 커밋에서 제외되었으며, API 키, DB 패스워드, AWS 자격증명 하드코딩 없음. RDS 인증정보는 K8s Secret `petclinic-rds-secret`의 `secretKeyRef` 참조 방식 유지).
+- **문서(`docs/daily` 포함) 내 계정 ID·ARN·엔드포인트·개인 URL 실값 노출 여부**: 양호 (`docs/features/landing-page/design.md`의 `${DOMAIN_NAME}` 플레이스홀더 사용 준수, `docs/daily/2026-10-27.md` 내 12자리 AWS 계정 ID, 실존 ARN, 개인 엔드포인트 노출 없음. 랜딩 페이지 정적 HTML 내 이메일 주소는 공식 데모 연락처 용도로 사용자 승인 하에 유지).
+- **IAM/권한 과다 부여, 최소 권한 원칙 위반**: 이상 없음 (신규 IAM 역할 및 과다 권한 생성 없음. WAF IPSet 및 NGF 라우팅을 통한 최소 권한 접근 제어 준수).
+- **네트워크 노출 (열린 포트, 0.0.0.0/0, 공개 버킷)**: 양호 (AWS WAF Priority 0 `BlockUnauthorizedStaffAccess` 규칙을 통한 비인가 IP 엣지 차단, WAF 403 커스텀 응답 헤더(`X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Cache-Control: no-store`) 적용 완료, Tomcat 포트 8005 비활성화(`port="-1"`), Nginx 보안 헤더 준수).
+- **입력 검증 누락 (인젝션, 경로 조작, SSRF)**: 양호 (WAF 경로 일치 규칙의 `URL_DECODE` -> `NORMALIZE_PATH` -> `LOWERCASE` 변환 파이프라인 검증 통과. `scripts/lib.sh`의 배포 게이트 `staff_waf_ready`에 `.Priority == 0` 명시 검증 반영 및 단위 테스트 18건 전건 통과).
+- **의존성 취약점 및 고정되지 않은 버전**: 이상 없음 (Tomcat `11.0.2-jdk21-temurin-noble`, Maven `3.9.9-eclipse-temurin-21`, Nginx `1.27.2-alpine`, JMX Exporter `1.0.1` SHA256 체크섬 등 불변 태그 고정 준수).
+- **Dockerfile/IaC (root 실행, latest 태그, 암호화 미설정)**: 양호 (UID 10001 비루트 계정, `readOnlyRootFilesystem: true`, `allowPrivilegeEscalation: false`, `capabilities.drop: ["ALL"]` 보안 컨텍스트 강제 적용됨. WAS `server.xml`에 `autoDeploy="false"`, `deployOnStartup="true"` 설정 유지).
+- **design.md 의 보안 요구사항 및 architecture.md 의 보안 구조 준수 여부**: 양호 (1차 릴리스 호환을 위한 Tomcat `RewriteValve` 도입으로 구버전/신버전 이미지 간 프로브(`/`) 및 트래픽 상호 호환성 확보 완료. `deploy-all.sh`에서 WAS를 web보다 먼저 배포하고 100:0 가중치 격리 상태에서 카나리 E2E 검증 통과 후 트래픽을 개방하도록 구성됨).
+
+---
+
+### Critical
+지적 사항 없음.
+
+### High
+지적 사항 없음.
+
+### Medium
+- [ ] `docs/features/landing-page/design.md:593` — **긴급 롤백 절차 내 롤아웃 대기 누락 및 레거시 복원 시 보안 주의사항 명시 필요.**
+  1. `design.md` §7.3의 긴급 롤백 절차에서 `kubectl -n petclinic set image deployment/web ...` 실행 후 `kubectl -n petclinic rollout status deployment/web --timeout=300s` 대기 단계가 누락되어 있다. 두 `set image` 명령을 연속 실행할 경우 WAS가 web보다 먼저 구버전(`ROOT` 컨텍스트)으로 전환되어, 아직 새 버전을 실행 중인 web에서 유입되는 `/was/` 요청이 일시적으로 404를 반환할 수 있다. Q7 결정에 맞추어 web 롤아웃 완료를 대기한 후 WAS를 롤백하도록 절차를 보완해야 한다.
+  2. 이전 안정 버전(`PREVIOUS_TAG`)으로 롤백 시, 구버전 web은 `/` 및 `/owners` 등 전체 경로를 WAS로 직접 프록시하지만 WAF는 `/was`와 `/grafana`만 차단한다. 따라서 레거시 버전으로 복구되면 PetClinic 관리 시스템이 대외에 다시 공개되는 보안 특성을 갖게 된다. 운영자가 비인가 접근 차단을 유지해야 하는 비상 상황인 경우, WAF 규칙 조정 또는 점검 화면 전환 등의 추가 조치가 필요함을 롤백 가이드에 명시할 것을 권고한다.
+
+### Low
+- [ ] `docs/architecture.md:9` — **아키텍처 문서 동기화 필요 (Step ⑦ 수행 과제).**
+  현재 `docs/architecture.md`는 기존 `BlockUnauthorizedGrafanaAccess` WAF 규칙과 WAS `ROOT` 컨텍스트(`/`) 구조를 기준으로 기술되어 있다. 신규 `BlockUnauthorizedStaffAccess` WAF 규칙, 정적 랜딩 페이지(`/`), 그리고 `/was/` 서블릿 컨텍스트 구조에 대한 개요 다이어그램 및 본문 동기화가 필요하며, 이는 머지 직전 ⑦ 단계(Antigravity 아키텍처 문서 갱신)에서 최종 반영되어야 한다.
+
+---
+
+### 총평
+Round 2에서 지적되었던 긴급 롤백 시 probe 경로 불일치 문제, 카나리 사전 검증 전 프로덕션 노출 결함, WAF 배포 게이트의 Priority 0 검증 누락이 커밋 `1f0c2b6`을 통해 모두 안전하게 해결되었다.  
+Tomcat `RewriteValve`를 통한 두 단계 릴리스(1차: `/` 프로브 호환 유지 및 내부 리라이트) 설계는 무중단 호환성과 보안 격리를 양립시켰으며, 시크릿 누출이나 권한 과다 부여 없이 프로덕션 배포 기준을 충족한다.  
+다만 긴급 롤백 매뉴얼의 롤아웃 대기 순서 및 레거시 노출 주의사항 보완(Medium)이 권고된다.
+
+배포 가능 여부: Yes
