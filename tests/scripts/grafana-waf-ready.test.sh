@@ -60,6 +60,13 @@ ACL=$(acl "$(rule '.Statement.AndStatement.Statements[0].OrStatement.Statements[
   check "path other than /was" blocked
 ACL=$(acl "$(rule '.Statement.AndStatement.Statements[0].OrStatement.Statements[1].ByteMatchStatement.TextTransformations = [{Priority: 0, Type: "LOWERCASE"}]'),$managed") \
   check "no URL_DECODE / NORMALIZE_PATH on /was" blocked
+ACL=$(acl "$(rule '.Statement.AndStatement.Statements[0].OrStatement.Statements[0].ByteMatchStatement.TextTransformations |= .[:2]'),$managed") \
+  check "no LOWERCASE on /grafana" blocked
+ACL=$(acl "$(rule '.Statement.AndStatement.Statements[0].OrStatement.Statements[1].ByteMatchStatement.TextTransformations
+  |= map(if .Type == "URL_DECODE" then .Priority = 1 elif .Type == "NORMALIZE_PATH" then .Priority = 0 else . end)'),$managed") \
+  check "NORMALIZE_PATH before URL_DECODE on /was" blocked
+ACL=$(acl "$(rule '.Statement.AndStatement.Statements[0].OrStatement.Statements[1].ByteMatchStatement.TextTransformations |= reverse'),$managed") \
+  check "transforms listed out of order, priorities intact" ready
 ACL=$(acl "$(rule '.Statement.AndStatement.Statements[1].NotStatement.Statement.IPSetReferenceStatement.ARN |= sub("test-eks-grafana"; "other")'),$managed") \
   check "a different IP set" blocked
 ACL_NAME=None ACL=$(acl "$good") check "WebACL not found" blocked

@@ -507,6 +507,11 @@ if not body.is_file() or body.stat().st_size > 4096:
 elif ('src="/resources/images/403.webp"' not in body.read_text(encoding="utf-8")
         or not (root / "app/src/main/webapp/resources/images/403.webp").is_file()):
     err("waf-staff-403.html: its image must be the public /resources/images/403.webp served by web Nginx")
+# Q2: stable web rolls out before the WAS, or an old web would send / to a WAS that only has /was.
+dep = (root / "scripts/deploy-all.sh").read_text(encoding="utf-8")
+order = [dep.find(x) for x in ('render_all "$K/web"', "rollout status deploy/web ", 'render_all "$K/was"')]
+if -1 in order or order != sorted(order):
+    err("deploy-all.sh: apply web and wait for its rollout before applying the WAS manifests")
 if ("rule=BlockUnauthorizedStaffAccess" not in prov or 'path("/was")' not in prov
         or "--custom-response-bodies" not in prov):
     err("provision-aws-resources.sh: grafana-waf must block /grafana and /was in one rule with the 403 page")

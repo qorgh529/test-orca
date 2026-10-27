@@ -53,13 +53,14 @@ staff_waf_ready() {
   acl_name=$(aws wafv2 list-web-acls --scope REGIONAL --query "WebACLs[?Id=='$acl_id'].Name | [0]" --output text) \
     && [ -n "$acl_name" ] && [ "$acl_name" != None ] || return 1
   acl=$(aws wafv2 get-web-acl --scope REGIONAL --name "$acl_name" --id "$acl_id" --output json) || return 1
-  # Structure, not just names: AND(OR(path starts with /grafana, with /was; each after decode+normalise),
+  # Structure, not just names: AND(OR(path starts with /grafana, with /was; each after decode, normalise,
+  # lowercase in that order),
   # NOT in our IP set). SearchString is a blob, which CLI v2 prints base64-encoded
   # ("/grafana" = L2dyYWZhbmE=, "/was" = L3dhcw==).
   jq -e --arg set "/${EKS_CLUSTER_NAME}-grafana-allowed-ips/" '
     def path($raw; $b64): any(.[]; .ByteMatchStatement | . != null and .FieldToMatch == {UriPath: {}}
       and .PositionalConstraint == "STARTS_WITH" and (.SearchString == $b64 or .SearchString == $raw)
-      and (.TextTransformations | map(.Type) | contains(["URL_DECODE", "NORMALIZE_PATH"])));
+      and (.TextTransformations | sort_by(.Priority) | map(.Type)) == ["URL_DECODE", "NORMALIZE_PATH", "LOWERCASE"]);
     .WebACL.Rules | min_by(.Priority)
     | .Name == "BlockUnauthorizedStaffAccess" and (.Action | keys == ["Block"])
       and (.Statement | keys == ["AndStatement"])

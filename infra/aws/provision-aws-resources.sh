@@ -524,7 +524,7 @@ grafana_waf() {
   set_id=$(aws wafv2 list-ip-sets --scope REGIONAL --query "IPSets[?Name=='$set_name'].Id | [0]" --output text)
   if [ "$set_id" = "None" ] || [ -z "$set_id" ]; then
     set_arn=$(aws wafv2 create-ip-set --scope REGIONAL --name "$set_name" --ip-address-version IPV4 \
-      --description "Allowed source IPs for /grafana" --addresses "${addrs[@]}" \
+      --description "Allowed source IPs for /grafana and /was staff access" --addresses "${addrs[@]}" \
       --query Summary.ARN --output text)
   else
     lock=$(aws wafv2 get-ip-set --scope REGIONAL --name "$set_name" --id "$set_id" --query LockToken --output text)
@@ -548,7 +548,9 @@ grafana_waf() {
     | to_entries | map(.value + {Priority: (.key + 1)})
     | [{Name: $rule, Priority: 0,
         Action: {Block: {CustomResponse: {ResponseCode: 403, CustomResponseBodyKey: $key,
-          ResponseHeaders: [{Name: "Cache-Control", Value: "no-store"}]}}},
+          # Served by WAF, not web Nginx, so the Nginx security headers are set here too.
+          ResponseHeaders: [{Name: "Cache-Control", Value: "no-store"}, {Name: "X-Frame-Options", Value: "DENY"},
+            {Name: "X-Content-Type-Options", Value: "nosniff"}]}}},
         VisibilityConfig: {SampledRequestsEnabled: true, CloudWatchMetricsEnabled: true, MetricName: $rule},
         Statement: {AndStatement: {Statements: [
           {OrStatement: {Statements: [path("/grafana"), path("/was")]}},
