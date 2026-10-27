@@ -658,6 +658,16 @@ server {
   kubectl -n petclinic set image deployment/was-stable tomcat=${ECR_WAS_REPOSITORY_URI}:${PREVIOUS_TAG}
   kubectl -n petclinic rollout status deployment/was-stable --timeout=600s    # 4. WAS
   ```
-  사이트 전체 차단은 고친 이미지를 다시 배포할 때 `STAFF_WAF_SCOPE` 없이 `grafana-waf` 를 다시 실행해 푼다(그 전까지 공개 메인 페이지도 허용 IP에서만 열림).
+  사이트 전체 차단을 푸는 시점은 Q10(재배포 뒤).
 - Nginx 자체 리다이렉트(`/was` → `/was/`)는 `absolute_redirect off` 로 상대 Location(8c22f6d).
+
+### Q10. (Claude, 2026-10-27) 리뷰 R5·보안 R5 — 롤백 후 재배포 중 차단 유지 (Q9 보완)
+- 사이트 전체 차단을 **유지한 채** 고친 이미지를 배포·검증하고, 새 web이 다 나간 뒤에 직원 경로 범위로 줄인다. `staff_waf_ready` 는 사이트 전체 범위(`NOT /resources/` + IP set)도 통과시킴(6b2a31e, 오프라인 시험: 통과 1·우회 2건 거부, 스크립트가 만든 두 범위 규칙 모두 게이트 통과 확인).
+  ```bash
+  # 사이트 전체 차단 유지(STAFF_WAF_SCOPE=all). 카나리 검사가 ALB로 / 를 부르므로 허용 IP에서 실행
+  ./scripts/deploy-all.sh                                                   # 1. 새 WAS → 새 web (Q7 순서), 카나리 검사
+  kubectl -n petclinic rollout status deployment/web --timeout=300s          # 2. 새 web 확인
+  ./infra/aws/provision-aws-resources.sh grafana-waf                        # 3. 직원 경로(/grafana·/was)로 축소
+  # 4. 허용 IP 밖에서: / 200(메인), /owners 404(Nginx), /was/ 403 확인
+  ```
 

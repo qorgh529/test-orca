@@ -175,7 +175,7 @@ Tomcat `RewriteValve`를 통한 두 단계 릴리스(1차: `/` 프로브 호환 
 지적 사항 없음.
 
 ### High
-- [ ] `docs/features/landing-page/design.md:661` — **롤백 후 재배포 과정에서 WAF 사이트 전체 차단 조기 해제 및 배포 게이트 거부로 인한 내부 시스템(PetClinic) 및 개인정보 대외 노출 위험.**
+- [x] (6b2a31e `staff_waf_ready` 가 `all` 범위도 통과, 재배포는 전체 차단 유지 → 새 web 확인 → 직원 범위로 축소. design.md Q10) `docs/features/landing-page/design.md:661` — **롤백 후 재배포 과정에서 WAF 사이트 전체 차단 조기 해제 및 배포 게이트 거부로 인한 내부 시스템(PetClinic) 및 개인정보 대외 노출 위험.**
   `design.md:661`에서는 롤백 후 수정 이미지를 재배포할 때 `STAFF_WAF_SCOPE` 없이 `grafana-waf`를 다시 실행해 전체 차단을 먼저 풀도록 기술하고 있다. 그러나 롤백된 상태의 클러스터는 `/` 및 `/owners` 등 전체 경로를 WAS로 프록시하는 구버전 web을 실행 중이므로, 새 web이 완전히 롤아웃되기 전에 WAF를 `/grafana`·`/was` 차단 범위(`STAFF_WAF_SCOPE=staff`)로 환원하면 재배포 및 검증이 진행되는 수 분 동안 비인가 인터넷 사용자에게 내부 직원용 PetClinic 시스템 및 고객/반려동물 진료 정보가 전면 공개되는 심각한 보안 노출 공백이 발생한다.
   또한 `scripts/lib.sh:67-69`의 배포 게이트 `staff_waf_ready`가 `STAFF_WAF_SCOPE=all` 상태(전체 차단)를 허용하지 않고 차단(blocked)하도록 구현되어 있어, 운영자가 취약한 조기 해제를 수행하지 않고는 `deploy-all.sh`를 실행할 수 없도록 강제하고 있다.
   따라서 (1) `scripts/lib.sh`의 `staff_waf_ready`가 정상 범위(`staff`)뿐 아니라 사이트 전체 차단 범위(`all`) 상태에서도 유효한 보안 배포 상태로 통과할 수 있도록 검증 조건을 보완하고, (2) `design.md` Q9의 재배포 절차를 "전체 차단(`STAFF_WAF_SCOPE=all`) 상태를 유지한 채 새 web 및 WAS 롤아웃·사전 검증을 완료한 후, 안전하게 WAF를 직원 범위(`STAFF_WAF_SCOPE=staff`)로 축소"하도록 순서를 정정해야 한다.
