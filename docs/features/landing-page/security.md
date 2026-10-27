@@ -20,7 +20,7 @@
 지적 사항 없음.
 
 ### High
-- [ ] `docs/features/landing-page/design.md:12` — **설계 문서 내 실제 서비스 도메인 실값 노출.** `docs/features/landing-page/design.md:12` 배경 설명에 실제 프로덕션 서비스 도메인(`petclinix.cloud`)이 하드코딩되어 있다(`현재 petclinix.cloud의 루트 경로(/)에...`). `architecture.md` 및 프로젝트 표준에 맞추어 `${DOMAIN_NAME}` 플레이스홀더로 교체해야 한다. 아울러 공개 정적 페이지인 `docker/web/static/index.html:119, 150`의 이메일 주소(`contact@petclinix.cloud`, `privacy@petclinix.cloud`) 역시 실제 도메인이 노출되지 않도록 RFC 2606 예약 도메인(예: `example.com` 또는 `${DOMAIN_NAME}`)으로 교체할 것을 권고한다.
+- [x] (4237983 design.md 는 `${DOMAIN_NAME}` 로 교체. 정적 페이지 이메일은 사용자 결정으로 유지 — 실제 서비스 도메인에서 내려가는 데모 연락처 표기이고 하단에 데모 문구 병기) `docs/features/landing-page/design.md:12` — **설계 문서 내 실제 서비스 도메인 실값 노출.** `docs/features/landing-page/design.md:12` 배경 설명에 실제 프로덕션 서비스 도메인(`petclinix.cloud`)이 하드코딩되어 있다(`현재 petclinix.cloud의 루트 경로(/)에...`). `architecture.md` 및 프로젝트 표준에 맞추어 `${DOMAIN_NAME}` 플레이스홀더로 교체해야 한다. 아울러 공개 정적 페이지인 `docker/web/static/index.html:119, 150`의 이메일 주소(`contact@petclinix.cloud`, `privacy@petclinix.cloud`) 역시 실제 도메인이 노출되지 않도록 RFC 2606 예약 도메인(예: `example.com` 또는 `${DOMAIN_NAME}`)으로 교체할 것을 권고한다.
 - [x] (4237983) `scripts/deploy-all.sh:154-158` — **배포 순서 역전에 따른 무중단 가용성 훼손 (설계 합의 Q2 위반).** 기존 `web`은 `/` 요청을 WAS(`:8080`)로 프록시한다. `deploy-all.sh` 154~155행에서 WAS와 web 매니페스트를 동시에 적용하고 156행에서 `deploy/was-stable`의 롤아웃을 먼저 대기하도록 되어 있는데, 새 `was-stable`이 먼저 준비될 경우 Tomcat에는 `/was` 컨텍스트만 존재하므로 기존 `web`을 통해 들어오는 공개 메인(`/`) 요청이 일시적으로 404를 반환하며 대외 서비스 중단이 발생한다. `design.md` §7.1 및 Q2에서 합의된 절차대로 "stable `web` 매니페스트 적용 및 롤아웃 대기 완료 후 stable `was` 매니페스트를 적용"하도록 배포 순서를 엄격히 분리해야 한다.
 
 ### Medium
