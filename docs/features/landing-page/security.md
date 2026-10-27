@@ -6,7 +6,7 @@
 
 ### 점검 항목별 요약
 - **시크릿/자격증명 하드코딩 및 `.env` 커밋 여부**: 이상 없음 (`.env` 파일은 `.gitignore`에 등록되어 안전하게 제외되어 있으며, 신규 커밋에 하드코딩된 API Key, DB 패스워드, AWS 자격증명 없음. DB 암호는 Kubernetes Secret `petclinic-rds-secret`의 `secretKeyRef` 방식을 유지함).
-- **문서(`docs/daily` 포함) 내 계정 ID·ARN·엔드포인트·개인 URL 실값 노출 여부**: 보완 필요 (12자리 AWS 계정 ID, 실존 IAM/WAF ARN의 노출은 없으나, `docs/features/landing-page/design.md:12`에 실제 서비스 도메인 실값 `petclinix.cloud`가 하드코딩되어 노출됨. 또한 공개 데모 랜딩 페이지 `docker/web/static/index.html:119, 150`의 이메일 주소에도 동일 도메인이 기재되어 있음).
+- **문서(`docs/daily` 포함) 내 계정 ID·ARN·엔드포인트·개인 URL 실값 노출 여부**: 보완 필요 (12자리 AWS 계정 ID, 실존 IAM/WAF ARN의 노출은 없으나, `docs/features/landing-page/design.md:12`에 실제 서비스 도메인 실값 `${DOMAIN_NAME}`이 하드코딩되어 노출됨. 또한 공개 데모 랜딩 페이지 `docker/web/static/index.html:119, 150`의 이메일 주소에도 동일 도메인이 기재되어 있음).
 - **IAM/권한 과다 부여, 최소 권한 원칙 위반**: 이상 없음 (신규 IAM 역할이나 과다 권한 생성 없음. WAF IPSet 및 NGF 라우팅을 통해 인가된 IP만 내부 직원용 애플리케이션에 도달하도록 통제함).
 - **네트워크 노출 (열린 포트, 0.0.0.0/0, 공개 버킷)**: 양호 (AWS WAF 최우선순위(Priority 0)에 `BlockUnauthorizedStaffAccess` 규칙을 배치하여 비인가 IP의 `/grafana*` 및 `/was*` 접근을 AWS 엣지에서 HTTP 403으로 원천 차단함. 루트 경로(`/`) 및 정적 에셋(`/resources/`, `/webjars/`, `/css/`)만 Nginx가 직접 서빙하여 외부에 공개됨. 다만 엣지 403 응답에 웹 보안 헤더 보완이 권장됨).
 - **입력 검증 누락 (인젝션, 경로 조작, SSRF)**: 보완 필요 (WAF 규칙 생성부에서는 `URL_DECODE` → `NORMALIZE_PATH` → `LOWERCASE` 3단계 텍스트 변환 파이프라인을 정상 적용하여 `%2fwas`, `/./was`, `/WAS` 등의 인코딩/경로 조작 우회를 차단하도록 구성했으나, `scripts/lib.sh`의 배포 전 WAF 검증 게이트 `staff_waf_ready`에서 `LOWERCASE` 누락 및 변환 우선순위 검증이 빠져 있어 취약한 WAF 규칙이 게이트를 통과할 수 있는 결함이 존재함).
@@ -20,7 +20,7 @@
 지적 사항 없음.
 
 ### High
-- [x] (4237983 design.md 는 `${DOMAIN_NAME}` 로 교체. 정적 페이지 이메일은 사용자 결정으로 유지 — 실제 서비스 도메인에서 내려가는 데모 연락처 표기이고 하단에 데모 문구 병기) `docs/features/landing-page/design.md:12` — **설계 문서 내 실제 서비스 도메인 실값 노출.** `docs/features/landing-page/design.md:12` 배경 설명에 실제 프로덕션 서비스 도메인(`petclinix.cloud`)이 하드코딩되어 있다(`현재 petclinix.cloud의 루트 경로(/)에...`). `architecture.md` 및 프로젝트 표준에 맞추어 `${DOMAIN_NAME}` 플레이스홀더로 교체해야 한다. 아울러 공개 정적 페이지인 `docker/web/static/index.html:119, 150`의 이메일 주소(`contact@petclinix.cloud`, `privacy@petclinix.cloud`) 역시 실제 도메인이 노출되지 않도록 RFC 2606 예약 도메인(예: `example.com` 또는 `${DOMAIN_NAME}`)으로 교체할 것을 권고한다.
+- [x] (4237983 design.md 는 `${DOMAIN_NAME}` 로 교체. 정적 페이지 이메일은 사용자 결정으로 유지 — 실제 서비스 도메인에서 내려가는 데모 연락처 표기이고 하단에 데모 문구 병기) `docs/features/landing-page/design.md:12` — **설계 문서 내 실제 서비스 도메인 실값 노출.** `docs/features/landing-page/design.md:12` 배경 설명에 실제 프로덕션 서비스 도메인(`${DOMAIN_NAME}`)이 하드코딩되어 있다(`현재 ${DOMAIN_NAME}의 루트 경로(/)에...`). `architecture.md` 및 프로젝트 표준에 맞추어 `${DOMAIN_NAME}` 플레이스홀더로 교체해야 한다. 아울러 공개 정적 페이지인 `docker/web/static/index.html:119, 150`의 이메일 주소(`contact@${DOMAIN_NAME}`, `privacy@${DOMAIN_NAME}`) 역시 실제 도메인이 노출되지 않도록 RFC 2606 예약 도메인(예: `example.com` 또는 `${DOMAIN_NAME}`)으로 교체할 것을 권고한다.
 - [x] (4237983) `scripts/deploy-all.sh:154-158` — **배포 순서 역전에 따른 무중단 가용성 훼손 (설계 합의 Q2 위반).** 기존 `web`은 `/` 요청을 WAS(`:8080`)로 프록시한다. `deploy-all.sh` 154~155행에서 WAS와 web 매니페스트를 동시에 적용하고 156행에서 `deploy/was-stable`의 롤아웃을 먼저 대기하도록 되어 있는데, 새 `was-stable`이 먼저 준비될 경우 Tomcat에는 `/was` 컨텍스트만 존재하므로 기존 `web`을 통해 들어오는 공개 메인(`/`) 요청이 일시적으로 404를 반환하며 대외 서비스 중단이 발생한다. `design.md` §7.1 및 Q2에서 합의된 절차대로 "stable `web` 매니페스트 적용 및 롤아웃 대기 완료 후 stable `was` 매니페스트를 적용"하도록 배포 순서를 엄격히 분리해야 한다.
 
 ### Medium
@@ -116,3 +116,40 @@ Tomcat `RewriteValve`를 통한 두 단계 릴리스(1차: `/` 프로브 호환 
 다만 긴급 롤백 매뉴얼의 롤아웃 대기 순서 및 레거시 노출 주의사항 보완(Medium)이 권고된다.
 
 배포 가능 여부: Yes
+
+## Security Round 4 — 2026-10-27 (대상 커밋: 1ab9d9b)
+
+점검 범위: `git diff master...HEAD` 전체 및 R3 피드백 반영 커밋(`78152ec`, `36d122f`, `1ab9d9b`), `docs/architecture.md`, `docs/features/landing-page/design.md`.
+
+### 점검 항목별 요약
+- **시크릿/자격증명 하드코딩 및 `.env` 커밋 여부**: 이상 없음 (`.env` 파일은 `.gitignore`에 등록되어 커밋에서 안전하게 제외되며, 신규 커밋에 하드코딩된 API Key, DB 패스워드, AWS 자격증명 없음. DB 암호는 Kubernetes Secret `petclinic-rds-secret`의 `secretKeyRef` 참조 유지).
+- **문서(`docs/daily` 포함) 내 계정 ID·ARN·엔드포인트·개인 URL 실값 노출 여부**: 양호 (`docs/daily/2026-10-27.md` 및 `docs/features/landing-page/design.md` 내 12자리 AWS 계정 ID, 실존 IAM/WAF ARN, 개인 엔드포인트 노출 없음. 랜딩 페이지 정적 HTML 내 이메일 주소는 공식 데모 연락처 용도로 사용자 승인 하에 유지. 본 문서 R1 기록 내 언급되었던 도메인 실값 역시 `${DOMAIN_NAME}` 플레이스홀더로 교체 완료).
+- **IAM/권한 과다 부여, 최소 권한 원칙 위반**: 이상 없음 (신규 IAM 역할이나 권한 변경 없음. WAF IPSet과 NGINX Gateway Fabric 라우팅을 통해 최소 권한 네트워크 접근 제어 유지).
+- **네트워크 노출 (열린 포트, 0.0.0.0/0, 공개 버킷)**: 보완 필요 (AWS WAF Priority 0 `BlockUnauthorizedStaffAccess` 차단 규칙 정상 동작 및 WAF 403 커스텀 응답 헤더 유지. 단, Nginx `location = /was`의 301 리다이렉트 시 `absolute_redirect` 기본값(`on`)에 의해 내부 포트 `8080` 및 `http://` 스킴 절대 경로로 리다이렉트되어 포트 노출 및 외부 접속 단절 리스크 존재).
+- **입력 검증 누락 (인젝션, 경로 조작, SSRF)**: 이상 없음 (WAF 경로 일치 규칙의 `URL_DECODE` -> `NORMALIZE_PATH` -> `LOWERCASE` 3단계 텍스트 변환 파이프라인 유지 및 `staff_waf_ready` 배포 게이트에서 `.Priority == 0` 엄격 검증. 단위 및 정적 검증 전건 통과).
+- **의존성 취약점 및 고정되지 않은 버전**: 이상 없음 (Tomcat `11.0.2-jdk21-temurin-noble`, Maven `3.9.9-eclipse-temurin-21`, Nginx `1.27.2-alpine`, JMX Exporter `1.0.1` SHA256 불변 체크섬 등 특정 고정 태그 사용 및 `latest` 태그 미사용).
+- **Dockerfile/IaC (root 실행, latest 태그, 암호화 미설정)**: 양호 (Web 및 WAS 컨테이너 모두 UID 10001 비루트 전용 계정 구동, `readOnlyRootFilesystem: true`, `allowPrivilegeEscalation: false`, `capabilities.drop: ["ALL"]` 보안 컨텍스트 강제 적용 유지. WAS `server.xml` `port="-1"` 및 `autoDeploy="false"` 설정 유지).
+- **design.md 의 보안 요구사항 및 architecture.md 의 보안 구조 준수 여부**: 보완 필요 (`scripts/deploy-all.sh:40-47`에 `PROMOTE_STABLE=1` 승격 가드가 추가되어 검증되지 않은 stable 이미지 전환 위험은 해결되었으나, 긴급 롤백 시 엣지 WAF 보호 공백으로 인한 내부 직원용 앱 및 개인정보 대외 노출 문제가 설계 상 선택적 고려사항으로만 남아 있어 필수 보안 통제 절차로 구체화되어야 함).
+
+---
+
+### Critical
+지적 사항 없음.
+
+### High
+- [ ] `docs/features/landing-page/design.md:648` — **긴급 롤백 시 엣지 WAF 차단 공백에 따른 내부 시스템(PetClinic) 및 개인정보 대외 전면 노출 위험.** 이전 버전 web 이미지(`PREVIOUS_TAG`)로 롤백 시, 구버전 Nginx는 `/` 및 `/owners` 등 전체 경로를 WAS로 직접 프록시하지만 엣지 WAF는 `/was*`와 `/grafana*`만 차단하도록 구성되어 있다. 따라서 롤백 즉시 비인가 인터넷 사용자에게 고객·반려동물 진료 정보가 담긴 PetClinic 관리 시스템 전체가 무방비로 노출된다. 현재 `design.md` Q8에서는 이를 운영자의 선택 사항("비상 시 공개를 막아야 하면 별도 조치... 롤백과 함께 판단")으로 기술하고 있으나, 개인정보 유출 방지 및 보안 원칙에 따라 구버전 web 롤백 전 엣지 경로 차단(예: `/` 경로 IP 제한 규칙 활성화 또는 점검 페이지 전환)을 선행 적용하고 검증하도록 필수 절차로 명시해야 한다.
+
+### Medium
+- [ ] `docker/web/nginx.conf:62` — **`/was` 정규화 리다이렉트 시 비암호화 HTTP 및 내부 컨테이너 포트(`:8080`) 노출 (프로토콜 다운그레이드 / 접속 장애).** `location = /was { return 301 /was/; }` 블록에 `absolute_redirect off;`가 설정되어 있지 않다. Nginx 기본값(`absolute_redirect on;`) 작동 시 Nginx 수신 포트(`8080`)와 내부 HTTP 스킴을 결합한 `Location: http://$host:8080/was/` 절대 URI가 생성된다. 외부 클라이언트는 HTTPS(443)로 접근했으나 비암호화 내부 포트(8080)로 리다이렉트되어 브라우저 연결이 차단되거나 프로토콜 다운그레이드가 발생하므로, `server` 블록 또는 해당 `location`에 `absolute_redirect off;`를 명시하여 상대 경로(`Location: /was/`)로 응답하도록 수정해야 한다.
+
+### Low
+- [-] (⑦ 단계에서 Antigravity가 갱신) `docs/architecture.md:9` — **아키텍처 문서 동기화 필요 (Step ⑦ 수행 과제).**
+  신규 `BlockUnauthorizedStaffAccess` WAF 규칙, 정적 랜딩 페이지(`/`), 그리고 `/was/` 서블릿 컨텍스트 구조에 대한 개요 다이어그램 및 본문 동기화가 필요하며, 이는 머지 직전 ⑦ 단계(Antigravity 아키텍처 문서 갱신)에서 최종 반영되어야 한다.
+
+---
+
+### 총평
+커밋 `78152ec`를 통해 `PROMOTE_STABLE=1` 승격 가드가 도입되어 카나리 사전 검증 전 stable 이미지가 무단 교체되는 결함이 안전하게 차단되었으며, `security.md` 내 도메인 실값 노출도 정상 정리되었다.  
+그러나 **(1) 구버전 web 롤백 시 엣지 WAF 보호 공백으로 인한 내부 시스템 및 개인정보 대외 노출 위험**이 설계 문서 상 필수 통제 절차로 수립되지 않았고, **(2) Nginx `/was` 리다이렉트 시 내부 포트 8080 및 HTTP 다운그레이드 결함(`absolute_redirect`)**이 존재하므로, 해당 항목들에 대한 보완 조치가 완료되기 전까지 프로덕션 배포는 불가하다.
+
+배포 가능 여부: No
