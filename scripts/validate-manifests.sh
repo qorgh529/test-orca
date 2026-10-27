@@ -478,6 +478,39 @@ if ("grafana-waf) grafana_waf" not in prov or '"URL_DECODE"' not in prov or '"NO
     err("provision-aws-resources.sh: grafana-waf must block /grafana after URL_DECODE + NORMALIZE_PATH,"
         " sending SearchString raw (--cli-binary-format raw-in-base64-out)")
 
+# 13. Landing page and the staff app under /was (docs/features/landing-page/design.md).
+for f in ("k8s/was/deployment-stable.yaml", "k8s/was/deployment-canary.yaml"):
+    dep = one(f, "Deployment") or {}
+    for c in dep.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])[:1]:
+        for probe in ("startupProbe", "readinessProbe"):
+            if ((c.get(probe) or {}).get("httpGet") or {}).get("path") != "/was/":
+                err(f"{f}: {c.get('name')} {probe} must GET /was/ (the app context is /was)")
+was_df = (root / "docker/was/Dockerfile").read_text(encoding="utf-8")
+if "webapps/was" not in was_df or "webapps/ROOT" in was_df or "COPY docker/was/server.xml conf/server.xml" not in was_df:
+    err("docker/was/Dockerfile: deploy the app as webapps/was (not ROOT) with docker/was/server.xml")
+sx = (root / "docker/was/server.xml").read_text(encoding="utf-8")
+if ("org.apache.catalina.valves.RemoteIpValve" not in sx or 'protocolHeader="x-forwarded-proto"' not in sx
+        or 'internalProxies="10\\.' not in sx):
+    err("docker/was/server.xml: RemoteIpValve trusting x-forwarded-proto from private addresses only")
+ngx = (root / "docker/web/nginx.conf").read_text(encoding="utf-8")
+was_loc = re.search(r"location /was/ \{(.*?)\n    \}", ngx, re.S)  # ${VAR} braces inside
+if (not was_loc or "proxy_set_header X-Forwarded-Proto https;" not in was_loc.group(1)
+        or "location = / {" not in ngx or "error_page 404 /404.html;" not in ngx
+        or re.search(r"location / \{[^}]*proxy_pass", ngx, re.S)):
+    err("docker/web/nginx.conf: / is static (index.html, 404 page) and only /was/ is proxied, with X-Forwarded-Proto https")
+for page in ("docker/web/static/index.html", "docker/web/static/404.html"):
+    if not (root / page).is_file():
+        err(f"{page}: missing")
+body = root / "infra/aws/waf-staff-403.html"
+if not body.is_file() or body.stat().st_size > 4096:
+    err("infra/aws/waf-staff-403.html: WAF custom response body must exist and stay within 4 KB")
+elif ('src="/resources/images/403.webp"' not in body.read_text(encoding="utf-8")
+        or not (root / "app/src/main/webapp/resources/images/403.webp").is_file()):
+    err("waf-staff-403.html: its image must be the public /resources/images/403.webp served by web Nginx")
+if ("rule=BlockUnauthorizedStaffAccess" not in prov or 'path("/was")' not in prov
+        or "--custom-response-bodies" not in prov):
+    err("provision-aws-resources.sh: grafana-waf must block /grafana and /was in one rule with the 403 page")
+
 if errors:
     print("\n".join("FAIL " + e for e in errors))
     sys.exit(1)

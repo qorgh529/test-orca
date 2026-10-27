@@ -27,8 +27,8 @@ OPEN_STABLE="${STABLE_WEIGHT:-90}" OPEN_CANARY="${CANARY_WEIGHT:-10}"
 check_weights "$OPEN_STABLE" "$OPEN_CANARY"
 
 "$ROOT/scripts/validate-manifests.sh"
-# Stop before anything changes rather than publish /grafana to every IP.
-grafana_waf_ready || { echo "WAF WebACL has no /grafana allow-list rule at priority 0:" \
+# Stop before anything changes rather than publish /grafana or /was to every IP.
+staff_waf_ready || { echo "WAF WebACL has no /grafana + /was allow-list rule at priority 0:" \
   "run ./infra/aws/provision-aws-resources.sh grafana-waf first" >&2; exit 1; }
 
 K="$ROOT/k8s"
@@ -174,15 +174,20 @@ aws route53 change-resource-record-sets --hosted-zone-id "$ROUTE53_HOSTED_ZONE_I
         AliasTarget: {HostedZoneId: $zone, DNSName: $alb, EvaluateTargetHealth: true}}}]}')" >/dev/null
 
 # End-to-end canary check: web-canary /healthz does not touch WAS, so hit a page served by was-canary.
-# --connect-to goes straight to the ALB (no wait on DNS) while TLS still validates against DOMAIN_NAME.
+# /was is behind the WAF allow-list, which the deploy host may not be in: that page is fetched through
+# web-canary's own Nginx (web-canary -> was-canary), and the landing page through the ALB, where
+# X-Canary pins it to web-canary. --connect-to goes straight to the ALB (no wait on DNS) while TLS
+# still validates against DOMAIN_NAME.
 echo "== Canary path check (X-Canary: always)"
 ok=""
 for _ in $(seq 1 30); do
-  if curl -fsS -o /dev/null --max-time 10 --connect-to "$DOMAIN_NAME:443:$alb:443" \
-      -H "X-Canary: always" "https://$DOMAIN_NAME/owners?lastName="; then ok=1; break; fi
+  if kubectl -n petclinic exec deploy/web-canary -c nginx -- \
+      wget -q -O /dev/null "http://127.0.0.1:8080/was/owners?lastName=" \
+    && curl -fsS -o /dev/null --max-time 10 --connect-to "$DOMAIN_NAME:443:$alb:443" \
+      -H "X-Canary: always" "https://$DOMAIN_NAME/"; then ok=1; break; fi
   sleep 10
 done
-[ -n "$ok" ] || { echo "canary path check failed: https://$DOMAIN_NAME/owners via X-Canary: always; canary stays at 0%" >&2; exit 1; }
+[ -n "$ok" ] || { echo "canary path check failed: /was/owners via web-canary or https://$DOMAIN_NAME/ via X-Canary: always; canary stays at 0%" >&2; exit 1; }
 
 echo "== Open canary: $OPEN_STABLE/$OPEN_CANARY (later changes: scripts/set-canary-weight.sh)"
 apply_route_weights "$OPEN_STABLE" "$OPEN_CANARY"

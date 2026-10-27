@@ -44,30 +44,32 @@ wait_route_accepted() {
   exit 1
 }
 
-# Render every *.yaml in the given dirs/files as one multi-document stream.
-# /grafana (k8s/gateway/httproute-grafana.yaml) may only go live behind its WAF allow-list: the
-# WebACL's first rule must be BlockUnauthorizedGrafanaAccess, blocking IPs outside its IP set
-# (infra/aws/provision-aws-resources.sh grafana-waf, docs/features/grafana-public-path/design.md).
-grafana_waf_ready() {
+# /grafana (k8s/gateway/httproute-grafana.yaml) and the staff app at /was may only go live behind the
+# WAF allow-list: the WebACL's first rule must be BlockUnauthorizedStaffAccess, blocking both paths for
+# IPs outside its IP set (infra/aws/provision-aws-resources.sh grafana-waf,
+# docs/features/grafana-public-path/design.md, docs/features/landing-page/design.md).
+staff_waf_ready() {
   local acl_id="${WAF_WEB_ACL_ARN##*/}" acl_name acl
   acl_name=$(aws wafv2 list-web-acls --scope REGIONAL --query "WebACLs[?Id=='$acl_id'].Name | [0]" --output text) \
     && [ -n "$acl_name" ] && [ "$acl_name" != None ] || return 1
   acl=$(aws wafv2 get-web-acl --scope REGIONAL --name "$acl_name" --id "$acl_id" --output json) || return 1
-  # Structure, not just names: AND(path starts with /grafana after decode+normalise, NOT in our IP set).
-  # SearchString is a blob, which CLI v2 prints base64-encoded ("/grafana" = L2dyYWZhbmE=).
+  # Structure, not just names: AND(OR(path starts with /grafana, with /was; each after decode+normalise),
+  # NOT in our IP set). SearchString is a blob, which CLI v2 prints base64-encoded
+  # ("/grafana" = L2dyYWZhbmE=, "/was" = L3dhcw==).
   jq -e --arg set "/${EKS_CLUSTER_NAME}-grafana-allowed-ips/" '
+    def path($raw; $b64): any(.[]; .ByteMatchStatement | . != null and .FieldToMatch == {UriPath: {}}
+      and .PositionalConstraint == "STARTS_WITH" and (.SearchString == $b64 or .SearchString == $raw)
+      and (.TextTransformations | map(.Type) | contains(["URL_DECODE", "NORMALIZE_PATH"])));
     .WebACL.Rules | min_by(.Priority)
-    | .Name == "BlockUnauthorizedGrafanaAccess" and (.Action | keys == ["Block"])
+    | .Name == "BlockUnauthorizedStaffAccess" and (.Action | keys == ["Block"])
       and (.Statement | keys == ["AndStatement"])
       and (.Statement.AndStatement.Statements | length == 2
-        and any(.[]; .ByteMatchStatement | . != null and .FieldToMatch == {UriPath: {}}
-          and .PositionalConstraint == "STARTS_WITH"
-          and (.SearchString == "L2dyYWZhbmE=" or .SearchString == "/grafana")
-          and (.TextTransformations | map(.Type) | contains(["URL_DECODE", "NORMALIZE_PATH"])))
+        and any(.[]; .OrStatement.Statements // [] | path("/grafana"; "L2dyYWZhbmE=") and path("/was"; "L3dhcw=="))
         and any(.[]; .NotStatement.Statement.IPSetReferenceStatement.ARN // "" | contains($set)))' \
     <<<"$acl" >/dev/null
 }
 
+# Render every *.yaml in the given dirs/files as one multi-document stream.
 render_all() {
   local f
   for f in $(find "$@" -name '*.yaml' | sort); do
