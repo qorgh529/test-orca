@@ -647,3 +647,17 @@ server {
   probe는 1차 동안 `/` 라 예전 이미지도 Ready가 됨(Q7). 카나리 단계의 문제는 이미지 롤백 없이 `set-canary-weight.sh 100 0` 으로 끝남(stable은 예전 태그 그대로, `PROMOTE_STABLE` 가드).
 - 롤백 후 노출: 예전 web은 `/` 전체를 WAS로 프록시하고 WAF는 `/was`·`/grafana` 만 막으므로, 직원 앱이 이 기능 이전처럼 `/` 에서 다시 공개됨. 이전 상태로의 복귀이며, 비상 시 공개를 막아야 하면 별도 조치(WAF로 `/` 를 허용 IP로 제한 등)가 필요 — 롤백과 함께 판단.
 
+### Q9. (Claude, 2026-10-27) 리뷰 R4·보안 R4 — 롤백 전 엣지 차단을 필수 절차로 (Q8 대체)
+- 예전 web 이미지는 `/` 전체를 직원 앱으로 프록시하므로, **web 롤백 전에 WAF를 사이트 전체 차단으로 먼저 바꾸고 확인**한다. `grafana-waf` 의 `STAFF_WAF_SCOPE=all`: 허용 IP 밖은 `/resources/`(403 페이지 사진)만 빼고 모두 403. 이 상태에서는 `staff_waf_ready` 가 통과하지 않아 `deploy-all.sh` 도 멈춤.
+  ```bash
+  STAFF_WAF_SCOPE=all ./infra/aws/provision-aws-resources.sh grafana-waf      # 1. 사이트 전체를 허용 IP로
+  curl -s -o /dev/null -w '%{http_code}' https://${DOMAIN_NAME}/owners        # 2. 허용 IP 밖에서 403 확인 (반영까지 1분 안팎)
+  ./scripts/set-canary-weight.sh 100 0
+  kubectl -n petclinic set image deployment/web nginx=${ECR_WEB_REPOSITORY_URI}:${PREVIOUS_TAG}
+  kubectl -n petclinic rollout status deployment/web --timeout=300s           # 3. web 먼저, 끝날 때까지 대기
+  kubectl -n petclinic set image deployment/was-stable tomcat=${ECR_WAS_REPOSITORY_URI}:${PREVIOUS_TAG}
+  kubectl -n petclinic rollout status deployment/was-stable --timeout=600s    # 4. WAS
+  ```
+  사이트 전체 차단은 고친 이미지를 다시 배포할 때 `STAFF_WAF_SCOPE` 없이 `grafana-waf` 를 다시 실행해 푼다(그 전까지 공개 메인 페이지도 허용 IP에서만 열림).
+- Nginx 자체 리다이렉트(`/was` → `/was/`)는 `absolute_redirect off` 로 상대 Location(8c22f6d).
+

@@ -65,11 +65,11 @@
 - 지적 사항 없음.
 
 ### High
-- [ ] `docs/features/landing-page/design.md:642` — R3에서 처리된 것으로 표시한 롤백 노출 문제가 여전히 남아 있다. 이전 web을 복원하면 `/owners` 등 직원 앱 경로가 공개되는데 WAF는 `/was`와 `/grafana`만 차단한다. 별도 차단을 선택 사항으로 남기지 말고 이전 경로를 보호하는 규칙을 먼저 적용·검증한 뒤 web을 롤백하는 절차를 마련한다.
-- [ ] `docs/features/landing-page/security.md:9` — 공개 저장소의 보안 점검 기록에 실제 서비스 도메인이 남아 있다. 실값을 플레이스홀더로 바꾸고 같은 문서의 다른 언급도 제거한다. 정적 페이지의 연락처는 사용자 유지 결정이 기록되어 있으나 이 문서의 실값 노출은 별개로 정리해야 한다.
+- [x] (8c22f6d `STAFF_WAF_SCOPE=all` 사이트 전체 차단을 web 롤백 전 필수 단계로, 확인 후 롤백. design.md Q9) `docs/features/landing-page/design.md:642` — R3에서 처리된 것으로 표시한 롤백 노출 문제가 여전히 남아 있다. 이전 web을 복원하면 `/owners` 등 직원 앱 경로가 공개되는데 WAF는 `/was`와 `/grafana`만 차단한다. 별도 차단을 선택 사항으로 남기지 말고 이전 경로를 보호하는 규칙을 먼저 적용·검증한 뒤 web을 롤백하는 절차를 마련한다.
+- [x] (7450d8d 보안 점검 작성자(Antigravity)가 R4에서 실값 제거, 현재 기능 문서에 도메인 실값 없음) `docs/features/landing-page/security.md:9` — 공개 저장소의 보안 점검 기록에 실제 서비스 도메인이 남아 있다. 실값을 플레이스홀더로 바꾸고 같은 문서의 다른 언급도 제거한다. 정적 페이지의 연락처는 사용자 유지 결정이 기록되어 있으나 이 문서의 실값 노출은 별개로 정리해야 한다.
 
 ### Medium / Low
-- [ ] `docker/web/nginx.conf:62` — `/was`의 Nginx 리다이렉트는 기본 `absolute_redirect` 설정에서 내부 HTTP 스킴과 수신 포트로 절대 URL을 생성하므로 외부 HTTPS 사용자가 `http://...:8080/was/`로 이동해 접속에 실패할 수 있다. 상대 Location을 사용하거나 외부 HTTPS 주소를 명시하고 프록시 경유 `/was` 요청을 검증한다.
+- [x] (8c22f6d) `docker/web/nginx.conf:62` — `/was`의 Nginx 리다이렉트는 기본 `absolute_redirect` 설정에서 내부 HTTP 스킴과 수신 포트로 절대 URL을 생성하므로 외부 HTTPS 사용자가 `http://...:8080/was/`로 이동해 접속에 실패할 수 있다. 상대 Location을 사용하거나 외부 HTTPS 주소를 명시하고 프록시 경유 `/was` 요청을 검증한다.
 
 ### 기존 아키텍처와의 차이
 - [-] `docs/architecture.md:9` — 현재 문서는 Grafana 전용 WAF 규칙과 게이트, WAS ROOT 컨텍스트 및 루트 대시보드를 설명한다. 구현은 직원 공통 WAF 규칙과 `/was` 컨텍스트, 정적 랜딩 페이지로 바뀌므로 머지 전 아키텍처 갱신 단계에서 요청 흐름과 구성 요소를 맞춘다.

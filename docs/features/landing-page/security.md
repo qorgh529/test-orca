@@ -137,10 +137,10 @@ Tomcat `RewriteValve`를 통한 두 단계 릴리스(1차: `/` 프로브 호환 
 지적 사항 없음.
 
 ### High
-- [ ] `docs/features/landing-page/design.md:648` — **긴급 롤백 시 엣지 WAF 차단 공백에 따른 내부 시스템(PetClinic) 및 개인정보 대외 전면 노출 위험.** 이전 버전 web 이미지(`PREVIOUS_TAG`)로 롤백 시, 구버전 Nginx는 `/` 및 `/owners` 등 전체 경로를 WAS로 직접 프록시하지만 엣지 WAF는 `/was*`와 `/grafana*`만 차단하도록 구성되어 있다. 따라서 롤백 즉시 비인가 인터넷 사용자에게 고객·반려동물 진료 정보가 담긴 PetClinic 관리 시스템 전체가 무방비로 노출된다. 현재 `design.md` Q8에서는 이를 운영자의 선택 사항("비상 시 공개를 막아야 하면 별도 조치... 롤백과 함께 판단")으로 기술하고 있으나, 개인정보 유출 방지 및 보안 원칙에 따라 구버전 web 롤백 전 엣지 경로 차단(예: `/` 경로 IP 제한 규칙 활성화 또는 점검 페이지 전환)을 선행 적용하고 검증하도록 필수 절차로 명시해야 한다.
+- [x] (8c22f6d `STAFF_WAF_SCOPE=all` 를 web 롤백 전 필수 단계로, 403 확인 후 롤백. design.md Q9) `docs/features/landing-page/design.md:648` — **긴급 롤백 시 엣지 WAF 차단 공백에 따른 내부 시스템(PetClinic) 및 개인정보 대외 전면 노출 위험.** 이전 버전 web 이미지(`PREVIOUS_TAG`)로 롤백 시, 구버전 Nginx는 `/` 및 `/owners` 등 전체 경로를 WAS로 직접 프록시하지만 엣지 WAF는 `/was*`와 `/grafana*`만 차단하도록 구성되어 있다. 따라서 롤백 즉시 비인가 인터넷 사용자에게 고객·반려동물 진료 정보가 담긴 PetClinic 관리 시스템 전체가 무방비로 노출된다. 현재 `design.md` Q8에서는 이를 운영자의 선택 사항("비상 시 공개를 막아야 하면 별도 조치... 롤백과 함께 판단")으로 기술하고 있으나, 개인정보 유출 방지 및 보안 원칙에 따라 구버전 web 롤백 전 엣지 경로 차단(예: `/` 경로 IP 제한 규칙 활성화 또는 점검 페이지 전환)을 선행 적용하고 검증하도록 필수 절차로 명시해야 한다.
 
 ### Medium
-- [ ] `docker/web/nginx.conf:62` — **`/was` 정규화 리다이렉트 시 비암호화 HTTP 및 내부 컨테이너 포트(`:8080`) 노출 (프로토콜 다운그레이드 / 접속 장애).** `location = /was { return 301 /was/; }` 블록에 `absolute_redirect off;`가 설정되어 있지 않다. Nginx 기본값(`absolute_redirect on;`) 작동 시 Nginx 수신 포트(`8080`)와 내부 HTTP 스킴을 결합한 `Location: http://$host:8080/was/` 절대 URI가 생성된다. 외부 클라이언트는 HTTPS(443)로 접근했으나 비암호화 내부 포트(8080)로 리다이렉트되어 브라우저 연결이 차단되거나 프로토콜 다운그레이드가 발생하므로, `server` 블록 또는 해당 `location`에 `absolute_redirect off;`를 명시하여 상대 경로(`Location: /was/`)로 응답하도록 수정해야 한다.
+- [x] (8c22f6d) `docker/web/nginx.conf:62` — **`/was` 정규화 리다이렉트 시 비암호화 HTTP 및 내부 컨테이너 포트(`:8080`) 노출 (프로토콜 다운그레이드 / 접속 장애).** `location = /was { return 301 /was/; }` 블록에 `absolute_redirect off;`가 설정되어 있지 않다. Nginx 기본값(`absolute_redirect on;`) 작동 시 Nginx 수신 포트(`8080`)와 내부 HTTP 스킴을 결합한 `Location: http://$host:8080/was/` 절대 URI가 생성된다. 외부 클라이언트는 HTTPS(443)로 접근했으나 비암호화 내부 포트(8080)로 리다이렉트되어 브라우저 연결이 차단되거나 프로토콜 다운그레이드가 발생하므로, `server` 블록 또는 해당 `location`에 `absolute_redirect off;`를 명시하여 상대 경로(`Location: /was/`)로 응답하도록 수정해야 한다.
 
 ### Low
 - [-] (⑦ 단계에서 Antigravity가 갱신) `docs/architecture.md:9` — **아키텍처 문서 동기화 필요 (Step ⑦ 수행 과제).**
