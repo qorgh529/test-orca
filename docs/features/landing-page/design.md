@@ -627,3 +627,11 @@ server {
 
 ### Q6. (Claude, 2026-10-27) WAF 403 본문 파일 위치 — 구현에서 조정, 기록
 - 설계 §2는 403 본문을 `provision-aws-resources.sh` 안에 두는 것으로 적었으나, 크기 검사와 수정이 쉽도록 `infra/aws/waf-staff-403.html`(2,872바이트)로 분리하고 스크립트가 `jq --rawfile` 로 읽음. `validate-manifests.sh` §13이 4KB 이하와 이미지 경로를 검사.
+
+### Q7. (Claude, 2026-10-27) 리뷰·보안 R2 — stable/canary 공용 매니페스트와 이미지 호환성, 롤백
+- 문제: stable과 canary는 이미지 태그만 다르고 매니페스트(probe 등)를 같이 씀. probe를 `/was/` 로 바꾸면 카나리 기간에 예전 이미지로 도는 stable WAS와, 이미지만 되돌린 롤백 Pod가 Ready가 되지 못함.
+- 선택지: (1) 두 단계 릴리스 — 1차는 새 이미지가 `/` 와 `/was/` 를 모두 처리하고 probe는 `/` 유지, 2차에서 `/` 처리 제거 + probe `/was/` (2) `/` 응답용 작은 페이지 + probe `/` (3) 카나리 없이 한 번에 전환 + `kubectl rollout undo`
+- 답변(사용자, 2026-10-27): (1) 두 단계 릴리스.
+- 구현(1차): 앱을 두 번 띄우는 대신 Tomcat `RewriteValve`(`docker/was/rewrite.config`)로 `/was` 밖의 요청을 `/was` 앱으로 넘김(메모리 추가 없음). probe는 `/`(앱 웰컴 페이지까지 확인). 섞임 조합: 새 WAS + 예전 web = 동작(예전 web 은 `/` 를 프록시), 예전 WAS + 새 web = `/was/` 404 → stable 적용 순서를 **WAS 먼저, web 다음**으로 되돌림(Q2 답변을 이 결정이 대체). 롤백은 이미지만 이전 태그로: **web 먼저, WAS 다음**. 실제 Tomcat 11.0.2 로 확인: `/`·`/owners` 가 `/was` 앱으로 가고, web Nginx가 쓰는 HTTP/1.0 요청의 302가 `X-Forwarded-Proto: https` 로 `https://<host>/was/...` 절대 주소가 됨(예전 `http://` 원인: Nginx→Tomcat HTTP/1.0에서 Tomcat이 절대 주소를 만들고 scheme을 http로 앎).
+- 2차(후속 릴리스): `rewrite.config`·RewriteValve 제거, WAS probe `/was/`, `validate-manifests.sh` §13 probe 검사 변경. 1차가 stable까지 승격된 뒤에만.
+
