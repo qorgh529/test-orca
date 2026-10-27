@@ -483,15 +483,17 @@ for f in ("k8s/was/deployment-stable.yaml", "k8s/was/deployment-canary.yaml"):
     dep = one(f, "Deployment") or {}
     for c in dep.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])[:1]:
         for probe in ("startupProbe", "readinessProbe"):
-            if ((c.get(probe) or {}).get("httpGet") or {}).get("path") != "/was/":
-                err(f"{f}: {c.get('name')} {probe} must GET /was/ (the app context is /was)")
+            # Phase 1 (Q7): / so either image fits the shared manifests; /was/ in phase 2.
+            if ((c.get(probe) or {}).get("httpGet") or {}).get("path") != "/":
+                err(f"{f}: {c.get('name')} {probe} must GET / until phase 2 (old and new images both answer it)")
 was_df = (root / "docker/was/Dockerfile").read_text(encoding="utf-8")
-if "webapps/was" not in was_df or "webapps/ROOT" in was_df or "COPY docker/was/server.xml conf/server.xml" not in was_df:
-    err("docker/was/Dockerfile: deploy the app as webapps/was (not ROOT) with docker/was/server.xml")
+if ("webapps/was" not in was_df or "webapps/ROOT" in was_df or "COPY docker/was/server.xml conf/server.xml" not in was_df
+        or "COPY docker/was/rewrite.config conf/Catalina/localhost/rewrite.config" not in was_df):
+    err("docker/was/Dockerfile: deploy the app as webapps/was (not ROOT) with server.xml and the phase 1 rewrite.config")
 sx = (root / "docker/was/server.xml").read_text(encoding="utf-8")
 if ("org.apache.catalina.valves.RemoteIpValve" not in sx or 'protocolHeader="x-forwarded-proto"' not in sx
-        or 'internalProxies="10\\.' not in sx):
-    err("docker/was/server.xml: RemoteIpValve trusting x-forwarded-proto from private addresses only")
+        or 'internalProxies="10\\.' not in sx or "org.apache.catalina.valves.rewrite.RewriteValve" not in sx):
+    err("docker/was/server.xml: RemoteIpValve trusting x-forwarded-proto from private addresses only, and the phase 1 RewriteValve")
 ngx = (root / "docker/web/nginx.conf").read_text(encoding="utf-8")
 was_loc = re.search(r"location /was/ \{(.*?)\n    \}", ngx, re.S)  # ${VAR} braces inside
 if (not was_loc or "proxy_set_header X-Forwarded-Proto https;" not in was_loc.group(1)
@@ -507,11 +509,14 @@ if not body.is_file() or body.stat().st_size > 4096:
 elif ('src="/resources/images/403.webp"' not in body.read_text(encoding="utf-8")
         or not (root / "app/src/main/webapp/resources/images/403.webp").is_file()):
     err("waf-staff-403.html: its image must be the public /resources/images/403.webp served by web Nginx")
-# Q2: stable web rolls out before the WAS, or an old web would send / to a WAS that only has /was.
+# Q7: the WAS rolls out before web: a new WAS fits an old web, a new web does not fit an old WAS.
 dep = (root / "scripts/deploy-all.sh").read_text(encoding="utf-8")
-order = [dep.find(x) for x in ('render_all "$K/web"', "rollout status deploy/web ", 'render_all "$K/was"')]
+order = [dep.find(x) for x in ('render_all "$K/was"', "rollout status deploy/was-stable", 'render_all "$K/web"')]
 if -1 in order or order != sorted(order):
-    err("deploy-all.sh: apply web and wait for its rollout before applying the WAS manifests")
+    err("deploy-all.sh: apply the WAS and wait for its rollout before applying the web manifests")
+rw = (root / "docker/was/rewrite.config").read_text(encoding="utf-8")
+if "RewriteCond %{REQUEST_URI} !^/was(/.*)?$" not in rw or "RewriteRule ^/(.*)$ /was/$1" not in rw:
+    err("docker/was/rewrite.config: phase 1 must send everything outside /was to the /was app")
 if ("rule=BlockUnauthorizedStaffAccess" not in prov or 'path("/was")' not in prov
         or "--custom-response-bodies" not in prov):
     err("provision-aws-resources.sh: grafana-waf must block /grafana and /was in one rule with the 403 page")

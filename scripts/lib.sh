@@ -62,7 +62,7 @@ staff_waf_ready() {
       and .PositionalConstraint == "STARTS_WITH" and (.SearchString == $b64 or .SearchString == $raw)
       and (.TextTransformations | sort_by(.Priority) | map(.Type)) == ["URL_DECODE", "NORMALIZE_PATH", "LOWERCASE"]);
     .WebACL.Rules | min_by(.Priority)
-    | .Name == "BlockUnauthorizedStaffAccess" and (.Action | keys == ["Block"])
+    | .Priority == 0 and .Name == "BlockUnauthorizedStaffAccess" and (.Action | keys == ["Block"])
       and (.Statement | keys == ["AndStatement"])
       and (.Statement.AndStatement.Statements | length == 2
         and any(.[]; .OrStatement.Statements // [] | path("/grafana"; "L2dyYWZhbmE=") and path("/was"; "L3dhcw=="))

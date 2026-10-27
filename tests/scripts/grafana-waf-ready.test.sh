@@ -51,6 +51,7 @@ ACL=$(acl "$(rule '.Statement.AndStatement.Statements[0].OrStatement.Statements 
 ACL=$(acl "$(rule '.Statement.AndStatement.Statements[0].OrStatement.Statements |= .[1:]'),$managed") \
   check "/grafana missing from the OR" blocked
 ACL=$(acl "$managed,$(rule '.Priority = 2')") check "rule behind a managed rule group" blocked
+ACL=$(acl "$(rule '.Priority = 1'),$(jq -c '.Priority = 2' <<<"$managed")") check "rule first but not at priority 0" blocked
 ACL=$(acl "$(rule '.Action = {Count: {}}'),$managed") check "rule only counts" blocked
 ACL=$(acl "$(rule '.Statement = .Statement.AndStatement.Statements[1].NotStatement.Statement'),$managed") \
   check "IP set match without NOT (blocks the allowed IPs instead)" blocked

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- Tomcat 11.0.2 default conf/server.xml (comments and commented-out examples removed) plus RemoteIpValve,
-     no shutdown port (the container stops on SIGTERM) and no autoDeploy (immutable image).
+     a RewriteValve for the /was move, no shutdown port (the container stops on SIGTERM) and no autoDeploy.
      Tomcat sits behind ALB -> NGF -> web Nginx; web Nginx sends X-Forwarded-Proto https and
      X-Forwarded-Port 443, so redirects get https://<DOMAIN>/was/... instead of http://.
      docs/features/landing-page/design.md §3.4 -->
@@ -42,6 +42,8 @@
                protocolHeaderHttpsValue="https"
                httpServerPort="80"
                httpsServerPort="443" />
+        <!-- Phase 1 only: / -> /was app (conf/Catalina/localhost/rewrite.config). -->
+        <Valve className="org.apache.catalina.valves.rewrite.RewriteValve" />
         <Valve className="org.apache.catalina.valves.AccessLogValve" directory="logs"
                prefix="localhost_access_log" suffix=".txt"
                pattern="%h %l %u %t &quot;%r&quot; %s %b" />

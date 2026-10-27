@@ -56,11 +56,11 @@ spec:
             - name: JDBC_PASSWORD
               valueFrom: { secretKeyRef: { name: petclinic-rds-secret, key: JDBC_PASSWORD } }
           startupProbe:
-            httpGet: { path: /was/, port: http }
+            httpGet: { path: /, port: http }
             periodSeconds: 10
             failureThreshold: 30
           readinessProbe:
-            httpGet: { path: /was/, port: http }
+            httpGet: { path: /, port: http }
             # Agent bytecode instrumentation adds ~10-15s to JVM start.
             initialDelaySeconds: 20
             periodSeconds: 10

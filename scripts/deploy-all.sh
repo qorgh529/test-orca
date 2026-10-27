@@ -149,17 +149,16 @@ STABLE_WEIGHT=100 CANARY_WEIGHT=0 render_all "$K/gateway" | kubectl apply -f -
 wait_route_accepted
 
 echo "== Workloads (canary held at 0% until it passes the check below)"
-# web before WAS (docs/features/landing-page/design.md Q2): an old web proxies / to the WAS, so a new
-# WAS (app under /was only) going first would 404 the public page; a new web serves / itself and only
-# /was/ waits for the WAS rollout.
-render_all "$K/web" | kubectl apply -f -
-kubectl -n petclinic rollout status deploy/web --timeout=300s
-kubectl -n petclinic rollout status deploy/web-canary --timeout=300s
+# WAS before web (docs/features/landing-page/design.md Q7): a /was WAS also serves / (rewrite), so it
+# fits an old web, but a new web only proxies /was/, which an old WAS does not have.
 # Instrumentation first: pods created before it exists start without the agent.
 render "$K/was/instrumentation.yaml" | kubectl apply -f -
 render_all "$K/was" | kubectl apply -f -
 kubectl -n petclinic rollout status deploy/was-stable --timeout=600s
 kubectl -n petclinic rollout status deploy/was-canary --timeout=600s
+render_all "$K/web" | kubectl apply -f -
+kubectl -n petclinic rollout status deploy/web --timeout=300s
+kubectl -n petclinic rollout status deploy/web-canary --timeout=300s
 
 echo "== Route 53 alias -> ALB"
 alb=""
