@@ -29,13 +29,14 @@ spec:
           labels: { severity: warning }
           annotations:
             summary: "KEDA cannot read metrics for ScaledObject {{ $labels.scaledObject }}"
-        # ponytail: Tomcat errorCount counts every status >= 400, so 4xx are included. Switch to a
-        # 5xx-only series (e.g. ALB HTTPCode_Target_5XX via CloudWatch exporter) if 4xx noise pages people.
+        # OTel Java agent RED metric (via the OTel Collector), not Tomcat errorCount: errorCount counts
+        # every status >= 400, so a few 404s at low traffic paged as 5xx. Same query as the APM dashboard.
+        # No traffic gives 0/0 = NaN and no 5xx series gives an empty result: neither fires.
         - alert: PetClinicHttp5xxRateHigh
           expr: |
-            sum(rate(tomcat_errorcount_total{namespace="petclinic", port="8080"}[5m]))
-              / sum(rate(tomcat_requestcount_total{namespace="petclinic", port="8080"}[5m])) > 0.05
+            sum(rate(http_server_request_duration_seconds_count{service_name="petclinic-was", http_response_status_code=~"5.."}[5m]))
+              / sum(rate(http_server_request_duration_seconds_count{service_name="petclinic-was"}[5m])) > 0.05
           for: 5m
           labels: { severity: critical }
           annotations:
-            summary: "petclinic WAS error responses above 5% for 5m"
+            summary: "petclinic WAS 5xx error responses above 5% for 5m"
