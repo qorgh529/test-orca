@@ -100,12 +100,12 @@ Round 1에서 지적되었던 설계 문서 내 실제 도메인 노출 제거, 
 지적 사항 없음.
 
 ### Medium
-- [ ] `docs/features/landing-page/design.md:593` — **긴급 롤백 절차 내 롤아웃 대기 누락 및 레거시 복원 시 보안 주의사항 명시 필요.**
+- [x] (design.md Q8: web 대기 후 WAS, 롤백 후 노출과 별도 차단 조치 명시) `docs/features/landing-page/design.md:593` — **긴급 롤백 절차 내 롤아웃 대기 누락 및 레거시 복원 시 보안 주의사항 명시 필요.**
   1. `design.md` §7.3의 긴급 롤백 절차에서 `kubectl -n petclinic set image deployment/web ...` 실행 후 `kubectl -n petclinic rollout status deployment/web --timeout=300s` 대기 단계가 누락되어 있다. 두 `set image` 명령을 연속 실행할 경우 WAS가 web보다 먼저 구버전(`ROOT` 컨텍스트)으로 전환되어, 아직 새 버전을 실행 중인 web에서 유입되는 `/was/` 요청이 일시적으로 404를 반환할 수 있다. Q7 결정에 맞추어 web 롤아웃 완료를 대기한 후 WAS를 롤백하도록 절차를 보완해야 한다.
   2. 이전 안정 버전(`PREVIOUS_TAG`)으로 롤백 시, 구버전 web은 `/` 및 `/owners` 등 전체 경로를 WAS로 직접 프록시하지만 WAF는 `/was`와 `/grafana`만 차단한다. 따라서 레거시 버전으로 복구되면 PetClinic 관리 시스템이 대외에 다시 공개되는 보안 특성을 갖게 된다. 운영자가 비인가 접근 차단을 유지해야 하는 비상 상황인 경우, WAF 규칙 조정 또는 점검 화면 전환 등의 추가 조치가 필요함을 롤백 가이드에 명시할 것을 권고한다.
 
 ### Low
-- [ ] `docs/architecture.md:9` — **아키텍처 문서 동기화 필요 (Step ⑦ 수행 과제).**
+- [-] (⑦ 단계에서 Antigravity가 갱신) `docs/architecture.md:9` — **아키텍처 문서 동기화 필요 (Step ⑦ 수행 과제).**
   현재 `docs/architecture.md`는 기존 `BlockUnauthorizedGrafanaAccess` WAF 규칙과 WAS `ROOT` 컨텍스트(`/`) 구조를 기준으로 기술되어 있다. 신규 `BlockUnauthorizedStaffAccess` WAF 규칙, 정적 랜딩 페이지(`/`), 그리고 `/was/` 서블릿 컨텍스트 구조에 대한 개요 다이어그램 및 본문 동기화가 필요하며, 이는 머지 직전 ⑦ 단계(Antigravity 아키텍처 문서 갱신)에서 최종 반영되어야 한다.
 
 ---

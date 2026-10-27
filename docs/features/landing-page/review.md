@@ -45,14 +45,14 @@
 - 지적 사항 없음.
 
 ### High
-- [ ] `scripts/deploy-all.sh:156` — 공용 매니페스트를 적용하면 `STABLE_IMAGE_TAG`가 기존 태그와 다른 경우 카나리 검사 전에 stable WAS와 web도 새 이미지로 전환된다. 100:0은 stable 트래픽을 그대로 전달하므로 검증 실패 시에도 신규 버전이 사용자에게 노출된다. 카나리만 먼저 적용하고 검증에 성공한 뒤 stable을 전환하거나, 별도의 승격 절차와 기존 stable 태그 유지 검증을 추가한다. 이전 라운드에서 처리된 항목이 일반적인 태그 변경 재배포에서는 여전히 재현된다.
-- [ ] `docs/features/landing-page/design.md:593` — 롤백에서 이전 web을 먼저 복원하면 이전 web이 `/owners` 등 루트 경로를 WAS로 프록시하지만 WAF는 `/was`와 `/grafana`만 차단한다. 따라서 롤백 중과 완료 후 비인가 사용자도 직원 화면에 접근할 수 있다. 이전 경로를 보호하는 엣지 규칙을 먼저 적용하고 검증하는 롤백 절차를 마련한다.
+- [x] (78152ec 실행 중인 stable과 다른 STABLE_IMAGE_TAG 는 PROMOTE_STABLE=1 없이는 워크로드 변경 전에 중단) `scripts/deploy-all.sh:156` — 공용 매니페스트를 적용하면 `STABLE_IMAGE_TAG`가 기존 태그와 다른 경우 카나리 검사 전에 stable WAS와 web도 새 이미지로 전환된다. 100:0은 stable 트래픽을 그대로 전달하므로 검증 실패 시에도 신규 버전이 사용자에게 노출된다. 카나리만 먼저 적용하고 검증에 성공한 뒤 stable을 전환하거나, 별도의 승격 절차와 기존 stable 태그 유지 검증을 추가한다. 이전 라운드에서 처리된 항목이 일반적인 태그 변경 재배포에서는 여전히 재현된다.
+- [x] (design.md Q8: 롤백 후 직원 앱이 이 기능 이전처럼 `/` 에 공개되는 점과 필요 시 별도 차단 조치를 롤백 절차에 명시) `docs/features/landing-page/design.md:593` — 롤백에서 이전 web을 먼저 복원하면 이전 web이 `/owners` 등 루트 경로를 WAS로 프록시하지만 WAF는 `/was`와 `/grafana`만 차단한다. 따라서 롤백 중과 완료 후 비인가 사용자도 직원 화면에 접근할 수 있다. 이전 경로를 보호하는 엣지 규칙을 먼저 적용하고 검증하는 롤백 절차를 마련한다.
 
 ### Medium / Low
-- [ ] `docs/features/landing-page/design.md:593` — 두 `set image` 명령 사이에 web 롤아웃 완료 대기가 없다. WAS가 먼저 이전 이미지로 교체되면 아직 새 web을 사용하는 요청의 `/was/`가 404가 된다. web 롤아웃 완료를 기다린 후 WAS를 되돌리고 혼합 버전 구간을 검증한다.
+- [x] (design.md Q8: web rollout status 대기 후 WAS) `docs/features/landing-page/design.md:593` — 두 `set image` 명령 사이에 web 롤아웃 완료 대기가 없다. WAS가 먼저 이전 이미지로 교체되면 아직 새 web을 사용하는 요청의 `/was/`가 404가 된다. web 롤아웃 완료를 기다린 후 WAS를 되돌리고 혼합 버전 구간을 검증한다.
 
 ### 기존 아키텍처와의 차이
-- [ ] `docs/architecture.md:9` — 기존 문서는 Grafana 전용 `BlockUnauthorizedGrafanaAccess`와 `grafana_waf_ready`를 기술하지만 구현은 `/was`를 포함한 `BlockUnauthorizedStaffAccess`와 `staff_waf_ready`로 교체한다. 또한 WAS ROOT 컨텍스트와 루트 대시보드 설명이 현재 정적 랜딩 및 `/was` 배치와 다르므로 머지 전 요청 흐름과 WAF 설명을 갱신한다.
+- [-] (⑦ 단계에서 Antigravity가 architecture.md 를 갱신, 구현 단계 범위 밖) `docs/architecture.md:9` — 기존 문서는 Grafana 전용 `BlockUnauthorizedGrafanaAccess`와 `grafana_waf_ready`를 기술하지만 구현은 `/was`를 포함한 `BlockUnauthorizedStaffAccess`와 `staff_waf_ready`로 교체한다. 또한 WAS ROOT 컨텍스트와 루트 대시보드 설명이 현재 정적 랜딩 및 `/was` 배치와 다르므로 머지 전 요청 흐름과 WAF 설명을 갱신한다.
 
 ### 총평
 정적 매니페스트 검증과 WAF 오프라인 테스트는 통과했다. 카나리 격리와 안전한 롤백 절차를 보완하고 아키텍처 문서를 갱신해야 한다.
