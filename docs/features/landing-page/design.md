@@ -620,3 +620,10 @@ server {
 
 ### Q4. (Claude, 2026-10-27) §3.3 WAF 사용자 지정 응답 본문 크기
 - 설계는 본문 한도를 16KB로 적음. 한도 값과 무관하게 403 HTML(인라인 스타일 포함)을 4KB 이하로 만들어 어느 쪽이든 넘지 않게 하겠음. 설계 변경 아님, 기록만.
+
+### Q5. (Claude, 2026-10-27) §6 2.2 카나리 E2E 검증 경로 — 구현에서 조정, 기록
+- `/was` 가 WAF 허용 목록 뒤로 가면, 배포를 실행하는 호스트가 허용 IP가 아닐 때 `https://<DOMAIN>/was/owners` 검사가 항상 403으로 실패함(이 서버 IP는 허용 목록 밖).
+- 구현: `/was/owners?lastName=` 은 `kubectl exec deploy/web-canary -c nginx -- wget http://127.0.0.1:8080/was/owners?lastName=` 로 web-canary Nginx → was-canary 경로를 검사하고, ALB 경로는 `X-Canary: always` 로 `/` 를 검사. 허용 목록은 넓히지 않음.
+
+### Q6. (Claude, 2026-10-27) WAF 403 본문 파일 위치 — 구현에서 조정, 기록
+- 설계 §2는 403 본문을 `provision-aws-resources.sh` 안에 두는 것으로 적었으나, 크기 검사와 수정이 쉽도록 `infra/aws/waf-staff-403.html`(2,872바이트)로 분리하고 스크립트가 `jq --rawfile` 로 읽음. `validate-manifests.sh` §13이 4KB 이하와 이미지 경로를 검사.
