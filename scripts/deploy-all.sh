@@ -34,6 +34,18 @@ staff_waf_ready || { echo "WAF WebACL has no /grafana + /was allow-list rule at 
 K="$ROOT/k8s"
 aws eks update-kubeconfig --region "$AWS_REGION" --name "$EKS_CLUSTER_NAME"
 
+# Stable and canary share manifests, so a new STABLE_IMAGE_TAG reaches stable users before the canary
+# check below. Changing it must be a deliberate promotion (PROMOTE_STABLE=1), normally to the tag that
+# already passed as CANARY_IMAGE_TAG. A first deploy (no stable Deployment yet) needs no flag.
+for d in was-stable web; do
+  cur=$(kubectl -n petclinic get deploy "$d" --ignore-not-found -o jsonpath='{.spec.template.spec.containers[0].image}')
+  if [ -n "$cur" ] && [ "${cur##*:}" != "$STABLE_IMAGE_TAG" ] && [ "${PROMOTE_STABLE:-}" != 1 ]; then
+    echo "deploy/$d runs ${cur##*:} but STABLE_IMAGE_TAG is $STABLE_IMAGE_TAG: try new images as CANARY_IMAGE_TAG," \
+      "then promote with PROMOTE_STABLE=1" >&2
+    exit 1
+  fi
+done
+
 # Placement for cluster controllers: ng-critical only.
 CRITICAL=$(mktemp)
 trap 'rm -f "$CRITICAL"' EXIT

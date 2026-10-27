@@ -14,7 +14,7 @@
   - **Route 53 + ACM + AWS WAFv2**(`CommonRuleSet`, `SQLiRuleSet`, `KnownBadInputsRuleSet`)로 인터넷 경계를 보호하고, **AWS Load Balancer Controller(LBC)** 가 생성한 ALB(`target-type: ip`, HTTPS 443 강제, 비정상 헤더 드롭)가 **NGINX Gateway Fabric(NGF)** Pod로 직접 라우팅합니다.
 - **안전한 카나리 배포 게이팅 (Canary Traffic Gating)**:
   - `web`/`was-stable`(`STABLE_IMAGE_TAG`)과 `web-canary`/`was-canary`(`CANARY_IMAGE_TAG`)의 버전을 분리합니다.
-  - 배포 시 먼저 `HTTPRoute` 가중치를 **`100:0`으로 고정(Gateway `Accepted` 확인)** 한 상태에서 카나리 Pod를 롤아웃하고, `X-Canary: always` 헤더로 메인 페이지(`/`)를, `web-canary` 안에서 동적 DB 조회 경로(`/was/owners?lastName=`)를 E2E 검증한 뒤에만 운영자가 정한 비율(`STABLE_WEIGHT`/`CANARY_WEIGHT`, 기본 **`90:10`**)로 개방합니다. 이후 비율 확대·롤백은 재배포 없이 `scripts/set-canary-weight.sh`로 합니다.
+  - 배포 시 먼저 `HTTPRoute` 가중치를 **`100:0`으로 고정(Gateway `Accepted` 확인)** 한 상태에서 카나리 Pod를 롤아웃하고, `X-Canary: always` 헤더로 메인 페이지(`/`)를, `web-canary` 안에서 동적 DB 조회 경로(`/was/owners?lastName=`)를 E2E 검증한 뒤에만 운영자가 정한 비율(`STABLE_WEIGHT`/`CANARY_WEIGHT`, 기본 **`90:10`**)로 개방합니다. 이후 비율 확대·롤백은 재배포 없이 `scripts/set-canary-weight.sh`로 합니다. 실행 중인 stable과 다른 `STABLE_IMAGE_TAG` 는 카나리 검사 전에 stable 사용자에게 나가므로, 카나리로 검증한 태그를 `PROMOTE_STABLE=1` 로 승격할 때만 허용됩니다.
 - **Web / WAS 2-Tier 분리 및 정교한 오토스케일링**:
   - **Web 계층 (`web`, Nginx 1.27)**: 정적 에셋(`/resources/*`, `/webjars/*`) 직접 서빙 및 보안 응답 헤더 부여, 동적 요청은 WAS(`:8080`)로 프록시. CPU 사용률(60%) 기준 **HPA**(`web` 2~10, `web-canary` 1~4)로 수평 확장.
   - **WAS 계층 (`was`, Tomcat 11 + Java 21)**: 사전 언패킹된 `webapps/ROOT` 구동 및 **JMX Exporter**(`:9404/metrics`) 내장. Prometheus가 수집한 초당 요청 수(`> 50 req/s`)를 기반으로 **KEDA `ScaledObject`**(`was-stable` 2~10 / `fallback: 4`, `was-canary` 1~3 / `fallback: 2`)가 수평 확장.

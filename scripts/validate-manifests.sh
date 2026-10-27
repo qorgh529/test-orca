@@ -514,6 +514,8 @@ dep = (root / "scripts/deploy-all.sh").read_text(encoding="utf-8")
 order = [dep.find(x) for x in ('render_all "$K/was"', "rollout status deploy/was-stable", 'render_all "$K/web"')]
 if -1 in order or order != sorted(order):
     err("deploy-all.sh: apply the WAS and wait for its rollout before applying the web manifests")
+if 'PROMOTE_STABLE:-}" != 1' not in dep or dep.find("PROMOTE_STABLE") > dep.find('render_all "$K/was"'):
+    err("deploy-all.sh: a changed STABLE_IMAGE_TAG must need PROMOTE_STABLE=1, checked before any workload changes")
 rw = (root / "docker/was/rewrite.config").read_text(encoding="utf-8")
 if "RewriteCond %{REQUEST_URI} !^/was(/.*)?$" not in rw or "RewriteRule ^/(.*)$ /was/$1" not in rw:
     err("docker/was/rewrite.config: phase 1 must send everything outside /was to the /was app")
