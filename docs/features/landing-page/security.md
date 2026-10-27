@@ -39,3 +39,40 @@
 그러나 **(1) 설계 문서 내 실제 서비스 도메인 실값 노출** 및 **(2) 재배포 시 메인 페이지(`/`) 일시 중단을 유발하는 `deploy-all.sh`의 배포 순서 역전 결함**이 존재하므로, 해당 High 항목들에 대한 보완 조치가 완료되기 전까지는 프로덕션 배포가 불가하다.
 
 배포 가능 여부: No
+
+## Security Round 2 — 2026-10-27 (대상 커밋: ca90d5e)
+
+점검 범위: `git diff master...HEAD` 전체 및 R1 피드백 반영 커밋(`4237983`, `08ae5c8`, `ca90d5e`), `docs/architecture.md`, `docs/features/landing-page/design.md`.
+
+### 점검 항목별 요약
+- **시크릿/자격증명 하드코딩 및 `.env` 커밋 여부**: 이상 없음 (`.env`는 `.gitignore`로 제외되어 안전하게 관리되며, 하드코딩된 API Key, DB 패스워드, AWS 자격증명 없음. RDS 패스워드는 K8s Secret `petclinic-rds-secret`의 `secretKeyRef` 참조 유지).
+- **문서(`docs/daily` 포함) 내 계정 ID·ARN·엔드포인트·개인 URL 실값 노출 여부**: 양호 (`docs/features/landing-page/design.md:12`의 실제 서비스 도메인 실값은 `${DOMAIN_NAME}` 플레이스홀더로 교체 완료됨. 정적 랜딩 페이지 `docker/web/static/index.html` 내 이메일 주소는 실제 서비스 도메인에서 내려가는 공식 데모 연락처 용도로 유지하기로 사용자 결정이 내려져 `docs/daily`에 승인 이력 기록됨. 12자리 AWS 계정 ID, 실존 IAM/WAF ARN, 개인 엔드포인트 노출 없음).
+- **IAM/권한 과다 부여, 최소 권한 원칙 위반**: 이상 없음 (신규 IAM 역할이나 과다 권한 생성 없음. WAF IPSet 및 NGF 라우팅을 통해 인가된 IP만 내부 직원용 애플리케이션에 도달하도록 통제함).
+- **네트워크 노출 (열린 포트, 0.0.0.0/0, 공개 버킷)**: 양호 (WAF Priority 0 `BlockUnauthorizedStaffAccess` 차단 규칙 유지, WAF 엣지 403 응답에 `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Cache-Control: no-store` 보안 헤더 추가 완료됨. Tomcat 컨테이너의 불필요한 TCP 종료 포트(8005)를 `port="-1"`로 비활성화하여 루프백 포트 노출을 제거함).
+- **입력 검증 누락 (인젝션, 경로 조작, SSRF)**: 보완 필요 (WAF 텍스트 변환 검증 로직에 `URL_DECODE` -> `NORMALIZE_PATH` -> `LOWERCASE` 순서 및 타입 검증이 추가되었으나, `scripts/lib.sh`의 게이트 검사에서 `min_by(.Priority)`만 사용하고 `.Priority == 0` 조건을 명시 검증하지 않아 최우선 순위가 아닌 규칙도 통과할 수 있는 보안 검증 결함이 존재함).
+- **의존성 취약점 및 고정되지 않은 버전**: 이상 없음 (Tomcat `11.0.2-jdk21-temurin-noble`, Maven `3.9.9-eclipse-temurin-21`, Nginx `1.27.2-alpine`, JMX Exporter `1.0.1` SHA256 체크섬 등 고정 태그 및 불변 이미지 사양 준수).
+- **Dockerfile/IaC (root 실행, latest 태그, 암호화 미설정)**: 양호 (Web 및 WAS 컨테이너 모두 UID 10001 비루트 전용 계정으로 구동되며, `readOnlyRootFilesystem: true`, `allowPrivilegeEscalation: false` 보안 컨텍스트 강제 적용됨. WAS `server.xml`에 `autoDeploy="false"`, `deployOnStartup="true"` 설정 적용 완료).
+- **design.md 의 보안 요구사항 및 architecture.md 의 보안 구조 준수 여부**: 보완 필요 (긴급 롤백 시 이전 버전 WAS의 컨텍스트 경로(`/`)와 Deployment 매니페스트 상의 신규 프로브 경로(`/was/`) 불일치로 인한 복구 불능 장애 위험 존재, `deploy-all.sh`에서 카나리 사전 검증 게이트를 거치기 전에 stable 트랙이 프로덕션에 먼저 롤아웃되어 카나리 격리 안전망이 무력화되는 결함 존재).
+
+---
+
+### Critical
+지적 사항 없음.
+
+### High
+- [ ] `docs/features/landing-page/design.md:593` — **WAS 긴급 롤백 시 K8s 헬스체크 프로브(`/was/`) 불일치로 인한 복구 불능 장애 위험.** `design.md` §7.3의 긴급 롤백 절차는 `kubectl -n petclinic set image deployment/was-stable tomcat=...:${PREVIOUS_TAG}`로 이미지만 변경하도록 안내하고 있다. 그러나 `k8s/was/deployment-stable.yaml`의 `startupProbe`와 `readinessProbe`가 `path: /was/`로 수정되었으므로, 애플리케이션이 `ROOT`(`/`) 컨텍스트에 배포되어 있던 이전 버전 이미지를 기동하면 프로브 요청이 HTTP 404를 수신하여 지속적으로 실패한다. 이로 인해 롤백 Pod가 Ready 상태로 전이되지 못하고 `CrashLoopBackOff` 및 무한 재시작에 빠져 서비스 복구가 불가능해진다. 이미지 태그만 변경하는 것이 아니라 Deployment 매니페스트(프로브 경로)를 함께 롤백하거나 복원하는 절차를 `design.md`에 명시하고, web과 was-stable 간의 롤백 순서 및 복구 검증 절차를 보완해야 한다.
+- [ ] `scripts/deploy-all.sh:155-163` — **카나리 사전 검증 완료 전 stable 프로덕션 노출 및 트랙 격리 원칙 위반.** `deploy-all.sh`는 `render_all "$K/web"` 및 `render_all "$K/was"`를 차례로 실행하여 `web-canary`뿐 아니라 `web`(stable)과 `was-stable`까지 신규 버전으로 롤아웃을 완료한 뒤 184행의 카나리 경로 검증(`X-Canary: always`)을 수행한다. 이로 인해 신규 이미지에 잠재적 결함이 있더라도 카나리 검증 게이트를 거치기 전에 이미 100%의 stable 사용자에게 신규 버전이 배포된다. 카나리 트랙(`web-canary`, `was-canary`)을 먼저 배포하여 사전 검증 게이트를 통과한 후에 stable 트랙을 순차 배포하도록 트랙 간 배포 단계를 분리해야 한다.
+
+### Medium
+- [ ] `scripts/lib.sh:64` — **배포 전 WAF 보안 게이트(`staff_waf_ready`)의 `Priority == 0` 명시 검증 누락.** `staff_waf_ready` 내 jq 조건은 `min_by(.Priority) | .Name == "BlockUnauthorizedStaffAccess"`를 검사하지만, 해당 규칙의 `.Priority`가 실제로 `0`인지는 검사하지 않는다. 만약 규칙이 Priority 1 이상으로 잘못 설정되어 단독 존재하거나 다른 최우선순위 허용 규칙이 0번으로 추가되는 구성 오류가 발생하더라도 최소 우선순위 규칙이라는 이유로 게이트를 통과할 수 있다. AWS WAF 최우선 차단 원칙을 보장하기 위해 `.Priority == 0` 조건을 명시하고 회귀 테스트(`grafana-waf-ready.test.sh`)에 우선순위 0 미만/초과 검증 케이스를 보완해야 한다.
+
+### Low
+지적 사항 없음.
+
+---
+
+### 총평
+Round 1에서 지적되었던 설계 문서 내 실제 도메인 노출 제거, WAF 엣지 403 보안 헤더(`X-Frame-Options`, `X-Content-Type-Options`) 추가, Tomcat 불필요 종료 포트 비활성화(`port="-1"`) 및 `autoDeploy="false"` 적용, WAF 텍스트 변환 파이프라인 검증 강화는 모두 정상 반영되었다.
+그러나 긴급 롤백 시 probe 경로 불일치로 인한 복구 불능 위험, 카나리 사전 검증 전 stable 선적용 문제, WAF 배포 게이트의 Priority 0 검증 누락이 확인되었으므로 보완 조치가 완료되기 전까지 배포는 불가하다.
+
+배포 가능 여부: No
