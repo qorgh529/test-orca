@@ -48,6 +48,8 @@ if [ "$(q aws eks describe-cluster --name "$C" --query cluster.status --output t
   for ns in $(kubectl get ns -o jsonpath='{.items[*].metadata.name}'); do
     case "$ns" in kube-system|kube-public|kube-node-lease|default) continue ;; esac
     run kubectl -n "$ns" delete scaledobject,hpa,pdb --all --ignore-not-found
+    # prometheus-operator recreates these StatefulSets until its CRs are gone.
+    [ "$ns" = monitoring ] && run kubectl -n "$ns" delete alertmanager,prometheus --all --ignore-not-found
     run kubectl -n "$ns" delete statefulset,deployment --all --wait=true --timeout=300s
   done
   for np in $(kubectl get nodepool -o name 2>/dev/null); do
