@@ -43,15 +43,17 @@ if [ "$(q aws eks describe-cluster --name "$C" --query cluster.status --output t
   echo "EBS volumes behind PVs: $(echo $VOLS)"
   run kubectl delete ingress -A --all --wait=true --timeout=300s
   run kubectl delete svc -A --field-selector spec.type=LoadBalancer --wait=true --timeout=300s
+  # Workloads and PDBs first: otherwise PDBs block the Karpenter drain (pods have nowhere to go)
+  # and StatefulSets recreate the PVCs.
+  for ns in $(kubectl get ns -o jsonpath='{.items[*].metadata.name}'); do
+    case "$ns" in kube-system|kube-public|kube-node-lease|default) continue ;; esac
+    run kubectl -n "$ns" delete scaledobject,hpa,pdb --all --ignore-not-found
+    run kubectl -n "$ns" delete statefulset,deployment --all --wait=true --timeout=300s
+  done
   for np in $(kubectl get nodepool -o name 2>/dev/null); do
     run kubectl patch "$np" --type merge -p '{"spec":{"limits":{"cpu":"0","memory":"0Gi"}}}'
   done
   run kubectl delete nodeclaim --all --wait=true --timeout=300s
-  # Workloads first, or the StatefulSets recreate the PVCs.
-  for ns in $(kubectl get ns -o jsonpath='{.items[*].metadata.name}'); do
-    case "$ns" in kube-system|kube-public|kube-node-lease|default) continue ;; esac
-    run kubectl -n "$ns" delete statefulset,deployment --all --wait=true --timeout=300s
-  done
   run kubectl delete pvc -A --all --wait=true --timeout=300s
   if (( ! DRY_RUN )); then
     for _ in $(seq 60); do
