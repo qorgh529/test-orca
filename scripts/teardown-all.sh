@@ -7,11 +7,12 @@
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
-usage() { echo "usage: $0 [--dry-run] [-h|--help]"; }
-DRY_RUN=0
+usage() { echo "usage: $0 [--dry-run] [--keep-dns] [-h|--help]"; }
+DRY_RUN=0 KEEP_DNS=0
 for a in "$@"; do
   case "$a" in
     --dry-run) DRY_RUN=1 ;;
+    --keep-dns) KEEP_DNS=1 ;;  # keep the ACM certificate and the Route 53 hosted zone
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 1 ;;
   esac
@@ -150,18 +151,22 @@ waf_delete list-web-acls get-web-acl delete-web-acl "${C}-web-acl" WebACLs
 waf_delete list-ip-sets get-ip-set delete-ip-set "${C}-grafana-allowed-ips" IPSets
 
 step "7. ACM certificate and Route 53 hosted zone $DOMAIN_NAME"
-for arn in $(q aws acm list-certificates --query "CertificateSummaryList[?DomainName=='$DOMAIN_NAME'].CertificateArn" --output text); do
-  run aws acm delete-certificate --certificate-arn "$arn"
-done
-if [ -n "$(q aws route53 get-hosted-zone --id "$ROUTE53_HOSTED_ZONE_ID" --query HostedZone.Id --output text)" ]; then
-  changes=$(aws route53 list-resource-record-sets --hosted-zone-id "$ROUTE53_HOSTED_ZONE_ID" --output json \
-    | jq --arg apex "${DOMAIN_NAME%.}." '[.ResourceRecordSets[]
-        | select(.Name != $apex or (.Type != "NS" and .Type != "SOA")) | {Action: "DELETE", ResourceRecordSet: .}]')
-  if [ "$changes" != "[]" ]; then
-    run aws route53 change-resource-record-sets --hosted-zone-id "$ROUTE53_HOSTED_ZONE_ID" \
-      --change-batch "{\"Changes\":$changes}" >/dev/null
+if (( KEEP_DNS )); then
+  echo "--keep-dns: skipping"
+else
+  for arn in $(q aws acm list-certificates --query "CertificateSummaryList[?DomainName=='$DOMAIN_NAME'].CertificateArn" --output text); do
+    run aws acm delete-certificate --certificate-arn "$arn"
+  done
+  if [ -n "$(q aws route53 get-hosted-zone --id "$ROUTE53_HOSTED_ZONE_ID" --query HostedZone.Id --output text)" ]; then
+    changes=$(aws route53 list-resource-record-sets --hosted-zone-id "$ROUTE53_HOSTED_ZONE_ID" --output json \
+      | jq --arg apex "${DOMAIN_NAME%.}." '[.ResourceRecordSets[]
+          | select(.Name != $apex or (.Type != "NS" and .Type != "SOA")) | {Action: "DELETE", ResourceRecordSet: .}]')
+    if [ "$changes" != "[]" ]; then
+      run aws route53 change-resource-record-sets --hosted-zone-id "$ROUTE53_HOSTED_ZONE_ID" \
+        --change-batch "{\"Changes\":$changes}" >/dev/null
+    fi
+    run aws route53 delete-hosted-zone --id "$ROUTE53_HOSTED_ZONE_ID" >/dev/null
   fi
-  run aws route53 delete-hosted-zone --id "$ROUTE53_HOSTED_ZONE_ID" >/dev/null
 fi
 
 step "8. ECR, S3, CodeBuild, CloudWatch Logs, Secrets Manager"
